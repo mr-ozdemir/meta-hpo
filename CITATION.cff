@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: If you use meta-hpo in your research, please cite it as below.
+title: "meta-hpo: metaheuristic hyperparameter optimization"
+type: software
+authors:
+  - family-names: Ozdemir
+    given-names: Muhammet
+license: MIT
+repository-code: https://github.com/mr-ozdemir/meta-hpo

@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a new optimizer, parameter type or option.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you are trying to do, and why the current API makes it hard.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How it could look, ideally as a short code example.
