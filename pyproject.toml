@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meta-hpo"
-version = "0.1.0"
+version = "0.2.0"
 description = "Metaheuristic hyperparameter optimization: a fast numpy core with an ask/tell interface."
 readme = "README.md"
 requires-python = ">=3.10"
