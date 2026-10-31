@@ -199,6 +199,19 @@ class Space:
     def dim(self) -> int:
         return len(self.parameters)
 
+    @property
+    def size(self) -> float:
+        """Number of distinct parameter sets; infinite when the space has a Float."""
+        n = 1.0
+        for p in self.parameters:
+            if isinstance(p, Int):
+                n *= p.high - p.low + 1
+            elif isinstance(p, Categorical):
+                n *= len(p.choices)
+            else:
+                return math.inf
+        return n
+
     def sample(self, rng: np.random.Generator, n: int) -> FloatArray:
         """n uniform points of the unit cube, shape (n, d)."""
         return rng.random((n, self.dim))

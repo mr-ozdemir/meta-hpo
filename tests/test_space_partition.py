@@ -69,6 +69,13 @@ Space, construction validity
   S3  valid mixed mapping    Float, Int, Categorical   dim == 3, Python types
       test_space_should_report_one_dimension_per_parameter_and_python_types_when_mapping_is_mixed
 Space, output types and identity: S3 (type(v) is float / int), C4 (identity)
+Space, size (number of distinct parameter sets)
+  Z1  no Float, Int only           Int(2, 2), Int(-2, 2), Int(1, 64, log)   high - low + 1
+  Z2  no Float, Categorical only   Categorical(['only'])                     number of choices
+  Z3  no Float, several columns    Int(1, 3) x 2 choices, Int(0, 9) x Int(1, 2) x 3 choices   product
+      test_space_size_should_be_the_product_of_int_widths_and_choice_counts_when_the_space_has_no_float
+  Z4  some Float                   Float alone, log Float, Float first or after discrete columns   inf
+      test_space_size_should_be_infinite_when_any_parameter_is_a_float
 
 Edge and corner cases: k/4 and the double just below it, u = 0.0 and u = 1.0, low == high for Int, one
 choice; the corner where several edges meet (Int(2, 2) with one choice under the cache) is in
@@ -532,3 +539,60 @@ def test_space_should_report_one_dimension_per_parameter_and_python_types_when_m
     assert space.dim == 3
     assert params == {"a": pytest.approx(3.0, rel=1e-12), "n": 5, "c": "q"}
     assert (type(params["a"]), type(params["n"])) == (float, int)
+
+
+@pytest.mark.parametrize(
+    ("mapping", "expected"),
+    [
+        pytest.param({"n": Int(2, 2)}, 1, id="Z1-one-value-int"),
+        pytest.param({"n": Int(-2, 2)}, 5, id="Z1-inclusive-int-width"),
+        pytest.param({"n": Int(1, 64, log=True)}, 64, id="Z1-log-int-counts-every-integer"),
+        pytest.param({"c": Categorical(["only"])}, 1, id="Z2-one-choice"),
+        pytest.param({"n": Int(1, 3), "c": Categorical(["p", "q"])}, 6, id="Z3-int-times-two-choices"),
+        pytest.param(
+            {"n": Int(0, 9), "m": Int(1, 2), "c": Categorical(["x", "y", "z"])}, 60, id="Z3-product-of-three"
+        ),
+    ],
+)
+def test_space_size_should_be_the_product_of_int_widths_and_choice_counts_when_the_space_has_no_float(
+    mapping, expected
+):
+    """Given a Space of Int and Categorical parameters only, when size is read, then it is the product of the
+    inclusive Int widths high - low + 1 and the numbers of choices.
+
+    Oracle: Space.size docstring ('Number of distinct parameter sets'), README (Int integers low..high
+    inclusive; Categorical one of choices). Hand calculation: 1, 5, 64, 1, 3 * 2 = 6 and 10 * 2 * 3 = 60.
+    Int(2, 2) and one choice are the smallest factors; the log Int shows that the scale does not change the
+    count; 60 needs every factor, so a size that skipped a column or used high - low would differ.
+    """
+    space = Space(mapping)
+
+    size = space.size
+
+    assert size == expected
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        pytest.param({"x": Float(0.0, 1.0)}, id="Z4-float-alone"),
+        pytest.param({"x": Float(1e-4, 1e-2, log=True)}, id="Z4-log-float"),
+        pytest.param({"x": Float(0.0, 1.0), "n": Int(1, 3)}, id="Z4-float-first"),
+        pytest.param(
+            {"n": Int(1, 3), "c": Categorical(["p"]), "x": Float(0.0, 1.0)}, id="Z4-float-after-discrete"
+        ),
+    ],
+)
+def test_space_size_should_be_infinite_when_any_parameter_is_a_float(mapping):
+    """Given a Space with at least one Float, alone or before or after Int and Categorical parameters, when
+    size is read, then it is math.inf.
+
+    Oracle: Space.size docstring ('infinite when the space has a Float') and README (Float real numbers in
+    [low, high]). The Float after two discrete columns shows that a finite partial product does not leak
+    out; the Float first shows that the Float decides wherever it stands.
+    """
+    space = Space(mapping)
+
+    size = space.size
+
+    assert size == math.inf
