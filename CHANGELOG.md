@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-31
+
 ### Fixed
 
 - `ABCOptimizer` accepts a neighbour when its raw score is strictly lower; comparing the fitness
