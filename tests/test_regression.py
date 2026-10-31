@@ -110,12 +110,14 @@ lucky stream only. ANY_SEED: fixed for determinism where the result does not dep
 """
 
 import math
+import sys
+from collections import Counter
 
 import numpy as np
 import pytest
 
 from metahpo import ABCOptimizer, Categorical, Float, Int, Space, Study, Trial, optimize
-from metahpo.operators import neighbour_value
+from metahpo.operators import fitness, neighbour_value, onlooker_probabilities
 
 CHOICES = ("relu", "tanh", "gelu")
 """Non-numeric categories, so that a returned index or a copied string is told apart from the choice."""
@@ -1023,3 +1025,200 @@ def test_abc_should_leave_the_initial_phase_only_when_the_whole_batch_is_told_ou
 
     assert [after_first, after_second, after_last] == ["init", "init", "employed"]
     assert len(next_batch) == 1
+
+
+TOP = math.nextafter(1.0, 0.0)
+FLOAT_MAX = sys.float_info.max
+README_SEED = 1
+README_MAX_EVALS = 300
+GRID_POINTS_PER_VALUE = 1000
+
+
+def _value_via_rows(parameter, u):
+    """Python value of a one-parameter Space at unit value u, through Space.rows."""
+    _, params = Space({"p": parameter}).rows(np.array([[u]]))
+    return params[0]["p"]
+
+
+def _value_via_move(parameter, u):
+    """Python value at unit value u, through Space.move from the row decoded at 0.5."""
+    space = Space({"p": parameter})
+    keys, params = space.rows(np.array([[0.5]]))
+    _, moved = space.move(keys[0], params[0], 0, u)
+    return moved["p"]
+
+
+def _readme_lr_objective(params):
+    """Stub accuracy that grows with lr, so the search is driven to the upper bound of lr."""
+    return params["lr"]
+
+
+@pytest.mark.parametrize("value_at", [_value_via_rows, _value_via_move], ids=["rows", "move"])
+@pytest.mark.parametrize(
+    ("parameter", "u"),
+    [
+        pytest.param(Float(1e-4, 1e-2, log=True), 1.0, id="readme-lr-at-u-one"),
+        pytest.param(Float(1e-5, 1e-1, log=True), 0.0, id="log-at-u-zero"),
+        pytest.param(Float(2.0, 3.0, log=True), TOP, id="log-at-largest-sampled-u"),
+    ],
+)
+def test_log_float_should_decode_inside_low_high_when_u_is_a_unit_end(value_at, parameter, u):
+    """Given a log Float and an end unit value, when it is decoded, then the value lies in [low, high].
+
+    Oracle: README Search space table 'real numbers in [low, high]'; Parameter.decode takes 'unit values in
+    [0, 1]', neighbour_value clips to exactly 0 and 1, and Space.sample yields 0.0 up to TOP.
+    Site: space.py _decode_float (log branch) and Float.decode_one (log branch), no clip to [low, high].
+    """
+    result = value_at(parameter, u)
+
+    assert parameter.low <= result <= parameter.high
+
+
+@pytest.mark.parametrize("value_at", [_value_via_rows, _value_via_move], ids=["rows", "move"])
+@pytest.mark.parametrize(
+    "parameter",
+    [pytest.param(Float(0.3, 0.9), id="0.3-0.9"), pytest.param(Float(-0.7, 0.3), id="minus-0.7-0.3")],
+)
+def test_linear_float_should_decode_inside_low_high_when_u_is_one(value_at, parameter):
+    """Given a linear Float, when u = 1.0 is decoded, then the value is at most high.
+
+    Oracle: README 'real numbers in [low, high]'. Site: space.py _decode_float (linear branch) and
+    Float.decode_one: low + u * (high - low) rounds above high and is not clipped.
+    """
+    result = value_at(parameter, 1.0)
+
+    assert parameter.low <= result <= parameter.high
+
+
+def test_optimize_should_keep_lr_inside_its_range_when_the_readme_quick_start_drives_it_to_the_top():
+    """Given the README Quick start space and an accuracy growing with lr, when optimize runs, then every
+    trial's lr lies in [1e-4, 1e-2].
+
+    Oracle: README Search space table. End-to-end form of the log Float defect: neighbour_value clips the
+    coordinate to exactly 1.0, which decodes to 0.010000000000000004.
+    """
+    space = Space(
+        {
+            "lr": Float(1e-4, 1e-2, log=True),
+            "kernel": Categorical([3, 5, 7]),
+            "units": Int(16, 256),
+            "dropout": Float(0.0, 0.5),
+        }
+    )
+
+    study = optimize(
+        _readme_lr_objective, space, direction="max", max_evals=README_MAX_EVALS, seed=README_SEED
+    )
+
+    assert study.best_params["lr"] <= 1e-2
+
+
+@pytest.mark.parametrize(
+    ("fit", "expected"),
+    [
+        pytest.param([0.0, 5e-324], [0.1, 1.0], id="subnormal-top"),
+        pytest.param([0.3, 0.1], [1.0, 0.4], id="ordinary-fitness"),
+    ],
+)
+def test_onlooker_probabilities_should_give_exactly_one_to_the_largest_fitness(fit, expected):
+    """Given a fitness array, when onlooker_probabilities runs, then the largest fitness gets p = 1.0.
+
+    Oracle: docstring p_i = 0.9 * fit_i / max(fit) + 0.1 and ABC.py line 127 0.9 * (fitness / max_fit) + 0.1;
+    hand calculation 0.9 * 1 + 0.1 = 1.0 and 0.9 / 3 + 0.1 = 0.4. Site: operators.onlooker_probabilities
+    evaluates (0.9 * fit) / top, giving 1.1 for a subnormal top and 1.0000000000000002 for [0.3, 0.1].
+    """
+    result = onlooker_probabilities(np.array(fit))
+
+    assert result.tolist() == pytest.approx(expected, abs=1e-15)
+    assert result.max() == 1.0
+
+
+def test_space_to_dicts_should_give_smaller_integers_larger_shares_when_int_is_log():
+    """Given Int(1, 4, log=True), when a midpoint grid is decoded, then each integer occurs less often than
+    the one below it.
+
+    Oracle: Int docstring 'with `log=True` the shares are equal on a log scale, so small integers get larger
+    shares.'
+    """
+    space = Space({"v": Int(1, 4, log=True)})
+    size = 4 * GRID_POINTS_PER_VALUE
+    grid = ((np.arange(size) + 0.5) / size).reshape(-1, 1)
+
+    counts = Counter(p["v"] for p in space.to_dicts(grid))
+
+    assert counts[1] > counts[2] > counts[3] > counts[4] > 0
+
+
+@pytest.mark.parametrize(
+    ("low", "high", "log"),
+    [
+        pytest.param(-FLOAT_MAX, FLOAT_MAX, False, id="huge-float-bounds"),
+        pytest.param(0.0, math.inf, False, id="float-inf-high"),
+        pytest.param(1e-4, math.inf, True, id="log-float-inf-high"),
+        pytest.param(-math.inf, 0.0, False, id="float-inf-low"),
+    ],
+)
+def test_float_should_raise_value_error_when_a_bound_or_the_width_is_not_finite(low, high, log):
+    """Given huge or infinite bounds, when Float is declared, then ValueError is raised.
+
+    Oracle: README 'real numbers in [low, high]'; such a declaration would decode to inf or nan.
+    """
+    with pytest.raises(ValueError, match="finite"):
+        Float(low, high, log=log)
+
+
+@pytest.mark.parametrize(
+    ("low", "high"),
+    [
+        pytest.param(1.5, 3, id="non-integer-low"),
+        pytest.param(0, 2.5, id="non-integer-high"),
+        pytest.param(2**53 + 1, 2**53 + 1, id="bound-beyond-2-to-53"),
+        pytest.param(0, math.inf, id="infinite-high"),
+        pytest.param(0, "3", id="string-high"),
+    ],
+)
+def test_int_should_raise_value_error_when_a_bound_is_not_an_exact_integer(low, high):
+    """Given a non-integer, non-finite or too large bound, when Int is declared, then ValueError is raised.
+
+    Oracle: README 'integers low..high, inclusive' and Int(low: int, high: int); float64 represents every
+    integer only up to 2**53.
+    """
+    with pytest.raises(ValueError, match="integers"):
+        Int(low, high)
+
+
+def test_int_should_accept_integral_floats_and_bounds_up_to_2_to_53():
+    """Given integral float bounds and a bound of 2**53, when Int is declared and decoded, then the values
+    stay inside the bounds.
+
+    Oracle: README 'integers low..high, inclusive'.
+    """
+    space = Space({"a": Int(1.0, 3.0), "b": Int(2**53 - 2, 2**53)})
+
+    params = space.to_dicts(np.array([[0.0, 0.0], [1.0, 1.0]]))
+
+    assert params == [{"a": 1, "b": 2**53 - 2}, {"a": 3, "b": 2**53}]
+
+
+@pytest.mark.parametrize("mapping", [[Float(0.0, 1.0)], "ab", 5], ids=["list", "str", "int"])
+def test_space_should_raise_value_or_type_error_when_given_a_non_mapping(mapping):
+    """Given a value that is not a mapping, when Space is built, then ValueError or TypeError is raised.
+
+    Oracle: 'Invalid parameters raise ValueError/TypeError'. Site: Space.__init__ calls parameters.items()
+    without a type check and raises AttributeError.
+    """
+    with pytest.raises((ValueError, TypeError)):
+        Space(mapping)
+
+
+def test_onlooker_probabilities_should_give_exactly_one_when_the_only_fitness_comes_from_a_negative_score():
+    """Given fitness of the scores [-0.2], when onlooker_probabilities runs, then p is exactly 1.0.
+
+    Oracle: ABC.py line 127; hand calculation 0.9 * (1.2 / 1.2) + 0.1 = 1.0. Site: operation order in
+    operators.onlooker_probabilities gives 1.0000000000000002.
+    """
+    fit = fitness(np.array([-0.2]))
+
+    result = onlooker_probabilities(fit)
+
+    assert result.tolist() == [1.0]
