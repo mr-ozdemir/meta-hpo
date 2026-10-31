@@ -52,7 +52,7 @@ class Parameter:
         raise NotImplementedError
 
     def decode_one(self, u: float) -> float:
-        """`decode` for a single value in pure Python, for the one-coordinate moves of the optimizers."""
+        """`decode` for a single value, bit-identical to `decode`, for one-coordinate moves."""
         raise NotImplementedError
 
     def to_python(self, value: Any) -> Any:
@@ -80,8 +80,8 @@ class Float(Parameter):
 
     def decode_one(self, u: float) -> float:
         if self.log:
-            lo, hi = math.log(self.low), math.log(self.high)
-            return math.exp(lo + u * (hi - lo))
+            lo, hi = np.log(self.low), np.log(self.high)
+            return float(np.exp(lo + u * (hi - lo)))
         return self.low + u * (self.high - self.low)
 
     def to_python(self, value: Any) -> float:
@@ -111,8 +111,8 @@ class Int(Parameter):
 
     def decode_one(self, u: float) -> float:
         if self.log:
-            lo, hi = math.log(self.low - 0.5), math.log(self.high + 0.5)
-            value = float(round(math.exp(lo + u * (hi - lo))))
+            lo, hi = np.log(self.low - 0.5), np.log(self.high + 0.5)
+            value = float(np.rint(np.exp(lo + u * (hi - lo))))
         else:
             value = self.low + math.floor(u * (self.high - self.low + 1))
         return float(min(max(value, self.low), self.high))
