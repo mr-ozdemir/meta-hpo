@@ -152,14 +152,13 @@ def _generate_bytes(rng, n_cases, max_len):
 
 
 def _generate_choices(rng, max_len):
-    """A user list of 1..MAX_CHOICES generated str and bytes choices (duplicates allowed) plus the edge
-    values."""
+    """A user list of 1..MAX_CHOICES generated str and bytes choices plus the edge values, with repeats
+    dropped in order, because Categorical rejects duplicate choices."""
     k = int(rng.integers(1, MAX_CHOICES + 1))
     mixed = _generate_strings(rng, k, max_len) + _generate_bytes(rng, k, max_len)
     picked = [mixed[i] for i in rng.integers(0, len(mixed), size=k)]
-    return (
-        picked + list(EDGE_STRINGS[: int(rng.integers(0, 3))]) + list(EDGE_BYTES[: int(rng.integers(0, 3))])
-    )
+    edges = list(EDGE_STRINGS[: int(rng.integers(0, 3))]) + list(EDGE_BYTES[: int(rng.integers(0, 3))])
+    return list(dict.fromkeys(picked + edges))
 
 
 def _length_ends(values, max_len):
@@ -506,7 +505,7 @@ def test_optimize_should_hand_the_users_choice_objects_in_key_order_when_choices
     n_cases, max_len
 ):
     """Given spaces with str names '', NUL, newline, quotes, backslash and generated names, whose Categorical
-    choices are generated str and non-UTF-8 bytes (duplicates included), when optimize runs with max_evals
+    choices are generated str and non-UTF-8 bytes (distinct), when optimize runs with max_evals
     in 1..30, then nothing raises, the budget is exact, every trial's params and best_params are keyed by the
     declared names in order with the user's own choice objects, and the space is left unchanged.
 

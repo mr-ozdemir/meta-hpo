@@ -6,6 +6,18 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `ABCOptimizer` accepts a neighbour when its raw score is strictly lower; comparing the fitness
+  1 / (1 + f) rejected tiny improvements, such as 0 against 1e-18.
+- `tell()` accepts only candidates the optimizer handed out, checks the whole batch (pending candidates,
+  no repeats, scores that convert with `float()`) before applying it, and keeps its own copy of the
+  handed-out params.
+- `optimize()` withdraws the candidates that `max_evals` cuts off with the new `Optimizer.cancel()`, so a
+  passed optimizer stays usable, and hands the objective a copy of the params.
+- `Categorical` rejects duplicate choices, which made the cache evaluate the same value twice.
+- The release workflow runs lint, type checks and tests before building.
+
 ## [0.2.0] - 2026-10-31
 
 ### Changed

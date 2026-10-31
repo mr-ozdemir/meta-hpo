@@ -120,23 +120,22 @@ def test_abc_ask_should_hand_out_half_the_colony_rounded_down_when_colony_size_i
 @pytest.mark.parametrize(
     ("deciding_score", "expected_trial"),
     [
-        pytest.param(SOURCE_SCORE, [2, 1], id="equal-score-equal-fitness-keeps-source"),
-        pytest.param(
-            math.nextafter(SOURCE_SCORE, 0.0), [2, 1], id="one-ulp-better-score-rounds-to-equal-fitness"
-        ),
-        pytest.param(SOURCE_SCORE - 2.0**-20, [0, 1], id="strictly-greater-fitness-replaces-source"),
+        pytest.param(SOURCE_SCORE, [2, 1], id="equal-score-keeps-source"),
+        pytest.param(math.nextafter(SOURCE_SCORE, 0.0), [0, 1], id="one-ulp-better-score-replaces-source"),
+        pytest.param(SOURCE_SCORE - 2.0**-20, [0, 1], id="clearly-better-score-replaces-source"),
     ],
 )
-def test_abc_tell_should_replace_a_source_only_when_the_candidate_fitness_is_strictly_greater(
+def test_abc_tell_should_replace_a_source_only_when_the_candidate_score_is_strictly_lower(
     deciding_score, expected_trial
 ):
     """Given source 0 with one failure and its onlooker candidate, when the candidate is told a score near the
-    source's, then only strictly greater fitness resets trial[0].
+    source's, then only a strictly lower score resets trial[0].
 
-    Oracle: task specification 'greedy acceptance on fitness (strictly greater replaces, else trial += 1)',
-    original ABC.py 'if fitness_sol > self.fitness[i]', fitness docstring 1 / (1 + f). Hand calculation:
-    equal score gives equal fitness; 1 + (0.5 - 2**-54) rounds to 1.5 in binary64, so the one-ulp-better
-    score also has equal fitness (implicit boundary, P-T1-42); 0.5 - 2**-20 gives a larger fitness. trial[0]
+    Oracle: abc.py module docstring 'a neighbour replaces its food source when its score is strictly lower'
+    (a deliberate deviation from the original ABC.py, which compares fitness). Hand calculation: the equal
+    score is not lower; 1 + (0.5 - 2**-54) rounds to 1.5 in binary64, so the one-ulp-better score has the
+    same fitness as the source but is still strictly lower (implicit boundary, P-T1-42), which tells a
+    comparison on raw scores apart from one on fitness; 0.5 - 2**-20 is clearly lower. trial[0]
     is 1 before the tell, so 'replaced' (0) and 'kept' (2) differ from 'nothing happened' (1). Arrange: both
     sources scored 0.5, both employed told 0.75 (worse), so the onlooker probabilities are equal and the
     next ask is the onlooker of source 0. Postcondition: trial[1] is untouched.
@@ -208,24 +207,22 @@ def _employed_of_source_0_after_its_onlooker_is_told(seed, deciding_score):
 @pytest.mark.parametrize(
     ("deciding_score", "expected_source"),
     [
-        pytest.param(SOURCE_SCORE, "initial", id="equal-fitness-keeps-the-source-point"),
+        pytest.param(SOURCE_SCORE, "initial", id="equal-score-keeps-the-source-point"),
         pytest.param(
-            math.nextafter(SOURCE_SCORE, 0.0), "initial", id="one-ulp-better-score-keeps-the-source-point"
+            math.nextafter(SOURCE_SCORE, 0.0), "onlooker", id="one-ulp-better-score-moves-the-source-point"
         ),
-        pytest.param(
-            SOURCE_SCORE - 2.0**-20, "onlooker", id="strictly-greater-fitness-moves-the-source-point"
-        ),
+        pytest.param(SOURCE_SCORE - 2.0**-20, "onlooker", id="clearly-better-score-moves-the-source-point"),
     ],
 )
-def test_abc_tell_should_move_the_source_to_the_candidate_only_when_the_candidate_fitness_is_strictly_greater(
+def test_abc_tell_should_move_the_source_to_the_candidate_only_when_the_candidate_score_is_strictly_lower(
     seed, deciding_score, expected_source
 ):
     """Given onlooker 0 told a score at the greedy boundary, when the employed bee of source 0 is asked next
-    cycle, then it neighbours `expected_source`: the onlooker candidate for strictly greater fitness, initial
+    cycle, then it neighbours `expected_source`: the onlooker candidate for a strictly lower score, initial
     source 0 otherwise.
 
-    Oracle: task specification 'greedy acceptance on fitness (strictly greater replaces)', original ABC.py
-    'self.foods[i][:] = np.copy(solution)' inside 'if fitness_sol > self.fitness[i]', and Karaboga & Basturk
+    Oracle: abc.py module docstring 'a neighbour replaces its food source when its score is strictly lower',
+    original ABC.py 'self.foods[i][:] = np.copy(solution)' inside the greedy branch, and Karaboga & Basturk
     (2007): a neighbour differs from its source in one coordinate. So the next candidate of source 0 differs
     in at most one coordinate from the source point, named by the expected_source column: 'onlooker' when it
     replaced the source, 'initial' when it did not. Hand calculation of the deciding scores as in the trial

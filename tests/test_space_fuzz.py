@@ -133,14 +133,13 @@ def _generate_bytes(rng, n_cases, max_len):
 
 
 def _generate_choices(rng, max_len):
-    """A user list of 1..MAX_CHOICES generated str and bytes choices (duplicates allowed) plus the edge
-    values."""
+    """A user list of 1..MAX_CHOICES generated str and bytes choices plus the edge values, with repeats
+    dropped in order, because Categorical rejects duplicate choices."""
     k = int(rng.integers(1, MAX_CHOICES + 1))
     mixed = _generate_strings(rng, k, max_len) + _generate_bytes(rng, k, max_len)
     picked = [mixed[i] for i in rng.integers(0, len(mixed), size=k)]
-    return (
-        picked + list(EDGE_STRINGS[: int(rng.integers(0, 3))]) + list(EDGE_BYTES[: int(rng.integers(0, 3))])
-    )
+    edges = list(EDGE_STRINGS[: int(rng.integers(0, 3))]) + list(EDGE_BYTES[: int(rng.integers(0, 3))])
+    return list(dict.fromkeys(picked + edges))
 
 
 def _boundary_rows(u):
@@ -524,14 +523,14 @@ def test_space_should_return_the_users_choice_objects_in_key_order_when_names_an
     n_cases, max_len
 ):
     """Given spaces whose str names include '', NUL, newline, quotes and backslash and whose Categorical
-    choices are generated str and non-UTF-8 bytes (duplicates and single choices included), when every
+    choices are generated str and non-UTF-8 bytes (single choices included), when every
     Categorical and the Space are built and rows, to_dicts and decode run, then every value is the user's
     own choice object at the decoded index of the list as it was declared, copied before Categorical was
     built.
 
     Oracle: README 'one of choices', Space.decode (categories as indices), Space.rows (params dicts keyed by
     the declared names) and the Categorical equal-share docstring (u = 0 gives index 0, u = TOP the last
-    index). Identity is checked by index into the user's list, so duplicate choices are safe. Duplicate
+    index). Identity is checked by index into the user's list. Duplicate
     generated names collapse in the dict, so the expected names are tuple(user_lists).
     """
     rng = np.random.default_rng([n_cases, max_len, SALT_STRING_SPACES])
