@@ -47,7 +47,7 @@ categorical mapping, Python types, rows keys, Space.move), test_abc.py (exact bu
 population, cache=True, direction) and test_facade.py (cache=False calls the function for every trial).
 
 Unspecified, therefore not asserted:
-- bit-exact agreement of move and rows for log-scaled Float columns (math.log/exp against numpy); compared
+- bit-exact agreement of move and rows for log-scaled Float columns (one-value against array decode); compared
   with relative tolerance LOG_REL_TOL, every other column exactly;
 - equal share for log-scaled Int; only its endpoints are checked;
 - whether u = k/n maps to bucket k for large n (it does not for some n >= 22); buckets use n <= 5;
