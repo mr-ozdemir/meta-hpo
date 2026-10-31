@@ -22,8 +22,8 @@ FloatArray = NDArray[np.float64]
 def _decode_float(u: FloatArray, low: Any, high: Any, log: bool) -> FloatArray:
     if log:
         lo, hi = np.log(low), np.log(high)
-        return np.asarray(np.exp(lo + u * (hi - lo)), dtype=np.float64)
-    return np.asarray(low + u * (high - low), dtype=np.float64)
+        return np.asarray(np.clip(np.exp(lo + u * (hi - lo)), low, high), dtype=np.float64)
+    return np.asarray(np.clip(low + u * (high - low), low, high), dtype=np.float64)
 
 
 def _decode_int(u: FloatArray, low: Any, high: Any, log: bool) -> FloatArray:
@@ -37,6 +37,14 @@ def _decode_int(u: FloatArray, low: Any, high: Any, log: bool) -> FloatArray:
 
 def _decode_categorical(u: FloatArray, n: Any) -> FloatArray:
     return np.asarray(np.minimum(np.floor(u * n), np.asarray(n) - 1), dtype=np.float64)
+
+
+def _exact_integer(value: Any) -> bool:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return number.is_integer() and abs(number) <= 2**53 and number == value
 
 
 class Parameter:
@@ -68,6 +76,8 @@ class Float(Parameter):
     def __post_init__(self) -> None:
         if not self.low < self.high:
             raise ValueError(f"Float needs low < high, got {self.low} and {self.high}")
+        if not math.isfinite(self.high - self.low):
+            raise ValueError(f"Float needs finite bounds with a finite width, got {self.low} and {self.high}")
         if self.log and self.low <= 0:
             raise ValueError("a log-scaled Float needs low > 0")
 
@@ -81,8 +91,10 @@ class Float(Parameter):
     def decode_one(self, u: float) -> float:
         if self.log:
             lo, hi = np.log(self.low), np.log(self.high)
-            return float(np.exp(lo + u * (hi - lo)))
-        return self.low + u * (self.high - self.low)
+            value = float(np.exp(lo + u * (hi - lo)))
+        else:
+            value = self.low + u * (self.high - self.low)
+        return min(max(value, self.low), self.high)
 
     def to_python(self, value: Any) -> float:
         return float(value)
@@ -90,13 +102,20 @@ class Float(Parameter):
 
 @dataclass(frozen=True)
 class Int(Parameter):
-    """Integers low..high inclusive; every integer gets an equal share of the unit interval."""
+    """Integers low..high inclusive.
+
+    With `log=False` every integer gets an equal share of the unit interval; with `log=True` the shares
+    are equal on a log scale, so small integers get larger shares.
+    """
 
     low: int
     high: int
     log: bool = False
 
     def __post_init__(self) -> None:
+        for bound in (self.low, self.high):
+            if not _exact_integer(bound):
+                raise ValueError(f"Int bounds must be integers with magnitude at most 2**53, got {bound!r}")
         if not self.low <= self.high:
             raise ValueError(f"Int needs low <= high, got {self.low} and {self.high}")
         if self.log and self.low <= 0:
@@ -151,6 +170,10 @@ class Space:
     """An ordered set of named parameters; dimension d = number of parameters."""
 
     def __init__(self, parameters: Mapping[str, Parameter]) -> None:
+        if not isinstance(parameters, Mapping):
+            raise TypeError(
+                f"a Space needs a mapping of names to parameters, got {type(parameters).__name__}"
+            )
         if not parameters:
             raise ValueError("a Space needs at least one parameter")
         for name, p in parameters.items():

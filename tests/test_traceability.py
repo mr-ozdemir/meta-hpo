@@ -150,8 +150,7 @@ REQUIREMENTS = {
     "R-SPACE-INT-INCLUSIVE": {
         "source": [
             "README.md | integers `low..high`, inclusive",
-            "metahpo.space.Int | Integers low..high inclusive; every integer gets an equal share of the "
-            "unit interval.",
+            "metahpo.space.Int | With `log=False` every integer gets an equal share of the unit interval;",
         ],
         "tests": [
             "test_space::test_int_gives_every_value_an_equal_share",

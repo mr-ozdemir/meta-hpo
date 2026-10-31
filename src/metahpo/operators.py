@@ -35,4 +35,4 @@ def onlooker_probabilities(fit: FloatArray) -> FloatArray:
     top = float(np.max(fit))
     if top <= 0.0:
         return np.ones_like(fit)
-    return 0.9 * fit / top + 0.1
+    return 0.9 * (fit / top) + 0.1
