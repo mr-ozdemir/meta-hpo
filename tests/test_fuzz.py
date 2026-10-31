@@ -76,6 +76,7 @@ N_MAX = 5
 MAX_EVALS_MAX = 40
 MUTANT_MAX_EVALS = 20
 SMALL_BUDGET = 20
+DEFAULT_INITIAL_BATCH = 10 // 2
 README_SEED = 1
 ANY_SEED = 0
 IRRELEVANT_SCORE = 0.0
@@ -1439,14 +1440,15 @@ def test_optimize_should_call_the_objective_once_when_the_only_parameter_has_one
     """Given a Space whose only parameter has one choice (item 1), when optimize runs, then n_calls is 1.
 
     Every candidate decodes to the same parameter set, so with cache=True all trials after the first reuse its
-    score. Oracle: README Behaviour (cache reuses a repeated parameter set), Study.n_calls docstring and the
-    exact max_evals rule.
+    score, and the run stops after the initial batch of colony_size // 2 = 5 because the space is exhausted.
+    Oracle: README Behaviour (cache reuses a repeated parameter set), Study.n_calls docstring and the optimize
+    docstring (the search stops early once every parameter set of a space without Float has been evaluated).
     """
     space = Space({"k": Categorical(["only"])})
 
     study = optimize(_dummy_objective, space, max_evals=SMALL_BUDGET, seed=ANY_SEED)
 
-    assert (len(study.trials), study.n_calls) == (SMALL_BUDGET, 1)
+    assert (len(study.trials), study.n_calls) == (DEFAULT_INITIAL_BATCH, 1)
 
 
 @pytest.mark.parametrize(

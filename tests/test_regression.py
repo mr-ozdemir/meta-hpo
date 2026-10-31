@@ -740,7 +740,7 @@ def test_optimize_should_call_the_objective_once_per_trial_when_the_budget_equal
     """Given max_evals equal to the initial batch (5 for the default colony of 10), when optimize runs with
     the default cache, then the objective is called 5 times, 5 trials numbered 0..4 exist and n_calls is 5.
 
-    Oracle: optimize docstring (max_evals counts the optimizer's evaluations), Study.n_calls docstring
+    Oracle: optimize docstring (max_evals counts the calls of function), Study.n_calls docstring
     (calls of the user's function) and the task specification (exactly max_evals trials). The boundary
     max_evals == batch size is where counting each initial evaluation twice would stop after 2 or 3 calls.
     The objective is continuous, so the cache never hits. Guards the recorded defect site ABC.py:45 with :86

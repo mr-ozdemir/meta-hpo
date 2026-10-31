@@ -13,8 +13,10 @@ score tell them apart.
 All assertions are seed-independent invariants (best equals the extreme of the evaluated scores; 'max' of f
 equals 'min' of -f step by step). ANY_SEED = 0 only makes the run reproducible.
 
-Unspecified, therefore not asserted: whether a run of MAX_EVALS evaluations reaches x = 4 (for some seeds it
-stops at 3 or 2), and how many trials land on each value for a given seed.
+The space has 5 parameter sets, far fewer than MAX_EVALS, so every run evaluates each value once and then
+stops because the space is exhausted (optimize docstring); x = 4 is therefore always reached.
+
+Unspecified, therefore not asserted: how many cached trials a run holds for a given seed.
 
 Input space: Every objective, space, direction, budget, optimizer, seed and cache flag of optimize(), which is
 unbounded.
@@ -66,10 +68,10 @@ def test_optimize_should_report_the_largest_evaluated_score_as_study_best_when_d
     because the score is x, the best parameters are {'x': best score}. The precondition that the run saw
     different scores makes the input decisive: Study.best_trial always using min would then give a smaller
     value. Site: Study.best_trial direction switch. Postcondition: none; reading the best is a query (the
-    MAX_EVALS trial count is asserted as a precondition before it).
+    call count of the exhausted space, one per value 0..4, is asserted as a precondition before it).
     """
     _, study = max_run
-    assert len(study.trials) == MAX_EVALS
+    assert study.n_calls == HIGHEST_X - LOWEST_X + 1
     assert np.min(study.scores) < np.max(study.scores)
 
     best = (study.best_score, study.best_params)

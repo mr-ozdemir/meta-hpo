@@ -16,7 +16,7 @@ infinity.
 
 Seeds and budgets: README_SEED = 1, README_MAX_EVALS = 300 and the ask/tell configuration are the README
 values. BEST_NOT_LAST_MAX_EVALS = 150 is the one non-README budget of the Quick start: with 300 evaluations
-the last (cached) trial repeats the best params, which would hide a best_params that returns the last
+the last trial can lie next to the best params, which would hide a best_params that returns the last
 trial; the test using 150 asserts as a precondition that the last trial does not hold the extreme score.
 No assertion compares with a value captured from a seeded run; every check is a property that a correct
 library satisfies for any seed (counts, types, ranges, best equals the extreme of the finite scores,
@@ -115,6 +115,11 @@ def stub_objective(params):
     return 0.9 - lr_term - units_term - dropout_term + KERNEL_BONUS[params["kernel"]]
 
 
+def stub_kernel_objective(params):
+    """Stub train() on the kernel space: 0.9 plus the kernel bonus, a distinct score for each kernel."""
+    return 0.9 + KERNEL_BONUS[params["kernel"]]
+
+
 def stub_discrete_objective(params):
     """Stub train() on the pigeonhole space: a distinct finite score for each of the 8 combinations."""
     return params["units"] + CHOICE_BONUS[params["activation"]]
@@ -165,6 +170,19 @@ def _run_quick_start(objective, direction="max", cache=True):
     space = _quick_start_space()
     return mh.optimize(
         objective, space, direction=direction, max_evals=README_MAX_EVALS, seed=README_SEED, cache=cache
+    )
+
+
+def _kernel_space():
+    """The Quick start kernel parameter alone: 3 parameter sets, fewer than the 5 of the default initial
+    batch (colony_size // 2)."""
+    return mh.Space({"kernel": mh.Categorical([3, 5, 7])})
+
+
+def _run_kernel_only(objective, cache=True):
+    """The README Quick start call on the kernel space, with the given stub in place of train."""
+    return mh.optimize(
+        objective, _kernel_space(), direction="max", max_evals=README_MAX_EVALS, seed=README_SEED, cache=cache
     )
 
 
@@ -280,7 +298,7 @@ def test_optimize_should_return_a_study_with_exactly_max_evals_numbered_trials_w
     """Given the README Quick start (max_evals=300, seed=1) with a stub train, when optimize() runs, then it
     returns a Study holding 300 Trials numbered 0..299 in order.
 
-    Oracle: README Quick start, the optimize docstring (max_evals counts the optimizer's evaluations) and
+    Oracle: README Quick start, the optimize docstring (max_evals counts the calls of function) and
     the CHANGELOG ('returning a Study with every trial'). 300 is decisive because the ABC initial batch has
     colony_size // 2 = 5 candidates, so a facade counting ask() rounds instead of trials would overshoot.
     """
@@ -512,15 +530,16 @@ def test_ask_tell_should_hand_out_candidates_with_the_space_keys_python_types_an
 
 
 def test_optimize_should_reuse_the_earlier_score_for_a_repeated_parameter_set_when_cache_is_default():
-    """Given the Quick start search with the default cache, when a parameter set repeats (a neighbour move
-    that leaves an Int or Categorical value unchanged), then the repeated trial is cached and carries the
-    score of the earliest real trial with equal params.
+    """Given the Quick start kernel choices alone with the default cache, when a parameter set repeats,
+    then the repeated trial is cached and carries the score of the earliest real trial with equal params.
 
     Oracle: README Behaviour ('a repeated parameter set reuses its earlier score instead of training
-    again') and the optimize docstring. The precondition shows the seeded run produced cached trials; the
-    stub never returns NaN, so score equality is meaningful.
+    again') and the optimize docstring. Decisive input: the default initial batch hands out 5 candidates
+    over 3 parameter sets, so by the pigeonhole principle a repeat occurs for any seed; the precondition
+    asserts it. A Float space would not do: the optimizer hands out a repeat only when it finds no new
+    parameter set (Optimizer docstring). The stub never returns NaN, so score equality is meaningful.
     """
-    study = _run_quick_start(stub_objective)
+    study = _run_kernel_only(stub_kernel_objective)
     assert any(t.cached for t in study.trials)
 
     wrong = _cached_trials_with_a_different_score(study)
@@ -529,34 +548,36 @@ def test_optimize_should_reuse_the_earlier_score_for_a_repeated_parameter_set_wh
 
 
 def test_optimize_should_never_call_train_twice_with_equal_params_when_cache_is_default():
-    """Given the Quick start search with the default cache and a spy train, when the search revisits
-    parameter sets, then train is called once per distinct parameter set and Study.n_calls equals the real
-    number of calls, which is below the number of trials.
+    """Given the Quick start search with the default cache and a spy train, when it runs, then train is
+    called exactly max_evals = 300 times, each time with a new parameter set, and Study.n_calls equals the
+    real number of calls.
 
-    Oracle: CHANGELOG ('a configuration is never trained twice'), README Behaviour and the Study.n_calls
-    docstring ('cached repeats are not counted'). The precondition shows the trials did repeat parameter
-    sets, so the check is not vacuous.
+    Oracle: CHANGELOG ('a configuration is never trained twice'), README Behaviour (a repeat does not count
+    against max_evals), the optimize docstring ('max_evals counts the calls of function') and the
+    Study.n_calls docstring ('cached repeats are not counted'). The Quick start space has two Floats, so it
+    is never exhausted and the whole budget is spent on calls.
     """
     spy_objective, calls = _spy(stub_objective)
 
     study = _run_quick_start(spy_objective)
-    assert _distinct([t.params for t in study.trials]) < len(study.trials)
 
     assert _distinct(calls) == len(calls)
     assert study.n_calls == len(calls)
-    assert len(calls) < len(study.trials)
+    assert len(calls) == README_MAX_EVALS
 
 
 def test_optimize_should_train_each_combination_at_most_once_when_cache_is_default_on_a_small_space():
     """Given a discrete Space Int(0, 3) x Categorical(['x', 'y']) with 8 combinations, a spy train and
     max_evals = 50, when optimize() runs with the default cache, then train is called with pairwise
-    different params, at most 8 times, Study.n_calls equals the real calls, and every cached trial carries
-    the score of the earliest real trial with equal params.
+    different params, once for each of the 8 combinations, the run stops with fewer than 50 trials,
+    Study.n_calls equals the real calls, and every cached trial carries the score of the earliest real
+    trial with equal params.
 
     Oracle: CHANGELOG ('a configuration is never trained twice'), README Behaviour (a repeated parameter
-    set reuses its earlier score) and the Study.n_calls docstring. Decisive input: 50 trials over 8
-    combinations force repeats by the pigeonhole principle for any seed, so no seeded precondition is
-    needed; the 8 < 50 relation is asserted first. The stub never returns NaN, so score equality is
+    set reuses its earlier score), the optimize docstring (the search stops early when every parameter set
+    of a space without Float has been evaluated) and the Study.n_calls docstring. Decisive input: a budget
+    of 50 calls could train every combination several times, so only the cache and the early stop keep the
+    calls at 8; the 8 < 50 relation is asserted first. The stub never returns NaN, so score equality is
     meaningful.
     """
     combinations = (PIGEONHOLE_INT_HIGH - PIGEONHOLE_INT_LOW + 1) * len(PIGEONHOLE_CHOICES)
@@ -565,24 +586,25 @@ def test_optimize_should_train_each_combination_at_most_once_when_cache_is_defau
 
     study = mh.optimize(spy_objective, _pigeonhole_space(), max_evals=PIGEONHOLE_MAX_EVALS, seed=README_SEED)
 
-    assert len(study.trials) == PIGEONHOLE_MAX_EVALS
+    assert len(study.trials) < PIGEONHOLE_MAX_EVALS
     assert study.n_calls == len(calls)
-    assert len(calls) <= combinations
+    assert len(calls) == combinations
     assert _distinct(calls) == len(calls)
     assert _cached_trials_with_a_different_score(study) == []
 
 
 def test_optimize_should_call_train_for_every_trial_when_cache_is_false():
-    """Given the Quick start search with cache=False and a spy train, when the search revisits parameter
-    sets, then train is called for every one of the 300 trials and no trial is marked cached.
+    """Given the Quick start kernel choices alone with cache=False and a spy train, when the search revisits
+    parameter sets, then train is called for every one of the 300 trials and no trial is marked cached.
 
     Oracle: README Behaviour (the reuse happens 'with cache=True'), the optimize docstring and the
-    Study.n_calls docstring. Pair of the default-cache test above; the precondition shows parameter sets
-    did repeat, so a cache that ignored the flag would be caught.
+    Study.n_calls docstring. Pair of the default-cache kernel test above: without the cache every repeat is
+    trained again, so 3 parameter sets do not end the run early. The precondition shows parameter sets did
+    repeat, so a cache that ignored the flag would be caught.
     """
-    spy_objective, calls = _spy(stub_objective)
+    spy_objective, calls = _spy(stub_kernel_objective)
 
-    study = _run_quick_start(spy_objective, cache=False)
+    study = _run_kernel_only(spy_objective, cache=False)
     assert _distinct([t.params for t in study.trials]) < len(study.trials)
 
     assert len(calls) == README_MAX_EVALS

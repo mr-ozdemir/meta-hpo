@@ -89,7 +89,7 @@ ACT_PENALTY = {"relu": 0.0, "tanh": 0.3, "gelu": 0.6}
 
 
 def _mixed_space():
-    """A fresh Space with one parameter of each decode kind; the small Int and Categorical make cache hits."""
+    """A fresh Space with one parameter of each decode kind; the small Int and Categorical make repeats."""
     return Space(
         {
             "lr": Float(1e-4, 1e-1, log=True),
@@ -126,12 +126,13 @@ def _candidate_records(candidates):
 
 
 def _repeat_optimize(times, direction, seed):
-    """Trial records of `times` optimize() runs, each with a fresh mixed Space and the same seed."""
+    """Trial records of `times` optimize() runs, each with a fresh mixed Space and a fresh ABCOptimizer with
+    the same seed and max_tries=1, so a neighbour that repeats a parameter set is handed out as it is."""
     runs = []
     for _ in range(times):
-        study = optimize(
-            stub_objective, _mixed_space(), direction=direction, max_evals=EQUALITY_EVALS, seed=seed
-        )
+        space = _mixed_space()
+        opt = ABCOptimizer(space, direction=direction, seed=seed, max_tries=1)
+        study = optimize(stub_objective, space, direction=direction, max_evals=EQUALITY_EVALS, optimizer=opt)
         runs.append(_trial_records(study))
     return runs
 
@@ -298,14 +299,15 @@ class TestSameSeed:
     def test_optimize_should_return_identical_trials_when_run_repeatedly_with_the_same_seed(
         self, seed, direction
     ):
-        """Given the mixed space and the stub objective, when optimize() runs 3 times with 200 evaluations and
-        the same seed, then the second and third runs equal the first in number, params, score, cached and x
-        of every trial.
+        """Given the mixed space, the stub objective and an ABCOptimizer with max_tries=1, when optimize()
+        runs 3 times with 200 evaluations and the same seed, then the second and third runs equal the first
+        in number, params, score, cached and x of every trial.
 
         Oracle: README 'The same seed reproduces the same search' and the cache sentence. Both directions are
         separate classes ('max' negates scores inside); three runs instead of two catch drift that builds up
         across calls (P-T1-34). The run must hold cached trials, so the cached field is compared on real data:
-        Int(1, 4) and a 3-way Categorical make neighbours that keep the decoded parameters frequent.
+        an optimizer hands out a repeat only when `max_tries` attempts find no new parameter set (Optimizer
+        docstring), and with max_tries=1 Int(1, 4) and a 3-way Categorical make such repeats frequent.
         """
         runs = _repeat_optimize(REPEATS, direction, seed)
 

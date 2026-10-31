@@ -96,7 +96,7 @@ def test_optimize_should_run_exactly_max_evals_trials_around_the_initial_batch(m
     study holds exactly max_evals trials.
 
     Oracle: computed spec 'exact max_evals trials (even inside the initial batch)' and the optimize docstring
-    '`max_evals` counts the optimizer's evaluations'. Boundaries: 1 the minimum, 4 inside the batch, 5 exactly
+    '`max_evals` counts the calls of `function`'. Boundaries: 1 the minimum, 4 inside the batch, 5 exactly
     the batch, 6 the first employed bee, 37 inside a later cycle; test_abc.py covers only 3.
     """
     space = _mixed_space()

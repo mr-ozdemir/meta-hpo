@@ -804,6 +804,12 @@ def _max_evals(budget, colony):
     return {"one": 1, "inside_init": max(1, colony // 2 - 1), "fifty": 50}[budget]
 
 
+def _expected_calls(space, max_evals, cache):
+    """Calls of one run: the budget, capped by Space.size when the cache ends the run on an exhausted
+    space."""
+    return min(max_evals, space.size) if cache else max_evals
+
+
 def _space_of(kind):
     """A fresh two-parameter Space of one Kind; float_log uses the README quick-start bounds."""
     spaces = {
@@ -913,14 +919,17 @@ def test_covering_array_checker_should_report_a_missing_pair_when_the_last_row_i
 
 
 @pytest.mark.parametrize(ROW_NAMES, ALL_ROWS)
-def test_optimize_should_record_exactly_max_evals_numbered_trials_for_a_covering_array_row(
+def test_optimize_should_number_its_trials_and_spend_the_budget_on_calls_for_a_covering_array_row(
     kind, direction, cache, colony, budget, seed
 ):
-    """Given one configuration row, when optimize runs with an ABCOptimizer of that colony, then the study has
-    exactly max_evals trials numbered 0..max_evals-1.
+    """Given one configuration row, when optimize runs with an ABCOptimizer of that colony, then the trials
+    are numbered 0, 1, 2, ... in order and the function is called max_evals times, or once per parameter set
+    when a cached run exhausts a smaller discrete space.
 
-    Oracle: optimize docstring (max_evals counts the evaluations) and the task statement (exactly max_evals
-    trials, even inside the initial batch). Budget one and inside_init stop inside the initial batch.
+    Oracle: optimize docstring (max_evals counts the calls of function; a cached repeat does not use up the
+    budget; the search stops once every parameter set of a space without Float has been evaluated; without
+    the cache a repeat is a call again) and the task statement (the budget holds even inside the initial
+    batch). Budget one and inside_init stop inside the initial batch.
     """
     space = _space_of(kind)
     max_evals = _max_evals(budget, colony)
@@ -930,7 +939,8 @@ def test_optimize_should_record_exactly_max_evals_numbered_trials_for_a_covering
         _spy_objective([], space), space, direction, max_evals=max_evals, optimizer=opt, cache=cache
     )
 
-    assert [t.number for t in study.trials] == list(range(max_evals))
+    assert [t.number for t in study.trials] == list(range(len(study.trials)))
+    assert study.n_calls == _expected_calls(space, max_evals, cache)
 
 
 @pytest.mark.parametrize(ROW_NAMES, CACHED_ROWS)

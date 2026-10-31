@@ -23,8 +23,9 @@ Harness (P-T7-14, P-T7-15, P-T7-18): one generic _run_case(target, *args) calls 
 _fuzz records (id, input, outcome) per case and only after the loop turns each failing case into a line
 'Test #<id> IN=<repr> OUT=<ok|Type: msg>'.
 
-Oracles: optimize docstring (function receives a dict of parameter values; max_evals counts evaluations; with
-cache=True a repeated parameter set reuses the earlier score; the default optimizer is ABCOptimizer), README
+Oracles: optimize docstring (function receives a dict of parameter values; max_evals counts the calls of
+function; with cache=True a repeated parameter set reuses the earlier score and does not use up the budget;
+the search stops early once the space is exhausted; the default optimizer is ABCOptimizer), README
 Behaviour (NaN or infinity is the worst value; cache reuse; the same seed reproduces the same search),
 Candidate docstring (params as the user's function receives them for the point x, i.e. to_dicts(x)),
 Trial.failed docstring (NaN or infinite), Study.n_calls docstring (cached repeats not counted),
@@ -344,7 +345,9 @@ def _quadratic_problems(case, value):
     """Violations of budget, numbering, params of x, best as extreme score, n_calls and cache in one run."""
     space, calls, direction, max_evals, _, study = value
     numbers = [t.number for t in study.trials]
-    problems = [] if numbers == list(range(max_evals)) else [f"numbers {numbers}"]
+    problems = [] if numbers == list(range(len(study.trials))) else [f"numbers {numbers}"]
+    if study.n_calls != _expected_calls(space, max_evals):
+        problems.append(f"n_calls {study.n_calls} for max_evals {max_evals}, size {space.size}")
     problems += [f"trial {t.number} params" for t in study.trials if not _matches_point(space, t.params, t.x)]
     pick = np.min if direction == "min" else np.max
     if study.best_score != pick(study.scores):
@@ -367,6 +370,11 @@ def _optimizer_classes(cases):
     """Which optimizer classes the generated quadratic cases use: 'default' (None) and 'explicit'."""
     built = [_quadratic_case(case_seed, max_dim) for case_seed, max_dim in cases]
     return {"default" if optimizer is None else "explicit" for *_, optimizer, _, _ in built}
+
+
+def _expected_calls(space, max_evals):
+    """Calls of a cached run: the budget, or every parameter set when the space has fewer than that."""
+    return min(max_evals, space.size)
 
 
 def _truncation_seen(cases):
@@ -414,8 +422,8 @@ def _best_problems(study, direction):
 
 def _extreme_problems(case, study):
     """Violations of the budget, of Trial.failed and of the best_trial branches."""
-    _, direction, max_evals, *_ = case
-    problems = [] if len(study.trials) == max_evals else [f"{len(study.trials)} trials"]
+    space, direction, max_evals, *_ = case
+    problems = [] if study.n_calls == _expected_calls(space, max_evals) else [f"{study.n_calls} calls"]
     problems += [
         f"trial {t.number} failed flag" for t in study.trials if t.failed != (not math.isfinite(t.score))
     ]
@@ -519,12 +527,14 @@ def test_optimize_should_hand_the_users_choice_objects_in_key_order_when_choices
 def test_optimize_should_keep_budget_numbering_and_cache_on_generated_quadratics(n_cases, max_dim):
     """Given random valid spaces with seeded quadratic objectives, a random direction, max_evals in 1..40 and
     either the default optimizer or ABCOptimizer with colony_size in 4..20 and limit in 1..19, when optimize
-    runs once, then trials are numbered 0..max_evals - 1, each trial's params are to_dicts(x), best_score is
-    the direction's extreme score, n_calls equals the real calls and the number of distinct parameter sets,
-    and cached trials repeat their first score.
+    runs once, then trials are numbered 0, 1, 2, ... in order, n_calls is max_evals or Space.size when that
+    is smaller, each trial's params are to_dicts(x), best_score is the direction's extreme score, n_calls
+    equals the real calls and the number of distinct parameter sets, and cached trials repeat their first
+    score.
 
-    Oracle: optimize docstring (max_evals counts evaluations, cache reuse), Candidate docstring, Study.n_calls
-    and Study.best_trial. These are seed-independent properties of one study. Some case must have max_evals
+    Oracle: optimize docstring (max_evals counts the calls of function, cache reuse, early stop once every
+    parameter set of a space without Float has been evaluated), Candidate docstring, Study.n_calls and
+    Study.best_trial. These are seed-independent properties of one study. Some case must have max_evals
     below its initial batch, the class that truncates the batch.
     """
     cases = _quadratic_seeds(n_cases, max_dim)
@@ -561,9 +571,9 @@ def test_optimize_should_report_the_finite_best_or_raise_value_error_when_scores
 ):
     """Given random spaces and stub objectives returning NaN, +-inf, +-1e308, +-float max or ordinary values
     (every fourth case only NaN and +-inf), when optimize runs with max_evals in 1..max_evals_hi, then nothing
-    raises, the budget is exact, Trial.failed marks exactly the non-finite scores, and best_trial is the
-    finite extreme for the direction, or best_trial, best_params and best_score raise ValueError when no
-    score is finite. Both branches must occur.
+    raises, n_calls is max_evals or Space.size when that is smaller, Trial.failed marks exactly the
+    non-finite scores, and best_trial is the finite extreme for the direction, or best_trial, best_params
+    and best_score raise ValueError when no score is finite. Both branches must occur.
 
     Oracle: README Behaviour and Optimizer docstring (NaN or infinity is the worst value), Trial.failed
     docstring, Study.best_trial (ValueError without a finite trial, computed spec).

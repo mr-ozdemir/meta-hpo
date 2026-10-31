@@ -6,6 +6,12 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `max_evals` counts real calls of the objective: cached repeats no longer use up the budget, and a search
+  over a space without `Float` stops once every parameter set has been evaluated.
+- Optimizers avoid handing out a parameter set twice; `ABCOptimizer` takes `max_tries` (default 100).
+
 ## [0.1.0] - 2026-10-31
 
 ### Added

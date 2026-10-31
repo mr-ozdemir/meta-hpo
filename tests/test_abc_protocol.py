@@ -17,6 +17,11 @@ send_employed_bees loops from source 0 each cycle, send_scout_bees replaces a si
 Karaboga & Basturk (2007), v_ij = x_ij + phi_ij (x_ij - x_kj) for one randomly chosen j; task
 specification (init may be told partially, asking with a pending candidate raises RuntimeError).
 
+No-repeat rule: the Optimizer docstring ('never hands out a parameter set it has handed out before, as long
+as it finds a new one in `max_tries` attempts') and the abc.py docstring (a neighbour on a parameter set
+handed out before is dropped and another partner is tried; the same holds for scouts and the initial
+population) are checked on the keys of the handed-out candidates, per phase.
+
 Seeds: ANY_SEED is arbitrary and fixed for reproducibility. The asserted properties (invariants, at most
 one changed coordinate, running best) do not depend on the seed; the long runs only need some
 replacements and some scouts, which colony_size=6 with limit=3 gives (the tests assert that those paths
@@ -33,7 +38,7 @@ Unspecified, not asserted:
 
 Error paths of ABCOptimizer: constructor arguments and ask/tell protocol misuse.
 
-Covered raise sites (abc.py): ABCOptimizer.__init__ "colony_size" and "limit", ABCOptimizer.ask
+Covered raise sites (abc.py): ABCOptimizer.__init__ "colony_size", "limit" and "max_tries", ABCOptimizer.ask
 RuntimeError "initial" and "pending candidate", ABCOptimizer.tell ValueError "same length" and "not asked".
 The full inventory is in the module docstring of test_space_errors.py.
 
@@ -92,6 +97,12 @@ CHOICE_PENALTY = {"x": 0.0, "y": 0.05, "z": 0.2}
 
 
 WORST_FOR = {"min": math.inf, "max": -math.inf}
+
+
+NO_REPEAT_SEEDS = (0, 1, 2)
+
+
+DISCRETE_SCOUT_STEPS = 20
 
 
 SIGN_FOR = {"min": 1.0, "max": -1.0}
@@ -273,6 +284,32 @@ def _hamming(source, cands):
 def _neighbour_flags(space, source, cands):
     """True for each candidate that is a one-coordinate neighbour of source."""
     return [_single_coordinate_change(space, source, c) is not None for c in cands]
+
+
+def _flat_scores(told_number, params):
+    """Score schedule that tells every candidate the same score, so every source reaches limit=1 at once."""
+    return IRRELEVANT_SCORE
+
+
+def _discrete_space():
+    """Int(1, 10) x Categorical(['x', 'y', 'z']): 30 parameter sets and no Float."""
+    return Space({"b": Int(1, 10), "c": Categorical(["x", "y", "z"])})
+
+
+def _keys(record):
+    return [cand.key for cand in record["candidates"]]
+
+
+def _repeated_keys(record):
+    """Keys of the handed-out candidates that equal the key of an earlier candidate, in hand-out order."""
+    keys = _keys(record)
+    return [key for n, key in enumerate(keys) if key in keys[:n]]
+
+
+def _scouts_with_an_earlier_key(record):
+    """Hand-out positions of the scout candidates whose key was handed out before them."""
+    keys = _keys(record)
+    return [n for n, phase in enumerate(record["phases"]) if phase == "scout" and keys[n] in keys[:n]]
 
 
 def _ids(record):
@@ -689,3 +726,87 @@ def test_abc_optimizer_tell_should_raise_value_error_when_candidate_is_unknown_o
         opt.tell([offending], [DUMMY_SCORE])
 
     assert excinfo.type is ValueError
+
+
+@pytest.mark.parametrize(
+    "max_tries",
+    [
+        pytest.param(0, id="max-tries-0-boundary"),
+        pytest.param(-1, id="max-tries-negative"),
+    ],
+)
+def test_abc_optimizer_should_raise_value_error_when_max_tries_is_below_one(max_tries):
+    """Given max_tries 0 or -1, when ABCOptimizer is built, then ValueError comes from the max_tries site.
+
+    Oracle: the message 'max_tries must be at least 1' in ABCOptimizer.__init__ and the Optimizer docstring
+    (a new parameter set is searched for in `max_tries` attempts, so zero attempts are meaningless). Inputs:
+    0 is one below the boundary, -1 one past it; the valid side 1 is used in test_abc_boundaries.py.
+    """
+    space = Space({"x": Float(0.0, 1.0)})
+
+    with pytest.raises(ValueError, match="max_tries") as excinfo:
+        ABCOptimizer(space, seed=ANY_SEED, max_tries=max_tries)
+
+    assert excinfo.type is ValueError
+
+
+@pytest.mark.parametrize("seed", NO_REPEAT_SEEDS)
+def test_abc_optimizer_ask_should_hand_out_every_value_once_when_the_initial_batch_is_as_large_as_the_space(
+    seed,
+):
+    """Given Space({'v': Int(1, 5)}) with 5 parameter sets and colony_size=10, when the first ask hands out
+    the initial batch of 5, then it holds each of the values 1..5 exactly once.
+
+    Oracle: Optimizer docstring (no parameter set is handed out twice while a new one is found in
+    `max_tries` attempts) and abc.py docstring (the same holds for the initial population, also inside one
+    batch). Decisive input: 5 uniform draws over 5 values are all different with probability
+    120 / 5**5 < 4 %, while with the resampling a value is missed only if 99 draws in a row miss it
+    (below 1e-9). Three seeds, because the property holds for every seed.
+    """
+    opt = ABCOptimizer(Space({"v": Int(1, 5)}), colony_size=10, seed=seed)
+
+    initial = opt.ask()
+
+    assert sorted(cand.params["v"] for cand in initial) == [1, 2, 3, 4, 5]
+
+
+def test_abc_optimizer_ask_should_hand_out_no_parameter_set_twice_in_any_phase_when_the_space_has_a_float():
+    """Given the mixed Float, Int(1, 9), Categorical space with colony_size=6 and limit=3, when 300 single
+    rounds follow the initial batch, then no key is handed out twice, across the initial, employed,
+    onlooker and scout candidates.
+
+    Oracle: Optimizer docstring and abc.py docstring (a neighbour on a parameter set handed out before is
+    retried with another partner k and, after every other food, another coordinate j). Input: a move of the
+    Int or the Categorical often keeps the decoded value and so the key of its source; the same kind of run
+    with max_tries=1 hands out such repeats (test_abc_boundaries.py). The Float makes the space infinite, so
+    a new set is always within reach of another coordinate. All four phases occur (asserted).
+    """
+    opt = ABCOptimizer(_mixed_space(), colony_size=6, limit=3, seed=ANY_SEED)
+
+    record = _drive(opt, _plain_scores, LONG_RUN_STEPS)
+    assert set(record["phases"]) == {"init", "employed", "onlooker", "scout"}
+
+    assert _repeated_keys(record) == []
+
+
+@pytest.mark.parametrize("seed", NO_REPEAT_SEEDS)
+def test_abc_optimizer_ask_should_give_every_scout_a_new_parameter_set_when_a_discrete_space_is_not_exhausted(
+    seed,
+):
+    """Given Int(1, 10) x Categorical(['x', 'y', 'z']) with 30 parameter sets, colony_size=4, limit=1 and one
+    score for every candidate, when 20 single rounds follow the initial batch (22 candidates in all), then
+    no scout candidate has the key of an earlier candidate, and at least 3 scouts occur.
+
+    Oracle: Optimizer docstring and abc.py docstring (the no-repeat rule holds for scouts, which resample).
+    Input: equal scores never replace a source, so with limit=1 every cycle of 2 employed and 2 onlooker
+    candidates ends with a scout (asserted). A uniform scout hits one of the earlier keys with probability
+    up to 21 / 30, so without the resampling repeats are likely; with it a scout repeats only if 100 draws
+    all hit earlier keys. Neighbours are not checked here: in a discrete space a neighbour may find no new
+    set within `max_tries`, which the rule allows.
+    """
+    opt = ABCOptimizer(_discrete_space(), colony_size=4, limit=1, seed=seed)
+
+    record = _drive(opt, _flat_scores, DISCRETE_SCOUT_STEPS)
+    assert record["phases"].count("scout") >= 3
+
+    assert _scouts_with_an_earlier_key(record) == []
