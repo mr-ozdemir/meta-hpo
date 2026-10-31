@@ -24,7 +24,7 @@ def test_neighbour_changes_one_coordinate_and_stays_in_the_cube():
     opt.tell(cands, [0.0] * len(cands))
     for _ in range(300):
         (c,) = opt.ask()
-        kind, i = opt._pending[c.id]
+        kind, i = opt._pending[c.id].kind, opt._pending[c.id].food
         if kind != "scout":
             assert np.count_nonzero(c.x != opt.foods[i]) <= 1
         assert 0.0 <= c.x.min() and c.x.max() <= 1.0
@@ -63,7 +63,7 @@ def test_scout_replaces_an_exhausted_source():
     kinds = []
     for _ in range(30):
         (c,) = opt.ask()
-        kinds.append(opt._pending[c.id][0])
+        kinds.append(opt._pending[c.id].kind)
         opt.tell([c], [5.0])
     assert "scout" in kinds
 

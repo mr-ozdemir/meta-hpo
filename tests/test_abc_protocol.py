@@ -32,14 +32,14 @@ Unspecified, not asserted:
   candidate, not None);
 - which of several equally good candidates is the best; scores are chosen so ties come only from equal
   params;
-- the state after a rejected tell, and whether a multi-candidate tell is atomic;
 - re-asking only the untold indices of the initial batch: after the first init ask every untold index is
   pending until it is told, so that branch cannot be reached through the public API.
 
 Error paths of ABCOptimizer: constructor arguments and ask/tell protocol misuse.
 
 Covered raise sites (abc.py): ABCOptimizer.__init__ "colony_size", "limit" and "max_tries", ABCOptimizer.ask
-RuntimeError "initial" and "pending candidate", ABCOptimizer.tell ValueError "same length" and "not asked".
+RuntimeError "initial" and "pending candidate", ABCOptimizer.tell ValueError "same length", and the checks
+shared by tell and cancel, ValueError "not asked" and "not handed out".
 The full inventory is in the module docstring of test_space_errors.py.
 
 Each call under test has several error paths of the same class, so every case carries a short keyword
@@ -47,12 +47,16 @@ that ties it to its own site.
 
 Unspecified, not asserted:
 - what ask() returns after the initial batch was told partially (the spec only says it may be told partially);
-- whether optimizer state is unchanged after a failed tell, so every offending tell uses a one-element list
-  and nothing is asserted about state afterwards;
 - which check fires first when colony_size and limit are both invalid, so each case has one invalid argument.
 
 ANY_SEED is fixed for determinism; none of these error paths depends on random draws. IRRELEVANT_SCORE is a
 dummy score that only moves the optimizer to the next phase; phase progress does not depend on its value.
+
+Atomic tell and cancel, ownership and own copies: the ABCOptimizer.tell and cancel docstrings and the abc.py
+module docstring state that a failing batch leaves the optimizer unchanged, that only candidates this
+optimizer handed out are accepted, and that changing `cand.params` cannot change the search. Unchanged state
+is observed through a twin optimizer with the same seed, which never sees the failing call: both must hand
+out the same keys afterwards. FOREIGN_SEED gives the other optimizer whose candidates carry pending ids.
 
 Input space: Every ask/tell sequence with any scores, colony_size, limit and seed, which is unbounded.
 Subset: Seeded ask/tell runs on small mixed spaces for the invariants, and one misuse per protocol error.
@@ -810,3 +814,271 @@ def test_abc_optimizer_ask_should_give_every_scout_a_new_parameter_set_when_a_di
     assert record["phases"].count("scout") >= 3
 
     assert _scouts_with_an_earlier_key(record) == []
+
+
+FOREIGN_SEED = 7
+
+
+STEPS_AFTER_A_FAILED_TELL = 40
+
+
+ROUNDS_WITH_SPOILED_PARAMS = 60
+
+
+def _with_foreign_content(cand, other):
+    """A public Candidate with the id of `cand` and the x, params and key of `other`, which another optimizer
+    handed out."""
+    return Candidate(cand.id, other.x, other.params, other.key)
+
+
+def _bad_last_score(own, foreign):
+    """The whole batch with a last score that float() cannot convert."""
+    return own, [DUMMY_SCORE] * (len(own) - 1) + ["bad"]
+
+
+def _foreign_last_candidate(own, foreign):
+    """The batch whose last candidate is replaced by a foreign one carrying the same id."""
+    return own[:-1] + [_with_foreign_content(own[-1], foreign[-1])], [DUMMY_SCORE] * len(own)
+
+
+def _first_candidate_twice(own, foreign):
+    """The whole batch plus its first candidate a second time."""
+    return own + own[:1], [DUMMY_SCORE] * (len(own) + 1)
+
+
+def _tell_all(opt, cands):
+    """Tells every candidate its _score_depending_on_every_param score in one call."""
+    opt.tell(cands, [_score_depending_on_every_param(c.params) for c in cands])
+
+
+def _keys_and_best_after(opt, steps):
+    """Runs `steps` single rounds with _plain_scores; returns the handed-out keys and the final best_score."""
+    record = _run_single_steps(opt, _plain_scores, steps, _new_record())
+    return _keys(record), opt.best_score
+
+
+def _handed_out_params(opt, steps, spoil):
+    """Runs the initial batch and `steps` single rounds with _score_depending_on_every_param and returns
+    copies of the params as they were handed out. With spoil=True each candidate's params dict is cleared
+    and given a stray entry after its score is computed and before it is told."""
+    handed = []
+    for _ in range(steps + 1):
+        cands = opt.ask()
+        handed.extend(dict(c.params) for c in cands)
+        scores = [_score_depending_on_every_param(c.params) for c in cands]
+        for cand in cands:
+            if spoil:
+                cand.params.clear()
+                cand.params["stray"] = None
+        opt.tell(cands, scores)
+    return handed
+
+
+def test_abc_optimizer_tell_should_raise_value_error_when_a_candidate_of_another_optimizer_has_a_pending_id():
+    """Given two ABCOptimizers on the same space with different seeds and both initial batches pending, when
+    the first is told the batch of the second, then ValueError ('not handed out') is raised and the first
+    optimizer can still be told its own batch.
+
+    Oracle: abc.py module docstring ('tell() accepts only those candidates', the ones it handed out, so 'a
+    candidate of another optimizer with the same id' cannot change the search). Decisive input: ids start
+    at 0 in every optimizer (asserted), so a check on the id alone accepts the foreign batch.
+    """
+    space = _mixed_space()
+    opt = ABCOptimizer(space, colony_size=4, seed=ANY_SEED)
+    own, foreign = opt.ask(), ABCOptimizer(space, colony_size=4, seed=FOREIGN_SEED).ask()
+    assert [c.id for c in own] == [c.id for c in foreign]
+
+    with pytest.raises(ValueError, match="not handed out"):
+        opt.tell(foreign, [DUMMY_SCORE] * len(foreign))
+    _tell_all(opt, own)
+
+    assert opt.phase == "employed"
+
+
+@pytest.mark.parametrize(
+    ("bad_score", "error"),
+    [
+        pytest.param("bad", ValueError, id="string"),
+        pytest.param(None, TypeError, id="none"),
+    ],
+)
+def test_abc_optimizer_tell_should_keep_the_candidate_pending_when_its_score_does_not_convert(
+    bad_score, error
+):
+    """Given a pending employed candidate, when it is told a score that float() rejects and then told 0.0,
+    then the first tell raises the float() error and the second counts one failed trial for source 0.
+
+    Oracle: ABCOptimizer.tell docstring ('every score must convert with float()'; 'A failing batch raises
+    and leaves the optimizer unchanged'). Hand calculation: both sources were told 0.0, so 0.0 is not
+    strictly lower and trial becomes [1, 0]. Decisive: a tell that drops the candidate before converting
+    its score raises 'not asked' on the second tell.
+    """
+    opt = ABCOptimizer(Space({"x": Float(0.0, 1.0)}), colony_size=4, seed=ANY_SEED)
+    _finish_initial_batch(opt)
+    (employed,) = opt.ask()
+
+    with pytest.raises(error):
+        opt.tell([employed], [bad_score])
+    opt.tell([employed], [DUMMY_SCORE])
+
+    assert opt.trial == [1, 0]
+
+
+@pytest.mark.parametrize(
+    "failing_batch",
+    [
+        pytest.param(_bad_last_score, id="last-score-not-a-number"),
+        pytest.param(_foreign_last_candidate, id="last-candidate-foreign"),
+        pytest.param(_first_candidate_twice, id="first-candidate-twice"),
+    ],
+)
+def test_abc_optimizer_tell_should_leave_the_optimizer_unchanged_when_a_later_part_of_the_batch_fails(
+    failing_batch,
+):
+    """Given an optimizer and a twin with the same seed, when the optimizer is first told a batch whose last
+    part fails, then ValueError is raised and, after both are told the initial batch, they hand out the
+    same keys and reach the same best_score over 40 rounds.
+
+    Oracle: ABCOptimizer.tell docstring ('The whole batch is checked first'; 'A failing batch raises and
+    leaves the optimizer unchanged'). The twin, which never saw the failing tell, is the reference. Decisive:
+    in every case the failing part comes after valid candidates, so a tell that applies candidates one by
+    one has already initialised some sources, and the later tell of the batch raises 'not asked'.
+    """
+    opt = ABCOptimizer(_mixed_space(), colony_size=6, limit=3, seed=ANY_SEED)
+    twin = ABCOptimizer(_mixed_space(), colony_size=6, limit=3, seed=ANY_SEED)
+    own, twin_batch = opt.ask(), twin.ask()
+    cands, scores = failing_batch(own, ABCOptimizer(_mixed_space(), colony_size=6, seed=FOREIGN_SEED).ask())
+
+    with pytest.raises(ValueError):
+        opt.tell(cands, scores)
+    _tell_all(opt, own)
+    _tell_all(twin, twin_batch)
+
+    assert _keys_and_best_after(opt, STEPS_AFTER_A_FAILED_TELL) == _keys_and_best_after(
+        twin, STEPS_AFTER_A_FAILED_TELL
+    )
+
+
+def test_abc_optimizer_should_hand_out_the_same_params_when_the_caller_clears_the_params_of_told_candidates():
+    """Given an optimizer and a twin with the same seed, when the caller clears every candidate's params
+    dict before telling it, then both hand out the same params over the initial batch and 60 rounds.
+
+    Oracle: abc.py module docstring (the optimizer keeps its own copy of the params it issued, so 'a user
+    who changes `cand.params`' cannot change the search) and the Candidate docstring (params as the user's
+    function receives them). Decisive: a neighbour copies the params of its food source, so an optimizer
+    that stores the told dict hands out neighbours with the stray entry and without the other names.
+    """
+    opt = ABCOptimizer(_mixed_space(), colony_size=6, limit=3, seed=ANY_SEED)
+    twin = ABCOptimizer(_mixed_space(), colony_size=6, limit=3, seed=ANY_SEED)
+
+    spoiled = _handed_out_params(opt, ROUNDS_WITH_SPOILED_PARAMS, spoil=True)
+    reference = _handed_out_params(twin, ROUNDS_WITH_SPOILED_PARAMS, spoil=False)
+
+    assert spoiled == reference
+    assert {name for params in spoiled for name in params} == {"a", "b", "c"}
+
+
+def test_abc_optimizer_cancel_should_let_ask_hand_out_new_candidates_for_the_cancelled_initial_sources():
+    """Given the initial batch of 5 with 2 told, when the other 3 are cancelled and ask() is called, then it
+    hands out 3 candidates, and telling them ends the init phase.
+
+    Oracle: ABCOptimizer.cancel docstring ('the next ask() hands out new candidates for the same food
+    sources'). Decisive: without cancel the 3 candidates stay pending and ask() raises RuntimeError.
+    """
+    opt = ABCOptimizer(_mixed_space(), colony_size=10, seed=ANY_SEED)
+    initial = opt.ask()
+    _tell_all(opt, initial[:2])
+
+    opt.cancel(initial[2:])
+    again = opt.ask()
+    _tell_all(opt, again)
+
+    assert len(again) == 3
+    assert opt.phase == "employed"
+
+
+@pytest.mark.parametrize("seed", NO_REPEAT_SEEDS)
+def test_abc_optimizer_cancel_should_let_the_cancelled_parameter_sets_be_handed_out_again(seed):
+    """Given Space({'v': Int(1, 5)}) whose 5 values all sit in the initial batch, when the last 2 candidates
+    are cancelled and ask() is called again, then it hands out exactly the 2 cancelled values.
+
+    Oracle: ABCOptimizer.cancel docstring ('they count as never handed out'; 'Their parameter sets may be
+    handed out again') and the Optimizer no-repeat rule. Decisive: if the cancelled keys stayed in the set
+    of handed-out keys, every value would count as handed out and the 2 new draws would be uniform over 5
+    values, matching the 2 cancelled ones with probability 2 / 25. Three seeds; the property holds for all.
+    """
+    opt = ABCOptimizer(Space({"v": Int(1, 5)}), colony_size=10, seed=seed)
+    initial = opt.ask()
+    opt.tell(initial[:3], [DUMMY_SCORE] * 3)
+
+    opt.cancel(initial[3:])
+    again = opt.ask()
+
+    assert sorted(c.params["v"] for c in again) == sorted(c.params["v"] for c in initial[3:])
+
+
+def test_abc_optimizer_cancel_should_let_the_same_employed_bee_ask_again():
+    """Given one employed candidate of source 0 pending, when it is cancelled, then ask() hands out another
+    employed candidate, and telling it 0.0 counts the trial of source 0 and keeps the employed phase.
+
+    Oracle: ABCOptimizer.cancel docstring (cancelled candidates count as never handed out; the next ask()
+    serves the same food source) and the employed sweep of the abc.py docstring. Hand calculation: both
+    sources were told 0.0, so 0.0 is not strictly lower and trial becomes [1, 0]; the sweep then moves on
+    to source 1, still in the employed phase.
+    """
+    opt = ABCOptimizer(Space({"x": Float(0.0, 1.0)}), colony_size=4, seed=ANY_SEED)
+    _finish_initial_batch(opt)
+    (employed,) = opt.ask()
+
+    opt.cancel([employed])
+    (again,) = opt.ask()
+    opt.tell([again], [DUMMY_SCORE])
+
+    assert (opt.phase, opt.trial) == ("employed", [1, 0])
+
+
+def _cancel_with_a_told_candidate(opt, own, foreign):
+    """Tells own[0]; returns the cancel batch [own[1], own[0]] and the candidates still pending."""
+    opt.tell(own[:1], [DUMMY_SCORE])
+    return [own[1], own[0]], own[1:]
+
+
+def _cancel_with_a_foreign_candidate(opt, own, foreign):
+    """Returns the cancel batch [own[1], foreign content with the id of own[0]] and the pending candidates."""
+    return [own[1], _with_foreign_content(own[0], foreign[0])], own
+
+
+def _cancel_with_a_repeated_candidate(opt, own, foreign):
+    """Returns the cancel batch [own[1], own[1]] and the pending candidates."""
+    return [own[1], own[1]], own
+
+
+@pytest.mark.parametrize(
+    "arrange",
+    [
+        pytest.param(_cancel_with_a_told_candidate, id="already-told"),
+        pytest.param(_cancel_with_a_foreign_candidate, id="foreign"),
+        pytest.param(_cancel_with_a_repeated_candidate, id="repeated"),
+    ],
+)
+def test_abc_optimizer_cancel_should_raise_value_error_and_cancel_nothing_when_one_candidate_is_not_pending(
+    arrange,
+):
+    """Given the initial batch of 2 and a cancel batch whose second candidate is not a pending candidate of
+    this optimizer, when cancel() is called, then ValueError is raised and the still pending candidates can
+    be told, which ends the init phase.
+
+    Oracle: ABCOptimizer.cancel docstring ('The batch is checked like in tell(); a failing batch leaves the
+    optimizer unchanged'). Decisive: the valid candidate own[1] comes first, so a cancel that withdraws
+    candidates one by one has already removed it and the final tell raises 'not asked'.
+    """
+    space = _mixed_space()
+    opt = ABCOptimizer(space, colony_size=4, seed=ANY_SEED)
+    own, foreign = opt.ask(), ABCOptimizer(space, colony_size=4, seed=FOREIGN_SEED).ask()
+    batch, pending = arrange(opt, own, foreign)
+
+    with pytest.raises(ValueError):
+        opt.cancel(batch)
+    _tell_all(opt, pending)
+
+    assert opt.phase == "employed"

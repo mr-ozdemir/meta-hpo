@@ -161,19 +161,20 @@ def test_abc_should_raise_value_error_when_limit_is_below_one(limit):
         pytest.param(1.0, 2.0, [1, 0], id="worse_keeps_source"),
         pytest.param(-1.0, -2.0, [0, 0], id="better_in_negative_branch"),
         pytest.param(-1.0, -1.0, [1, 0], id="tie_in_negative_branch"),
-        pytest.param(1e-17, 0.0, [1, 0], id="better_score_equal_fitness_keeps_source"),
+        pytest.param(1e-17, 0.0, [0, 0], id="better_score_equal_fitness_replaces_source"),
     ],
 )
-def test_abc_employed_tell_should_reset_trial_only_on_strictly_greater_fitness(
+def test_abc_employed_tell_should_reset_trial_only_on_a_strictly_lower_score(
     source_score, new_score, expected_trials
 ):
     """Given two sources told source_score, when the first employed bee (source 0) is told new_score, then
-    trial[0] is reset to 0 only when the fitness is strictly greater and otherwise becomes 1.
+    trial[0] is reset to 0 only when the score is strictly lower and otherwise becomes 1.
 
-    Oracle: ABC.py line 113 'if fitness_sol > self.fitness[i]:' (trial = 0, else trial + 1) and the fitness
-    formula 1 / (1 + f) for f >= 0, 1 + |f| for f < 0. Decisive inputs: the tie, the negative branch, and
-    1e-17 versus 0.0, where the raw score is better but 1 / (1 + 1e-17) == 1 / (1 + 0) in float64, which
-    tells a comparison on fitness apart from one on raw scores. Source 1 is untouched and stays at 0.
+    Oracle: abc.py module docstring 'a neighbour replaces its food source when its score is strictly lower',
+    a deliberate deviation from ABC.py line 113 'if fitness_sol > self.fitness[i]:' (trial = 0, else
+    trial + 1). Decisive inputs: the tie, the negative branch, and 0.0 versus 1e-17, where the raw score is
+    better but 1 / (1 + 1e-17) == 1 / (1 + 0) in float64, so the original comparison on fitness would keep
+    the source. Source 1 is untouched and stays at 0.
     """
     opt = ABCOptimizer(_unit_space(3), colony_size=4, seed=ANY_SEED)
     _finish_initial_batch(opt, [source_score] * 2)
