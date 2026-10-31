@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-31
+
 ### Added
 
 - `Space` with `Float`, `Int` and `Categorical` parameters, decoded from the unit cube in vectorised numpy.

@@ -67,6 +67,14 @@ pytest
 User-facing changes get a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md), in the section
 that fits: Added, Changed, Deprecated, Removed, Fixed or Security.
 
+## Releases
+
+- Releases are made from `master` by the repository owner.
+- The version in `pyproject.toml` and `metahpo.__version__` is set, and `## [Unreleased]` in the changelog
+  gets a dated version heading, through the usual pull requests.
+- Pushing a tag `vX.Y.Z` on `master` runs the release workflow: it checks that the tag matches the package
+  version, builds the sdist and wheel, and publishes them to PyPI with trusted publishing, without tokens.
+
 ## Reporting bugs
 
 Open an issue with a minimal script that reproduces the problem, the expected result, and your Python,
