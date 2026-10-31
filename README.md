@@ -73,7 +73,8 @@ Optimizers search the unit cube `[0, 1]^d`; the space maps each point to typed p
 ## Behaviour
 
 - A score of NaN or infinity counts as the worst possible value for the chosen direction.
-- With `cache=True` (the default), a repeated parameter set reuses its earlier score instead of training again.
+- With `cache=True` (the default), a repeated parameter set reuses its earlier score instead of training again
+  and does not count against `max_evals`.
 - The same `seed` reproduces the same search.
 
 ## Contributing

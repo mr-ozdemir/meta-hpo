@@ -512,7 +512,7 @@ def test_optimize_should_evaluate_exactly_max_evals_times_when_the_scripted_batc
     """Given the scripted double with batches of 3, 1, 1 and distinct parameter sets, when optimize() runs
     with max_evals, then the Study has max_evals trials and the objective was called max_evals times.
 
-    Oracle: optimize docstring ('max_evals counts the optimizer's evaluations') and the task specification
+    Oracle: optimize docstring ('max_evals counts the calls of function') and the task specification
     'exact max_evals trials (even inside the initial batch)'. Inputs: both sides of the first batch boundary
     of 3; distinct parameter sets keep the cache out of the count.
     """
@@ -707,21 +707,24 @@ def test_optimize_should_tell_the_real_abc_only_the_evaluated_part_of_its_initia
 
 
 def test_optimize_should_tell_the_real_abc_every_trial_once_when_running_past_the_initial_batch():
-    """Given a real ABCOptimizer with colony_size=6 and a spy on its tell, when optimize() runs 12 evaluations
-    on a 6-combination space, then the told candidates have 12 distinct ids and their (params, score) pairs
-    are exactly the trials' pairs, cached repeats included.
+    """Given a real ABCOptimizer with colony_size=6, max_tries=1 and a spy on its tell, when optimize() runs
+    with a budget of 12 calls on a 6-combination space, then the told candidates have one distinct id per
+    trial and their (params, score) pairs are exactly the trials' pairs, cached repeats included.
 
-    Oracle: Optimizer docstring (every handed-out candidate's score is told), README/optimize docstring
-    (a cached repeat reuses its earlier score). Input: 12 goes past the initial batch of 3 into single
-    employed and onlooker asks; 12 trials over 6 parameter sets force cache hits. Seed 0 is arbitrary.
+    Oracle: Optimizer docstring (every handed-out candidate's score is told; a repeat comes back only when
+    `max_tries` attempts find no new parameter set), README/optimize docstring (a cached repeat reuses its
+    earlier score and does not use up the budget). Input: max_tries=1 lets neighbours repeat parameter sets,
+    so the run goes past the initial batch of 3 into single employed and onlooker asks and holds cached
+    trials (asserted) until the 6 sets are evaluated. Seed 0 is arbitrary.
     """
     space = _two_param_space()
-    opt = ABCOptimizer(space, colony_size=CONTRACT_COLONY_SIZE, seed=ANY_SEED)
+    opt = ABCOptimizer(space, colony_size=CONTRACT_COLONY_SIZE, seed=ANY_SEED, max_tries=1)
 
     with mock.patch.object(opt, "tell", wraps=opt.tell) as spy:
         study = optimize(stub_objective, space, max_evals=12, optimizer=opt)
+    assert len(study.trials) > study.n_calls
 
-    assert len(set(_told_ids_of_spy(spy))) == 12
+    assert len(set(_told_ids_of_spy(spy))) == len(study.trials)
     assert _pair_counts(_told_pairs_of_spy(spy)) == _pair_counts(_trial_pairs(study))
 
 
@@ -732,6 +735,18 @@ STUB_SCORE = 2.5
 
 
 ONE_POINT_SCORE = 0.7
+
+
+DEFAULT_INITIAL_BATCH = 10 // 2
+
+
+MAX_REPEATS = 1000
+
+
+POINT_A = ((0.25,),)
+
+
+POINT_B = ((0.75,),)
 
 
 IRRELEVANT_SCORE = 1.0
@@ -962,12 +977,15 @@ def test_optimize_should_finish_with_a_valid_best_when_invalid_scores_come_befor
 
 
 def test_optimize_should_call_the_objective_once_and_cache_the_rest_when_the_space_has_one_point():
-    """Given a one-point space and a mock objective returning 0.7, when optimize runs 20 evaluations with
-    cache=True, then the objective is called once and every later trial is cached with 0.7.
+    """Given a one-point space and a mock objective returning 0.7, when optimize runs with a budget of 20 and
+    cache=True, then the objective is called once, the other trials of the initial batch are cached with
+    0.7 and the run stops.
 
     Postcondition besides the returned Study: each cached trial causes no call of the objective. Oracle:
-    README Behaviour (cache reuses the earlier score), facade.py docstring, Study.n_calls docstring.
-    Trials 1..4 repeat inside the initial batch and 5..19 on single asks.
+    README Behaviour (cache reuses the earlier score), facade.py docstring (the search stops once every
+    parameter set of a space without Float has been evaluated), Study.n_calls docstring. Trials 1..4 repeat
+    inside the initial batch of colony_size // 2 = 5; after it the one point is evaluated, so no single ask
+    follows.
     """
     mock_objective = Mock(return_value=ONE_POINT_SCORE)
 
@@ -976,17 +994,44 @@ def test_optimize_should_call_the_objective_once_and_cache_the_rest_when_the_spa
     assert mock_objective.call_count == 1
     assert study.n_calls == 1
     assert mock_objective.call_args.args[0] == {"c": "a"}
-    assert [t.cached for t in study.trials] == [False] + [True] * 19
-    assert study.scores.tolist() == [ONE_POINT_SCORE] * 20
+    assert [t.cached for t in study.trials] == [False] + [True] * (DEFAULT_INITIAL_BATCH - 1)
+    assert study.scores.tolist() == [ONE_POINT_SCORE] * DEFAULT_INITIAL_BATCH
+
+
+def test_optimize_should_stop_after_a_thousand_repeats_in_a_row_when_the_optimizer_hands_out_nothing_new():
+    """Given a scripted optimizer on a Float space that hands out point A, 999 repeats of A, point B and then
+    only B, when optimize() runs with max_evals = 5, then the function is called twice, the first 999
+    repeats do not stop the run, the 1000th repeat of B in a row does, and one batch of the script is left.
+
+    Oracle: optimize docstring (the search stops early when `_MAX_REPEATS` candidates in a row were repeats;
+    1000 is facade._MAX_REPEATS). Input: a Float space is never exhausted and 2 calls never reach the budget
+    of 5, so only the repeat limit can end the run, and without it the double raises ScriptExhausted. The new
+    point B after 999 repeats shows that the count is of repeats in a row: a total count would stop at A.
+    """
+    space = _unit_float_space()
+    script = (POINT_A,) * MAX_REPEATS + (POINT_B,) * (MAX_REPEATS + 2)
+    fake = ScriptedOptimizer(space, "min", script)
+    mock_objective = Mock(return_value=IRRELEVANT_SCORE)
+
+    study = optimize(mock_objective, space, max_evals=5, optimizer=fake)
+
+    assert mock_objective.call_count == 2
+    assert [t.cached for t in study.trials] == (
+        [False] + [True] * (MAX_REPEATS - 1) + [False] + [True] * MAX_REPEATS
+    )
+    assert len(fake.script) == 1
 
 
 def test_optimize_should_call_the_objective_once_per_distinct_parameter_set_when_cache_is_true():
-    """Given a four-point space and a counting stub returning a new value per call, when optimize runs 50
-    evaluations with cache=True, then calls equal distinct parameter sets, follow trial order, and every
-    repeat is cached with the score of its first occurrence.
+    """Given a four-point space and a counting stub returning a new value per call, when optimize runs with
+    a budget of 50 and cache=True, then calls equal the 4 distinct parameter sets, follow trial order, and
+    every repeat is cached with the score of its first occurrence.
 
     Oracle: README Behaviour (cache), space.rows docstring (equal keys mean equal parameters), Study.n_calls
-    docstring. The per-call value is decisive: a constant stub cannot tell a reused score from a new call.
+    docstring, optimize docstring (the search stops once every parameter set of a space without Float has
+    been evaluated). The per-call value is decisive: a constant stub cannot tell a reused score from a new
+    call. The initial batch of 5 over 4 points holds a repeat for any seed, so there are more trials than
+    calls.
     """
     mock_objective = _counting_stub_objective()
 
@@ -994,10 +1039,10 @@ def test_optimize_should_call_the_objective_once_per_distinct_parameter_set_when
 
     first = _first_occurrence(study.trials)
     first_score = _first_score_by_params(study.trials)
-    assert len(study.trials) == 50
+    assert len(study.trials) > mock_objective.call_count
     assert mock_objective.call_count == study.n_calls
     assert mock_objective.call_count == len(first_score)
-    assert mock_objective.call_count <= 4
+    assert mock_objective.call_count == 4
     assert [c.args[0] for c in mock_objective.call_args_list] == [
         t.params for t in study.trials if not t.cached
     ]

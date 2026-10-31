@@ -29,6 +29,9 @@ class Candidate:
 class Optimizer:
     """ask() returns the candidates that can be evaluated now; tell() reports their scores.
 
+    An optimizer never hands out a parameter set it has handed out before, as long as it finds a new one in
+    `max_tries` attempts; only then may a repeat come back, which a cache answers without a new evaluation.
+
     Scores are given in the user's direction; internally everything is minimised, and a NaN or infinite
     score becomes the worst possible value for the direction (-inf when maximising, +inf when minimising).
     """
@@ -43,6 +46,8 @@ class Optimizer:
         self._next_id = 0
         self.best_x: NDArray[np.float64] | None = None
         self.best_f = math.inf
+        self.max_tries = 100
+        self._seen: set[tuple[Any, ...]] = set()
 
     def ask(self) -> list[Candidate]:
         raise NotImplementedError
@@ -69,6 +74,20 @@ class Optimizer:
         if not math.isfinite(score):
             return math.inf
         return score if self.direction == "min" else -score
+
+    def _fresh(self, n: int) -> list[Candidate]:
+        """n random candidates whose parameter sets are new, resampling a repeat up to `max_tries` times."""
+        cands = self._candidates(self.space.sample(self.rng, n))
+        taken = set(self._seen)
+        for t, cand in enumerate(cands):
+            tries = 1
+            while cand.key in taken and tries < self.max_tries and len(taken) < self.space.size:
+                keys, params = self.space.rows(x := self.space.sample(self.rng, 1))
+                cand = Candidate(cand.id, x[0], params[0], keys[0])
+                tries += 1
+            cands[t] = cand
+            taken.add(cand.key)
+        return cands
 
     def _candidates(self, xs: NDArray[np.float64]) -> list[Candidate]:
         xs = np.atleast_2d(xs)

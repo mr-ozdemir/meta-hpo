@@ -96,8 +96,9 @@ def test_cache_skips_repeated_parameter_sets():
         return p["k"] * p["n"]
 
     study = optimize(f, space, max_evals=100, seed=0)
-    assert len(study.trials) == 100
-    assert study.n_calls == len(calls) <= 6
+    assert study.n_calls == len(calls) == space.size == 6
+    assert len({(c["k"], c["n"]) for c in calls}) == 6
+    assert len(study.trials) > study.n_calls
     assert study.best_score == 1
 
 

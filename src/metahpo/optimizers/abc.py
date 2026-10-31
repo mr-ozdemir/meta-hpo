@@ -6,7 +6,9 @@ with each improvement visible to the next onlooker, and at most one scout per cy
 population is handed out as a batch, because its evaluations are independent.
 
 A neighbour differs from its food source in one coordinate, so only that coordinate is decoded again;
-the rest of the decoded parameters are copied from the source.
+the rest of the decoded parameters are copied from the source. A neighbour whose parameter set was already
+handed out is dropped and another partner food k is tried; after every other food has been tried, the
+coordinate j is drawn again too. The same holds for scouts and the initial population.
 """
 
 from __future__ import annotations
@@ -29,8 +31,12 @@ class ABCOptimizer(Optimizer):
         colony_size: int = 10,
         limit: int = 15,
         seed: int | None = None,
+        max_tries: int = 100,
     ) -> None:
         super().__init__(space, direction, seed)
+        if max_tries < 1:
+            raise ValueError("max_tries must be at least 1")
+        self.max_tries = max_tries
         if colony_size < 4:
             raise ValueError("colony_size must be at least 4 (two food sources)")
         if limit < 1:
@@ -58,13 +64,13 @@ class ABCOptimizer(Optimizer):
             todo = [i for i, done in enumerate(self._initialised) if not done and i not in waiting]
             if not todo:
                 raise RuntimeError("tell the pending initial candidates before asking again")
-            return self._issue(self._candidates(self.space.sample(self.rng, len(todo))), "init", todo)
+            return self._issue(self._fresh(len(todo)), "init", todo)
         if self._pending:
             raise RuntimeError("tell the pending candidate before asking again")
         if self.phase == "scout":
             worst = max(range(self.food_number), key=self.trial.__getitem__)
             if self.trial[worst] >= self.limit:
-                return self._issue(self._candidates(self.space.sample(self.rng, 1)), "scout", [worst])
+                return self._issue(self._fresh(1), "scout", [worst])
             self._end_cycle()
         if self.phase == "employed":
             return self._issue([self._neighbour(self._employed_i)], "employed", [self._employed_i])
@@ -98,16 +104,24 @@ class ABCOptimizer(Optimizer):
                 self._advance(kind)
 
     def _neighbour(self, i: int) -> Candidate:
-        """Moves one random coordinate j of food i towards or away from a random other food k."""
+        """Moves one random coordinate j of food i towards or away from a random other food k.
+
+        A move to a parameter set handed out before is retried with another k, and with another j once
+        every other food has been tried, up to `max_tries` attempts.
+        """
         sn, d = self.food_number, self.space.dim
-        j = min(int(self._uniform() * d), d - 1)
-        k = min(int(self._uniform() * (sn - 1)), sn - 2)
-        k += k >= i
-        phi = 2.0 * self._uniform() - 1.0
-        v = operators.neighbour_value(float(self.foods[i, j]), float(self.foods[k, j]), phi)
+        for attempt in range(self.max_tries):
+            if attempt % (sn - 1) == 0:
+                j = min(int(self._uniform() * d), d - 1)
+            k = min(int(self._uniform() * (sn - 1)), sn - 2)
+            k += k >= i
+            phi = 2.0 * self._uniform() - 1.0
+            v = operators.neighbour_value(float(self.foods[i, j]), float(self.foods[k, j]), phi)
+            key, params = self.space.move(self._keys[i], self._params[i], j, v)
+            if key not in self._seen or len(self._seen) >= self.space.size:
+                break
         x = self.foods[i].copy()
         x[j] = v
-        key, params = self.space.move(self._keys[i], self._params[i], j, v)
         cand = Candidate(self._next_id, x, params, key)
         self._next_id += 1
         return cand
@@ -115,6 +129,7 @@ class ABCOptimizer(Optimizer):
     def _issue(self, cands: list[Candidate], kind: str, foods: list[int]) -> list[Candidate]:
         for cand, i in zip(cands, foods, strict=True):
             self._pending[cand.id] = (kind, i)
+            self._seen.add(cand.key)
         return cands
 
     def _replace(self, i: int, cand: Candidate, f: float) -> None:
