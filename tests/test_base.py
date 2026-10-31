@@ -2,9 +2,10 @@
 
 Unit tests of the common Optimizer contract (optimizers/base.py), on a one-parameter Space.
 
-Grouped by method: Optimizer.__init__ (direction check), Optimizer.ask and Optimizer.tell (abstract in the
-base class), Optimizer.best_params, and the score mapping that Optimizer._internal applies, observed only
-through the public best_score and best_params after a single public ask/tell of an ABCOptimizer.
+Grouped by method: Optimizer.__init__ (direction check), Optimizer.ask, Optimizer.tell and Optimizer.cancel
+(abstract in the base class), Optimizer.best_params, and the score mapping that Optimizer._internal applies,
+observed only through the public best_score and best_params after a single public ask/tell of an
+ABCOptimizer.
 
 Unspecified, not asserted: best_score before any tell, and the private uniform block size.
 
@@ -68,6 +69,22 @@ def test_optimizer_ask_and_tell_should_raise_not_implemented_error_when_called_o
 
     with pytest.raises(NotImplementedError):
         call(opt)
+
+
+def test_optimizer_cancel_should_raise_not_implemented_error_when_called_on_base_class():
+    """Given the base Optimizer, when cancel([]) is called, then NotImplementedError is raised.
+
+    Oracle: the Optimizer.cancel docstring ('An optimizer that does not override it keeps such candidates
+    pending'): withdrawing candidates belongs to the concrete optimizers, and optimize() treats the
+    NotImplementedError as 'keep them pending'. Input: an empty list shows that the error does not come
+    from input validation. Site: Optimizer.cancel raise.
+    """
+    opt = Optimizer(_unit_space(), seed=ANY_SEED)
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        opt.cancel([])
+
+    assert excinfo.type is NotImplementedError
 
 
 @pytest.mark.parametrize(

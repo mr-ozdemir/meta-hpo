@@ -16,6 +16,8 @@ space.py, Int.__post_init__, ValueError "log-scaled Int":
     same test [int-log-low-zero, int-log-low-negative]
 space.py, Categorical.__post_init__, ValueError "at least one choice":
     same test [categorical-empty]
+space.py, Categorical.__post_init__, ValueError "distinct":
+    test_space_errors.py::test_categorical_should_raise_value_error_when_two_choices_have_the_same_type_and_compare_equal
 space.py, Space.__init__, ValueError "at least one parameter":
     same test [space-empty]
 space.py, Space.__init__, TypeError "not a metahpo parameter":
@@ -33,8 +35,11 @@ abc.py, ABCOptimizer.ask, RuntimeError "pending candidate":
     test_abc_protocol.py::test_abc_optimizer_ask_should_raise_runtime_error_when_an_employed_candidate_is_pending
 abc.py, ABCOptimizer.tell, ValueError "same length":
     test_abc_protocol.py::test_abc_optimizer_tell_should_raise_value_error_when_lengths_differ
-abc.py, ABCOptimizer.tell, ValueError "not asked":
+abc.py, ABCOptimizer._claim (tell and cancel), ValueError "not asked":
     test_abc_protocol.py::test_abc_optimizer_tell_should_raise_value_error_when_candidate_is_unknown_or_already_told
+    test_abc_protocol.py::test_abc_optimizer_cancel_should_raise_value_error_and_cancel_nothing_when_one_candidate_is_not_pending
+abc.py, ABCOptimizer._claim (tell and cancel), ValueError "not handed out":
+    test_abc_protocol.py::test_abc_optimizer_tell_should_raise_value_error_when_a_candidate_of_another_optimizer_has_a_pending_id
 study.py, Study.best_trial, ValueError "finite":
     test_study.py::test_study_best_trial_should_raise_value_error_when_no_trial_has_a_finite_score
 facade.py, optimize, ValueError "max_evals":
@@ -45,13 +50,15 @@ Pass-through of a user exception raised by the objective (no raise site of its o
 try/except around the call):
     test_facade.py::test_optimize_should_propagate_objective_exception_unchanged_when_objective_raises
 
-That is 17 raise sites plus the pass-through. Excluded as unspecified: the NotImplementedError hooks
+That is 19 raise sites plus the pass-through. Excluded as unspecified: the NotImplementedError hooks
 Parameter.kind, Parameter.decode, Parameter.decode_one, Parameter.to_python (space.py) and Optimizer.ask,
-Optimizer.tell (base.py). No spec source gives them a contract.
+Optimizer.tell (base.py). No spec source gives them a contract. Optimizer.cancel (base.py) has one, because
+optimize() relies on it:
+    test_base.py::test_optimizer_cancel_should_raise_not_implemented_error_when_called_on_base_class
 
 match= is used only where one call has several ValueError paths: Float and Int each have two, so their
-cases carry a keyword. Categorical and the empty Space have a single ValueError path per call, so their
-cases check the type only.
+cases carry a keyword. The empty Space has a single ValueError path, so its case checks the type only; the
+empty Categorical case does too, and the duplicate-choice cases carry the keyword 'distinct'.
 
 Unspecified, not asserted: non-finite bounds such as Float(nan, 1.0), and an inverted range combined with
 log=True. Which check fires first there is an implementation detail.
@@ -246,3 +253,67 @@ def test_space_to_dicts_should_give_every_choice_in_order_for_the_categorical_sh
     params = space.to_dicts(u)
 
     assert params == [{"c": choice} for choice in choices]
+
+
+class _ListChoice(list):
+    """A list subclass: unhashable, and equal to a plain list with the same items, but of another type."""
+
+
+class _IncomparableChoice:
+    """A choice object whose == raises, like a numpy array of several elements in a boolean context."""
+
+    __hash__ = None
+
+    def __eq__(self, other):
+        raise RuntimeError("cannot compare")
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        pytest.param(["a", "a"], id="equal-strings"),
+        pytest.param([1, 2, 1], id="equal-ints-apart"),
+        pytest.param([0.5, 0.5], id="equal-floats"),
+        pytest.param([(1, 2), (1, 2)], id="equal-tuples"),
+        pytest.param([[1], [1]], id="equal-unhashable-lists"),
+        pytest.param([{"k": 1}, {"k": 1}], id="equal-unhashable-dicts"),
+    ],
+)
+def test_categorical_should_raise_value_error_when_two_choices_have_the_same_type_and_compare_equal(choices):
+    """Given a choice list with two choices of the same type that compare equal, when Categorical is built,
+    then ValueError ('distinct') is raised.
+
+    Oracle: Categorical docstring ('Choices must be distinct: two choices of the same type that compare
+    equal raise ValueError, because the cache tells parameter sets apart by the index of the choice').
+    Inputs: hashable and unhashable choices, so both the set lookup and the pairwise comparison are
+    exercised; [1, 2, 1] shows the duplicate need not be adjacent.
+    """
+    with pytest.raises(ValueError, match="distinct") as excinfo:
+        Categorical(choices)
+
+    assert excinfo.type is ValueError
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        pytest.param([1, True, 1.0], id="equal-values-of-different-types"),
+        pytest.param([[1], [2], (1,)], id="distinct-unhashable-lists"),
+        pytest.param([[1], _ListChoice([1])], id="equal-unhashable-values-of-different-types"),
+        pytest.param([_IncomparableChoice(), _IncomparableChoice()], id="comparison-raises"),
+        pytest.param([None, "None", 0], id="none-and-lookalikes"),
+    ],
+)
+def test_categorical_should_keep_every_choice_when_choices_differ_in_type_or_cannot_be_compared(choices):
+    """Given choices that compare equal only across types, unhashable distinct choices, or choices whose ==
+    raises, when Categorical is built, then it keeps every choice object in order.
+
+    Oracle: Categorical docstring (only 'two choices of the same type that compare equal' are rejected) and
+    the README ('one of choices'). Inputs: 1 == True == 1.0 holds in Python, but the types differ, so the
+    function sees different values; the same holds for the unhashable [1] and a list subclass holding 1;
+    a comparison that raises counts as different.
+    """
+    parameter = Categorical(choices)
+
+    assert len(parameter.choices) == len(choices)
+    assert all(kept is given for kept, given in zip(parameter.choices, choices, strict=True))

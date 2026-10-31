@@ -110,14 +110,15 @@ trajectory level
 Plan: cross-cutting
 Scenario groups: README examples end to end; seeded determinism and order independence; pinned
 characterisation snapshots and runtime budget; seeded fuzzing with an exception oracle; grammar-derived
-spaces and pairwise configuration coverage; public API contract and configuration smoke test; static guards
-on source and test files; suite layout and this plan; requirement-test traceability matrix
+spaces and pairwise configuration coverage; public API contract and configuration smoke test; ask/tell
+contract of every optimizer in OPTIMIZER_FACTORIES; static guards on source and test files; suite layout
+and this plan; requirement-test traceability matrix
     test_end_to_end.py | system | README examples as acceptance tests
     test_determinism.py | system | same seed gives the same study, isolation from outside randomness
     test_regression.py | system | pinned seeded outcomes and runtime budget
     test_fuzz.py | integration | abnormal inputs against every public entry point
     test_fuzz_grammar.py | system | grammar-derived spaces run through optimize()
-    test_api_contract.py | system | metahpo.__all__, signatures and defaults
+    test_api_contract.py | system | metahpo.__all__, signatures, defaults, contract of every optimizer
     test_static.py | static (outside the triangle, P-T1-48) | source and test file guards
     test_suite_layout.py | static (outside the triangle, P-T1-48) | this plan against the files on disk
     test_traceability.py | static (outside the triangle, P-T1-48) | requirement to test matrix

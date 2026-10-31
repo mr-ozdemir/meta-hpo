@@ -266,7 +266,6 @@ REQUIREMENTS = {
         ],
         "tests": [
             "test_abc::test_fitness_and_probabilities_match_the_original_formulas",
-            "test_abc_spec::test_abc_employed_tell_should_reset_trial_only_on_strictly_greater_fitness",
         ],
     },
     "R-PROB": {
@@ -354,14 +353,12 @@ REQUIREMENTS = {
     },
     "R-ABC-GREEDY": {
         "source": [
-            "metahpo.optimizers.abc | The phases run in the same order and with the same rules as the "
-            "original hyp_optimizer implementation",
-            "derived: hyp_optimizer/ABC.py line 113 'if fitness_sol > self.fitness[i]:', else branch line "
-            "121 'self.trial[i] = self.trial[i] + 1'.",
+            "metahpo.optimizers.abc | Greedy acceptance compares the raw minimised scores: a neighbour "
+            "replaces its food source when its score is strictly lower.",
+            "derived: hyp_optimizer/ABC.py else branch line 121 'self.trial[i] = self.trial[i] + 1'; its "
+            "line 113 compares fitness, which the module docstring names as a deliberate deviation.",
         ],
-        "tests": [
-            "test_abc_spec::test_abc_employed_tell_should_reset_trial_only_on_strictly_greater_fitness"
-        ],
+        "tests": ["test_abc_spec::test_abc_employed_tell_should_reset_trial_only_on_a_strictly_lower_score"],
     },
     "R-ONLOOKER-VISIBLE": {
         "source": [

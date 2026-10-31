@@ -39,6 +39,34 @@ def _decode_categorical(u: FloatArray, n: Any) -> FloatArray:
     return np.asarray(np.minimum(np.floor(u * n), np.asarray(n) - 1), dtype=np.float64)
 
 
+def _same_choice(a: Any, b: Any) -> bool:
+    """True when a and b have the same type and compare equal; a comparison that fails counts as different."""
+    if type(a) is not type(b):
+        return False
+    try:
+        return bool(a == b)
+    except Exception:
+        return False
+
+
+def _has_duplicate(choices: Sequence[Any]) -> bool:
+    """True when two choices have the same type and compare equal.
+
+    Hashable choices are compared through a set of (type, choice) pairs, so a long list costs linear time;
+    the others are compared pairwise with `_same_choice`.
+    """
+    hashed: set[tuple[type, Any]] = set()
+    rest: list[Any] = []
+    for choice in choices:
+        try:
+            if (type(choice), choice) in hashed:
+                return True
+            hashed.add((type(choice), choice))
+        except Exception:
+            rest.append(choice)
+    return any(_same_choice(a, b) for n, a in enumerate(rest) for b in rest[:n])
+
+
 def _exact_integer(value: Any) -> bool:
     try:
         number = float(value)
@@ -142,7 +170,11 @@ class Int(Parameter):
 
 @dataclass(frozen=True)
 class Categorical(Parameter):
-    """One of `choices`; every choice gets an equal share of the unit interval."""
+    """One of `choices`; every choice gets an equal share of the unit interval.
+
+    Choices must be distinct: two choices of the same type that compare equal raise ValueError, because the
+    cache tells parameter sets apart by the index of the choice.
+    """
 
     choices: Sequence[Any] = field(default_factory=tuple)
 
@@ -150,6 +182,8 @@ class Categorical(Parameter):
         if len(self.choices) == 0:
             raise ValueError("Categorical needs at least one choice")
         object.__setattr__(self, "choices", tuple(self.choices))
+        if _has_duplicate(self.choices):
+            raise ValueError(f"Categorical choices must be distinct, got {self.choices!r}")
 
     @property
     def kind(self) -> str:
