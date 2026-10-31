@@ -42,10 +42,11 @@ the facade hands the optimizer's candidates to the objective, stores Trials buil
 params and x, reuses cached scores, and tells the optimizer, so Study and optimizer must end up agreeing.
 Non-finite scores are injected into the chain as faults (a failed or diverged training run).
 
-Oracles: optimize docstring (max_evals counts evaluations, cache reuses the earlier score of a repeated
-parameter set), README Behaviour (NaN or infinity is the worst value for the direction, cache), Study and
-Trial docstrings (failed means non-finite, best_trial uses finite trials only), Optimizer docstring
-(scores in the user's direction), Candidate and Space.to_dicts docstrings.
+Oracles: optimize docstring (max_evals counts the calls of function, cache reuses the earlier score of a
+repeated parameter set, the search stops early once the space is exhausted), README Behaviour (NaN or
+infinity is the worst value for the direction, cache), Study and Trial docstrings (failed means
+non-finite, best_trial uses finite trials only), Optimizer docstring (scores in the user's direction),
+Candidate and Space.to_dicts docstrings.
 
 Doubles: stub_objective returns a cheap score with one peak; stub_objective_injecting_non_finite returns
 NaN, +inf or -inf in turn on every INJECT_EVERY-th real call and records what it returned; _nan_objective
@@ -278,24 +279,27 @@ def test_optimize_should_stop_inside_the_initial_batch_when_max_evals_is_smaller
 
 
 def test_optimize_should_call_the_function_once_per_distinct_params_when_the_abc_chain_repeats_them():
-    """Given the README mixed space and the default ABC chain, when 600 evaluations run, then every first
+    """Given the README mixed space and an ABC chain with max_tries=1, when 600 calls run, then every first
     occurrence of a params set is a real call, every repeat is cached with the first score, and the real
-    calls equal the number of distinct params sets.
+    calls equal both the number of distinct params sets and the budget.
 
     Integration counterpart of the objective-double cache test (P-T3-15). Oracle: README Behaviour ('a
-    repeated parameter set reuses its earlier score'), CHANGELOG ('a configuration is never trained twice'),
-    Study.n_calls docstring ('cached repeats are not counted'). Input: 600 evaluations run deep into the
-    employed and onlooker phases, where Space.move repeats Int and Categorical values; the test asserts
-    that cached trials occur, so the check is not empty.
+    repeated parameter set reuses its earlier score'; a repeat does not count against max_evals), CHANGELOG
+    ('a configuration is never trained twice'), Study.n_calls docstring ('cached repeats are not counted').
+    Input: 600 calls run deep into the employed and onlooker phases, where Space.move repeats Int and
+    Categorical values; max_tries=1 hands such a repeat out instead of retrying (Optimizer docstring). The
+    test asserts that cached trials occur, so the check is not empty.
     """
     space = _readme_space()
+    optimizer = ABCOptimizer(space, seed=ANY_SEED, max_tries=1)
     calls = []
 
-    study = optimize(_spy(readme_objective, calls), space, max_evals=LONG_RUN_EVALS, seed=ANY_SEED)
+    study = optimize(_spy(readme_objective, calls), space, max_evals=LONG_RUN_EVALS, optimizer=optimizer)
 
     violations, distinct, cached = _cache_violations(study)
     assert violations == []
     assert (study.n_calls, len(calls)) == (distinct, distinct)
+    assert study.n_calls == LONG_RUN_EVALS
     assert cached > 0
 
 
@@ -405,13 +409,14 @@ def test_optimize_should_run_many_cycles_with_every_trial_in_range_when_abc_uses
     edge_setting,
 ):
     """Given a real ABCOptimizer at a minimum valid setting on a linear mixed space, when 300 evaluations run,
-    then exactly 300 trials result, every parameter stays in its README range, and many cycles pass.
+    then exactly 300 calls result, every parameter stays in its README range, and many cycles pass.
 
     Edge cases (P-T1-43): colony_size=4 is the smallest valid colony (2 food sources, one possible neighbour
     partner); limit=1 is the smallest valid abandonment limit (that scouts really occur at this setting is a
     separate behaviour, checked by the limit-one scout test). Oracle: ABCOptimizer
-    guards ('colony_size must be at least 4', 'limit must be at least 1'), README Search space table, task
-    specification (exact max_evals). The cycle bound comes from the phase schedule of ABC.py and
+    guards ('colony_size must be at least 4', 'limit must be at least 1'), README Search space table, optimize
+    docstring (max_evals counts the calls of function; with one partner a neighbour may repeat a set, which
+    the cache answers without a call). The cycle bound comes from the phase schedule of ABC.py and
     Karaboga & Basturk 2007: after the sn initial evaluations a cycle costs at most sn employed + sn onlooker
     + 1 scout evaluations, and the last cycle may be incomplete, so at least
     (max_evals - sn) // (2 * sn + 1) - 1 cycles complete. No log Float is used, so the bounds check does not
@@ -424,23 +429,24 @@ def test_optimize_should_run_many_cycles_with_every_trial_in_range_when_abc_uses
 
     study = optimize(linear_mixed_objective, space, max_evals=EDGE_RUN_EVALS, optimizer=optimizer)
 
-    assert len(study.trials) == EDGE_RUN_EVALS
+    assert study.n_calls == EDGE_RUN_EVALS
     assert _trials_outside_linear_mixed_space(study) == []
     assert optimizer.cycle >= min_complete_cycles
 
 
 def test_optimize_should_call_the_function_once_when_a_single_value_space_meets_minimum_colony_and_limit():
     """Given Space({'x': Int(5, 5)}), a real ABCOptimizer with colony_size=4 and limit=1 and a constant
-    objective, when 50 evaluations run, then the function is called once and every later trial is cached
-    with params {'x': 5}.
+    objective, when 50 evaluations are allowed, then the function is called once, the second source of the
+    initial batch is cached with params {'x': 5}, and the run stops.
 
     Corner case (P-T1-43, several edges at once): a one-value Int (low == high is allowed), the minimum
     colony, the minimum limit, and a constant score, so every greedy comparison ties and fails, which keeps
     the scout rule active; whatever phase produces a candidate, it decodes to the same configuration. Scouts
     are not observed here (one coordinate cannot tell a scout from a neighbour); the limit-one scout test
     observes them. Oracle: README
-    (Int low..high inclusive; cache), CHANGELOG ('never trained twice'), Study.n_calls docstring, task
-    specification (exact max_evals).
+    (Int low..high inclusive; cache), CHANGELOG ('never trained twice'), Study.n_calls docstring, optimize
+    docstring (the search stops once every parameter set of a space without Float has been evaluated, so
+    the initial batch of colony_size // 2 = 2 is the whole run).
     """
     space = Space({"x": Int(5, 5)})
     optimizer = ABCOptimizer(space, colony_size=4, limit=1, seed=ANY_SEED)
@@ -451,8 +457,8 @@ def test_optimize_should_call_the_function_once_when_a_single_value_space_meets_
 
     study = optimize(_spy(constant_objective, calls), space, max_evals=CORNER_RUN_EVALS, optimizer=optimizer)
 
-    assert [_typed(t.params) for t in study.trials] == [{"x": (int, 5)}] * CORNER_RUN_EVALS
-    assert [t.cached for t in study.trials] == [False] + [True] * (CORNER_RUN_EVALS - 1)
+    assert [_typed(t.params) for t in study.trials] == [{"x": (int, 5)}] * optimizer.food_number
+    assert [t.cached for t in study.trials] == [False, True]
     assert (study.n_calls, len(calls)) == (1, 1)
 
 
@@ -614,9 +620,10 @@ def _nan_objective(params):
     return math.nan
 
 
-def _run_integration_study(space):
-    """optimize() maximising stub_objective with an explicit seeded ABCOptimizer; returns (study, opt)."""
-    opt = ABCOptimizer(space, direction="max", seed=INTEGRATION_SEED)
+def _run_integration_study(space, **settings):
+    """optimize() maximising stub_objective with an explicit seeded ABCOptimizer, built with the extra
+    keyword `settings`; returns (study, opt)."""
+    opt = ABCOptimizer(space, direction="max", seed=INTEGRATION_SEED, **settings)
     study = optimize(stub_objective, space, direction="max", max_evals=INTEGRATION_EVALS, optimizer=opt)
     return study, opt
 
@@ -663,7 +670,7 @@ def test_optimize_should_return_a_study_whose_best_agrees_with_the_passed_abc_op
     """Given an explicit ABCOptimizer maximising over a mixed space, when optimize() runs 61 evaluations
     with it, then the Study best equals the optimizer best.
 
-    Oracle: optimize docstring (the optimizer's evaluations are the trials), Optimizer docstring (scores
+    Oracle: optimize docstring (max_evals counts the calls of function), Optimizer docstring (scores
     in the user's direction), Study.best_trial. Study takes params from the candidates (Space.move for
     neighbours) and its best over the finite trials; the optimizer decodes its stored best x with to_dicts.
     The two agree only if the facade passed every score to the right candidate in the same direction.
@@ -696,17 +703,18 @@ def test_optimize_should_record_trials_in_order_whose_params_decode_their_x_with
 
 
 def test_optimize_should_give_a_cached_trial_the_score_of_the_earlier_trial_with_equal_params():
-    """Given the same explicit ABCOptimizer run, when cached trials are compared with earlier real trials,
-    then each cached trial has the earlier score.
+    """Given the same explicit ABCOptimizer run with max_tries=1, when cached trials are compared with earlier
+    real trials, then each cached trial has the earlier score.
 
     Oracle: optimize docstring and README Behaviour ('a repeated parameter set reuses its earlier score').
-    The small Int and Categorical ranges make neighbour moves repeat parameter sets, so the run contains
+    The small Int and Categorical ranges make neighbour moves repeat parameter sets, and with max_tries=1
+    the optimizer hands such a repeat out instead of retrying (Optimizer docstring), so the run contains
     cached trials (asserted, so the check is not empty). A cache that stored the score under the wrong key
     or for the wrong candidate gives a cached trial a different score.
     """
     space = _small_discrete_space()
 
-    study, opt = _run_integration_study(space)
+    study, opt = _run_integration_study(space, max_tries=1)
 
     cached, wrong = _cache_report(study)
     assert wrong == []

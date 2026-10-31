@@ -456,10 +456,10 @@ REQUIREMENTS = {
     "R-CACHE": {
         "source": [
             "README.md | With `cache=True` (the default), a repeated parameter set reuses its earlier score "
-            "instead of training again.",
+            "instead of training again and does not count against `max_evals`.",
             "CHANGELOG.md | Caching of repeated parameter sets, so a configuration is never trained twice.",
             "metahpo.facade.optimize | with `cache=True` a repeated parameter set reuses the earlier score "
-            "instead of calling `function` again.",
+            "and does not use up the budget.",
         ],
         "tests": [
             "test_abc::test_cache_skips_repeated_parameter_sets",
@@ -470,8 +470,8 @@ REQUIREMENTS = {
     "R-BUDGET-EXACT": {
         "source": [
             "README.md | Its training budget is entirely yours; meta-hpo only counts evaluations.",
-            "metahpo.facade.optimize | `max_evals` counts the optimizer's evaluations",
-            "derived: computed spec, exact max_evals trials (even inside the initial batch).",
+            "metahpo.facade.optimize | `max_evals` counts the calls of `function`",
+            "derived: computed spec, exact max_evals calls (even inside the initial batch).",
         ],
         "tests": [
             "test_abc::test_budget_is_exact_even_inside_the_initial_population",

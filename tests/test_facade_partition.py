@@ -1,7 +1,7 @@
 """Equivalence classes of optimize(): evaluation budget, configuration consistency and a single-point corner.
 
-Oracles: the optimize docstring ('max_evals counts the optimizer's evaluations'; with cache=True 'a repeated
-parameter set reuses the earlier score instead of calling function again'; default optimizer ABCOptimizer),
+Oracles: the optimize docstring ('max_evals counts the calls of function'; with cache=True 'a repeated
+parameter set reuses the earlier score and does not use up the budget'; default optimizer ABCOptimizer),
 README Behaviour (cache), the Study.n_calls docstring and the task spec for the facade (exactly max_evals
 trials even inside the initial batch, ValueError for max_evals < 1 or a mismatched optimizer space or
 direction, user exceptions propagate). The default colony_size 10 gives SN = 10 // 2 = 5 initial points
@@ -160,13 +160,15 @@ def test_optimize_should_propagate_the_objective_exception_when_the_objective_ra
 
 
 def test_optimize_should_call_the_function_once_when_the_space_has_a_single_point():
-    """Given a one-point space and cache=True, when 6 evaluations run, then one function call serves all.
+    """Given a one-point space and cache=True, when 6 evaluations are allowed, then one function call serves
+    the whole initial batch and the run stops.
 
-    Oracle: README Behaviour and the optimize docstring (a repeated parameter set reuses the earlier score),
-    Study.n_calls docstring, the task spec (exactly max_evals trials) and the Int / Categorical classes
-    I2 and C2 (the only point is a = 2, b = 'only'). Budget SN + 1 = 6 makes the repeats happen both inside
-    the initial batch and in the first employed bee. Postcondition: the trials, their cached flags and the
-    call record.
+    Oracle: README Behaviour and the optimize docstring (a repeated parameter set reuses the earlier score;
+    the search stops once every parameter set of a space without Float has been evaluated), Study.n_calls
+    docstring and the Int / Categorical classes I2 and C2 (the only point is a = 2, b = 'only'). Budget
+    SN + 1 = 6 would allow a first employed bee after the initial batch of SN = 5, but the one point is
+    evaluated by then, so the 4 repeats of the batch are the only cached trials. Postcondition: the trials,
+    their cached flags and the call record.
     """
     space = Space({"a": Int(2, 2), "b": Categorical(["only"])})
     calls = []
@@ -177,7 +179,7 @@ def test_optimize_should_call_the_function_once_when_the_space_has_a_single_poin
 
     study = optimize(spy_objective, space, max_evals=SN_OF_DEFAULT_COLONY + 1, seed=ANY_SEED, cache=True)
 
-    assert [t.params for t in study.trials] == [{"a": 2, "b": "only"}] * 6
+    assert [t.params for t in study.trials] == [{"a": 2, "b": "only"}] * SN_OF_DEFAULT_COLONY
     assert {type(t.params["a"]) for t in study.trials} == {int}
-    assert [t.cached for t in study.trials] == [False] + [True] * 5
+    assert [t.cached for t in study.trials] == [False] + [True] * (SN_OF_DEFAULT_COLONY - 1)
     assert (study.n_calls, len(calls)) == (1, 1)

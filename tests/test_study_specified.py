@@ -13,11 +13,11 @@ Resolved here:
 Resolved by existing tests, not repeated:
 - Study.best_score under direction='max' is on the user's scale: tests/test_abc.py::
   test_direction_max_and_nan_handling (best_score > 0.95 for an objective in [0, 1]).
-- A cached repeat consumes budget but is not a call (optimize docstring 'max_evals counts the optimizer's
-  evaluations; with cache=True a repeated parameter set reuses the earlier score instead of calling
-  function again'; Study.n_calls docstring 'cached repeats are not counted'): tests/test_abc.py::
-  test_cache_skips_repeated_parameter_sets (100 trials, at most 6 calls) and, exactly, the equivalence-class
-  test test_optimize_should_call_the_function_once_when_the_space_has_a_single_point.
+- A cached repeat is not a call and does not consume budget (optimize docstring 'max_evals counts the
+  calls of function: with cache=True a repeated parameter set reuses the earlier score and does not use up
+  the budget'; Study.n_calls docstring 'cached repeats are not counted'): tests/test_abc.py::
+  test_cache_skips_repeated_parameter_sets (6 calls, one per parameter set, plus cached trials) and, exactly,
+  the equivalence-class test test_optimize_should_call_the_function_once_when_the_space_has_a_single_point.
 - max_evals < 1 raises ValueError and max_evals = 1 gives exactly one trial: the error-path test
   test_optimize_should_raise_value_error_when_max_evals_is_below_one and the boundary test
   test_optimize_should_run_exactly_one_evaluation_when_max_evals_is_one. The lower bound is stated only in

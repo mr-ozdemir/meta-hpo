@@ -17,8 +17,8 @@ Characterised, not documented: these values come from the current public signatu
 a change shows up as a named failure, not because a spec source states them:
 - the defaults max_evals=500, direction='min', seed=None of optimize (cache=True and optimizer=None
   follow from README Behaviour and the facade docstring);
-- the defaults direction='min', colony_size=10, limit=15, seed=None of ABCOptimizer (the README passes
-  colony_size=10 and limit=15 explicitly without calling them defaults);
+- the defaults direction='min', colony_size=10, limit=15, seed=None, max_tries=100 of ABCOptimizer (the
+  README passes colony_size=10 and limit=15 explicitly without calling them defaults);
 - the field order of Candidate and Trial, and the Trial field names;
 - Study.scores and Study.best_trial as properties (no docstring or README line names them).
 
@@ -39,7 +39,7 @@ without asserting much else. Only 'import metahpo' runs at module level, so a re
 tests by name instead of interrupting collection.
 
 Oracles: facade.optimize docstring ('The default optimizer is ABCOptimizer', 'max_evals counts the
-optimizer's evaluations'), README Behaviour ('cache=True (the default)'), CHANGELOG 'Added' ('optimize()
+calls of function'), README Behaviour ('cache=True (the default)'), CHANGELOG 'Added' ('optimize()
 ... returning a Study with every trial') and the original ABC.py (FoodNumber = NP/2, initial population
 evaluated as one batch).
 
@@ -230,9 +230,11 @@ def test_abc_optimizer_should_declare_constructor_parameters_in_documented_order
     hidden.
 
     Oracle: README Ask and tell ABCOptimizer(space, direction=..., colony_size=..., limit=..., seed=...);
-    space is passed positionally there, so it must be the first parameter.
+    space is passed positionally there, so it must be the first parameter. max_tries is the last keyword
+    (the Optimizer docstring: a new parameter set is searched for in `max_tries` attempts), after seed, so
+    the README call keeps its meaning.
     """
-    expected = ["space", "direction", "colony_size", "limit", "seed"]
+    expected = ["space", "direction", "colony_size", "limit", "seed", "max_tries"]
 
     names = list(inspect.signature(metahpo.ABCOptimizer).parameters)
 
@@ -258,6 +260,7 @@ def test_abc_optimizer_should_require_space():
         pytest.param("colony_size", 10, id="colony_size-10"),
         pytest.param("limit", 15, id="limit-15"),
         pytest.param("seed", None, id="seed-None"),
+        pytest.param("max_tries", 100, id="max_tries-100"),
     ],
 )
 def test_abc_optimizer_should_declare_documented_default(name, expected):
@@ -265,7 +268,7 @@ def test_abc_optimizer_should_declare_documented_default(name, expected):
     is the pinned value.
 
     Oracle: characterisation of the current public signature (see the module docstring); the README
-    passes colony_size=10 and limit=15 explicitly without calling them defaults. 10 and 15 are
+    passes colony_size=10 and limit=15 explicitly without calling them defaults. 10, 15 and 100 are
     discriminating: any other default fails, and the type check rejects 10.0 for 10.
     """
     expected_type = type(expected)
@@ -512,12 +515,13 @@ DEFAULT_COLONY_SIZE = 10
 
 def test_optimize_should_run_to_the_default_budget_when_only_function_space_and_seed_are_given():
     """Given a two-Float space and a cheap sum of squares, when optimize gets only function, space and seed,
-    then it returns a minimising Study of 500 trials.
+    then it returns a minimising Study of 500 trials and 500 calls.
 
-    Oracle: facade.optimize docstring ('max_evals counts the optimizer's evaluations'), CHANGELOG 'Added'
+    Oracle: facade.optimize docstring ('max_evals counts the calls of function'), CHANGELOG 'Added'
     ('returning a Study with every trial') and the characterised defaults direction='min', max_evals=500.
     The seed only makes the run deterministic; any fixed value works. 500 is decisive: a changed default
-    budget or a broken budget loop changes the trial count.
+    budget or a broken budget loop changes the call count. Two Floats never repeat a parameter set, so the
+    trial count equals the call count.
     """
     space = metahpo.Space({"a": metahpo.Float(-1.0, 1.0), "b": metahpo.Float(-1.0, 1.0)})
 
@@ -529,6 +533,7 @@ def test_optimize_should_run_to_the_default_budget_when_only_function_space_and_
 
     assert type(study) is metahpo.Study
     assert len(study.trials) == DEFAULT_MAX_EVALS
+    assert study.n_calls == DEFAULT_MAX_EVALS
     assert study.direction == "min"
 
 

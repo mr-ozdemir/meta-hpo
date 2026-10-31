@@ -7,7 +7,7 @@ sys.monitoring branch probe: line 33 and edge 32L (max_evals below one), line 36
 (other direction, other space), edge 34R (supplied optimizer), edges 43R and 45R (cache=False), and the
 seen-cache definition-use pair (score stored, then reused).
 
-Oracles: the optimize() docstring ('max_evals counts the optimizer's evaluations', 'with cache=True a
+Oracles: the optimize() docstring ('max_evals counts the calls of function', 'with cache=True a
 repeated parameter set reuses the earlier score', 'The default optimizer is ABCOptimizer'), README Behaviour
 (cache, same seed reproduces the same search), CHANGELOG ('a configuration is never trained twice') and the
 task specification of optimize (exact max_evals trials even inside the initial batch, ValueError for
@@ -295,24 +295,27 @@ def test_optimize_should_call_the_function_for_every_trial_when_cache_is_false()
 
 
 def test_optimize_should_reuse_the_first_score_without_calling_the_function_when_a_parameter_set_repeats():
-    """Given 6 possible parameter sets and the default cache, when 100 evaluations run, then repeats reuse.
+    """Given 4 possible parameter sets and the default cache, when 100 evaluations are allowed, then repeats
+    reuse.
 
     Oracle: README Behaviour 'a repeated parameter set reuses its earlier score instead of training again',
     CHANGELOG 'a configuration is never trained twice', study.py 'cached repeats are not counted'. Input:
-    score k * n + 0.5 differs per set, so a cached trial carrying another set's score is detected. Site:
-    the seen-cache definition at facade line 46 used by the lookup at line 44.
+    score 10 * k + n + 0.5 differs per set, so a cached trial carrying another set's score is detected; 4
+    sets are fewer than the 5 candidates of the default initial batch, so a repeat occurs for any seed and
+    the run holds more trials than calls. Site: the seen-cache definition at facade line 42 used by the
+    lookup at line 48.
     """
     calls = []
-    spy_objective = _spy_objective(calls, lambda params: params["k"] * params["n"] + 0.5)
-    space = Space({"k": Categorical([1, 2, 3]), "n": Int(1, 2)})
+    spy_objective = _spy_objective(calls, lambda params: 10 * params["k"] + params["n"] + 0.5)
+    space = Space({"k": Categorical([1, 2]), "n": Int(1, 2)})
     budget = 100
 
     study = optimize(spy_objective, space, max_evals=budget, seed=ANY_SEED)
 
     assert _cache_reuse_violations(study) == []
-    assert len(calls) == _distinct_param_count(study)
+    assert len(calls) == _distinct_param_count(study) == space.size
     assert study.n_calls == len(calls)
-    assert len(study.trials) == budget
+    assert len(study.trials) > study.n_calls
 
 
 @pytest.mark.parametrize(
@@ -329,7 +332,7 @@ def test_optimize_should_return_exactly_max_evals_numbered_trials_when_the_budge
     """Given budgets 1, 5 and 6, when optimize() runs, then the Study holds trials numbered 0..max_evals-1.
 
     Oracle: task specification 'exact max_evals trials (even inside the initial batch)' and the optimize()
-    docstring 'max_evals counts the optimizer's evaluations'. Inputs: the boundaries on both sides of the
+    docstring 'max_evals counts the calls of function'. Inputs: the boundaries on both sides of the
     default initial batch of colony_size // 2 = 5 (the existing suite already checks 3). Site: the batch slice
     ask()[: max_evals - len(trials)].
     """

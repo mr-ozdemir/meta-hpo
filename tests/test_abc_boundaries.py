@@ -49,13 +49,14 @@ import sys
 import numpy as np
 import pytest
 
-from metahpo import ABCOptimizer, Float, Space
+from metahpo import ABCOptimizer, Categorical, Float, Int, Space
 
 ANY_SEED = 0
 LARGE_LIMIT = 10**6
 CONSTANT_SCORE = 1.0
 SOURCE_SCORE = 0.5
 WORSE_SCORE = 0.75
+REPEAT_RUN_STEPS = 60
 
 
 def _unit_space_3d():
@@ -554,3 +555,36 @@ def test_abc_ask_should_hand_out_one_employed_candidate_when_the_last_initial_ca
 
     assert (len(asked), opt.phase) == (1, "employed")
     assert np.count_nonzero(asked[0].x != initial[0].x) <= 1
+
+
+@pytest.mark.parametrize(
+    ("max_tries", "expected_repeat"),
+    [
+        pytest.param(1, True, id="one-try-hands-out-the-repeat"),
+        pytest.param(100, False, id="default-tries-find-a-new-set"),
+    ],
+)
+def test_abc_ask_should_hand_out_a_repeated_parameter_set_only_when_max_tries_is_too_small(
+    max_tries, expected_repeat
+):
+    """Given Int(1, 3) x Categorical(['p', 'q']) x Float(0, 1) and a constant objective, when the initial
+    batch and 60 single rounds are asked with max_tries 1 or the default 100, then a key is handed out twice
+    with max_tries=1 and never with 100.
+
+    Oracle: Optimizer docstring (a parameter set handed out before comes back only when no new one is found
+    in `max_tries` attempts). Input: 1 is the smallest valid value (0 raises, see test_abc_protocol.py), so
+    a neighbour that keeps the Int or Categorical value of its source is handed out at once; with 100
+    attempts the Float coordinate is drawn sooner or later and gives a new set, because the Float makes the
+    space infinite. Same seed for both cases, so only max_tries differs.
+    """
+    opt = ABCOptimizer(
+        Space({"a": Int(1, 3), "b": Categorical(["p", "q"]), "c": Float(0.0, 1.0)}),
+        max_tries=max_tries,
+        seed=ANY_SEED,
+    )
+    initial = _ask_and_tell_initial(opt, [CONSTANT_SCORE] * opt.food_number)
+
+    singles = _single_steps(opt, CONSTANT_SCORE, REPEAT_RUN_STEPS)
+
+    keys = [cand.key for cand in initial + singles]
+    assert (len(set(keys)) < len(keys)) is expected_repeat
