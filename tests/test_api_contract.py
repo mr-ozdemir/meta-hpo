@@ -49,8 +49,25 @@ the current public signature; they are pinned so that a change shows up as a nam
 Unspecified, and therefore not asserted: the quality of the result of a default run (best_score) and
 the number of calls of the objective.
 
-Input space: The public names, signatures and defaults of metahpo.
-Subset: Every documented name, field and default once, plus one smoke run of the default configuration.
+Optimizer contract tests for every optimizer.
+
+OPTIMIZER_FACTORIES lists one factory per optimizer of the library, each called as factory(space, seed).
+Today it holds ABCOptimizer only. Every new optimizer (GA, PSO, DE, ...) must be added to this list, so
+that it runs the same contract tests that pin defects once found in ABCOptimizer: a candidate of another
+optimizer that carries a pending id is rejected; a score that float() rejects raises and keeps the
+candidate pending; a failing batch leaves the optimizer unchanged (checked against a twin with the same
+seed that never sees the failing call); clearing cand.params between ask and tell does not change the
+search; optimize(max_evals=1, optimizer=opt) leaves opt usable for ask and tell; and the median best over
+21 seeds on the 3-D sphere scaled by 1e-20, divided by the scale, stays within a factor of 100 of the
+unscaled median with the same seeds and the same number of calls.
+
+Oracles: the Optimizer docstring (the contract every optimizer keeps), the optimize docstring (cancel of
+the candidates a budget cuts off) and the Candidate docstring.
+
+Input space: The public names, signatures and defaults of metahpo, and every optimizer with every
+ask/tell sequence.
+Subset: Every documented name, field and default once, plus one smoke run of the default configuration,
+and one seeded run per contract rule and optimizer factory.
 """
 
 import dataclasses
@@ -553,3 +570,248 @@ def test_abc_optimizer_should_ask_half_the_default_colony_as_first_batch_when_bu
 
     assert len(candidates) == expected_batch
     assert {type(c) for c in candidates} == {metahpo.Candidate}
+
+
+OPTIMIZER_FACTORIES = [
+    pytest.param(lambda space, seed: metahpo.ABCOptimizer(space, seed=seed), id="abc"),
+]
+
+
+CONTRACT_SEED = 0
+
+
+FOREIGN_SEED = 7
+
+
+CONTRACT_ROUNDS = 40
+
+
+SPHERE_SCALE = 1e-20
+
+
+SPHERE_SEEDS = tuple(range(21))
+
+
+SPHERE_EVALS = 300
+
+
+SPHERE_MEDIAN_FACTOR = 100.0
+
+
+def _contract_space():
+    """The 3-D box [-5, 5]^3 of three linear Floats, the domain of the sphere."""
+    return metahpo.Space({name: metahpo.Float(-5.0, 5.0) for name in ("a", "b", "c")})
+
+
+def _sphere(params):
+    """Sum of the squared parameter values; its minimum 0 lies at the centre of the box."""
+    return sum(value * value for value in params.values())
+
+
+def _sphere_scores(cands):
+    """The sphere score of each candidate."""
+    return [_sphere(c.params) for c in cands]
+
+
+def _with_id_of(cand, other):
+    """A public Candidate with the id of `cand` and the x, params and key of `other`."""
+    return metahpo.Candidate(cand.id, other.x, other.params, other.key)
+
+
+def _run_rounds(opt, rounds, spoil=False):
+    """Asks `rounds` times and tells each batch its sphere scores in one call; returns the handed-out keys,
+    copies of the handed-out params and the final best_score. With spoil=True every candidate's params dict
+    is cleared and given a stray entry after scoring and before the tell."""
+    keys, handed = [], []
+    for _ in range(rounds):
+        cands = opt.ask()
+        keys.extend(c.key for c in cands)
+        handed.extend(dict(c.params) for c in cands)
+        scores = _sphere_scores(cands)
+        for cand in cands:
+            if spoil:
+                cand.params.clear()
+                cand.params["stray"] = None
+        opt.tell(cands, scores)
+    return keys, handed, opt.best_score
+
+
+def _bad_last_score(batch, foreign):
+    """The whole batch with a last score that float() cannot convert."""
+    return batch, _sphere_scores(batch)[:-1] + ["bad"]
+
+
+def _foreign_last_candidate(batch, foreign):
+    """The batch whose last candidate is replaced by a candidate of another optimizer with the same id."""
+    return batch[:-1] + [_with_id_of(batch[-1], foreign[-1])], _sphere_scores(batch)
+
+
+def _first_candidate_twice(batch, foreign):
+    """The whole batch plus its first candidate a second time."""
+    return batch + batch[:1], _sphere_scores(batch + batch[:1])
+
+
+def _median_scaled_best(make_optimizer, scale):
+    """Runs optimize() on `scale` times the sphere for every seed of SPHERE_SEEDS with SPHERE_EVALS calls;
+    returns the median of best_score / scale and the number of calls of each run."""
+    space = _contract_space()
+    bests, calls = [], []
+    for seed in SPHERE_SEEDS:
+        study = metahpo.optimize(
+            lambda params: scale * _sphere(params),
+            space,
+            max_evals=SPHERE_EVALS,
+            optimizer=make_optimizer(space, seed),
+            seed=seed,
+        )
+        bests.append(study.best_score / scale)
+        calls.append(study.n_calls)
+    return float(np.median(bests)), calls
+
+
+@pytest.mark.parametrize("make_optimizer", OPTIMIZER_FACTORIES)
+def test_optimizer_tell_should_reject_a_candidate_of_another_optimizer_when_it_carries_a_pending_id(
+    make_optimizer,
+):
+    """Given an optimizer with its first batch pending, when it is told a candidate of another optimizer of
+    the same kind that carries the id of a pending candidate, then ValueError is raised, and the own batch
+    can still be told, giving the best of its scores.
+
+    Oracle: Optimizer docstring ('tell() accepts only candidates this optimizer handed out'). Decisive input:
+    ids are counted per optimizer, so the id alone does not tell a foreign candidate apart. Every optimizer
+    must be added to OPTIMIZER_FACTORIES.
+    """
+    space = _contract_space()
+    opt = make_optimizer(space, CONTRACT_SEED)
+    own, foreign = opt.ask(), make_optimizer(space, FOREIGN_SEED).ask()
+
+    with pytest.raises(ValueError):
+        opt.tell([_with_id_of(own[0], foreign[0])], [CONSTANT_SCORE])
+    opt.tell(own, _sphere_scores(own))
+
+    assert opt.best_score == min(_sphere_scores(own))
+
+
+@pytest.mark.parametrize("make_optimizer", OPTIMIZER_FACTORIES)
+@pytest.mark.parametrize("bad_score", [pytest.param("bad", id="string"), pytest.param(None, id="none")])
+def test_optimizer_tell_should_keep_the_candidate_pending_when_its_score_does_not_convert(
+    make_optimizer, bad_score
+):
+    """Given an optimizer with its first batch pending, when its first candidate is told a score that float()
+    rejects, then the float() error is raised, and the whole batch can then be told, giving the best of
+    its scores.
+
+    Oracle: Optimizer docstring ('every score must convert with float()'; 'a failing batch raises and leaves
+    the optimizer unchanged'). Decisive: an optimizer that drops the candidate before converting the score
+    raises on the second tell. Every optimizer must be added to OPTIMIZER_FACTORIES.
+    """
+    space = _contract_space()
+    opt = make_optimizer(space, CONTRACT_SEED)
+    batch = opt.ask()
+
+    with pytest.raises((ValueError, TypeError)):
+        opt.tell(batch[:1], [bad_score])
+    opt.tell(batch, _sphere_scores(batch))
+
+    assert opt.best_score == min(_sphere_scores(batch))
+
+
+@pytest.mark.parametrize("make_optimizer", OPTIMIZER_FACTORIES)
+@pytest.mark.parametrize(
+    "failing_batch",
+    [
+        pytest.param(_bad_last_score, id="last-score-not-a-number"),
+        pytest.param(_foreign_last_candidate, id="last-candidate-foreign"),
+        pytest.param(_first_candidate_twice, id="first-candidate-twice"),
+    ],
+)
+def test_optimizer_tell_should_leave_the_optimizer_unchanged_when_the_batch_fails(
+    make_optimizer, failing_batch
+):
+    """Given an optimizer and a twin with the same seed, when the optimizer is first told a batch whose last
+    part fails, then ValueError is raised and, once both are told their first batch, they hand out the same
+    keys and params and reach the same best_score over CONTRACT_ROUNDS asks.
+
+    Oracle: Optimizer docstring ('The whole batch is checked first'; 'a failing batch raises and leaves the
+    optimizer unchanged'). The twin never sees the failing tell, so it is the reference. Every optimizer
+    must be added to OPTIMIZER_FACTORIES.
+    """
+    space = _contract_space()
+    opt, twin = make_optimizer(space, CONTRACT_SEED), make_optimizer(space, CONTRACT_SEED)
+    batch, twin_batch = opt.ask(), twin.ask()
+    cands, scores = failing_batch(batch, make_optimizer(space, FOREIGN_SEED).ask())
+
+    with pytest.raises(ValueError):
+        opt.tell(cands, scores)
+    opt.tell(batch, _sphere_scores(batch))
+    twin.tell(twin_batch, _sphere_scores(twin_batch))
+
+    assert _run_rounds(opt, CONTRACT_ROUNDS) == _run_rounds(twin, CONTRACT_ROUNDS)
+
+
+@pytest.mark.parametrize("make_optimizer", OPTIMIZER_FACTORIES)
+def test_optimizer_should_hand_out_the_same_candidates_when_the_caller_clears_the_params_before_telling(
+    make_optimizer,
+):
+    """Given an optimizer and a twin with the same seed, when the caller clears every candidate's params dict
+    after scoring it and before telling it, then both hand out the same keys and params and reach the same
+    best_score over CONTRACT_ROUNDS asks.
+
+    Oracle: Optimizer docstring ('changing `cand.params` does not change the search') and the Candidate
+    docstring (params as the user's function receives them). Every optimizer must be added to
+    OPTIMIZER_FACTORIES.
+    """
+    space = _contract_space()
+    opt, twin = make_optimizer(space, CONTRACT_SEED), make_optimizer(space, CONTRACT_SEED)
+
+    spoiled = _run_rounds(opt, CONTRACT_ROUNDS, spoil=True)
+    reference = _run_rounds(twin, CONTRACT_ROUNDS)
+
+    assert spoiled == reference
+
+
+@pytest.mark.parametrize("make_optimizer", OPTIMIZER_FACTORIES)
+def test_optimize_should_leave_the_passed_optimizer_usable_for_ask_and_tell_when_max_evals_is_one(
+    make_optimizer,
+):
+    """Given an optimizer passed to optimize() with max_evals=1, when the caller goes on with CONTRACT_ROUNDS
+    rounds of ask and tell, then nothing raises, every round hands out candidates and the best score does
+    not get worse than the one evaluated trial.
+
+    Oracle: optimize docstring ('the candidates that are not evaluated are withdrawn with
+    `optimizer.cancel()`, so a passed optimizer can still be used with ask/tell afterwards'). Decisive: a
+    first batch larger than one candidate is cut to one, and an optimizer that keeps the rest pending
+    refuses to ask again. Every optimizer must be added to OPTIMIZER_FACTORIES.
+    """
+    space = _contract_space()
+    opt = make_optimizer(space, CONTRACT_SEED)
+    study = metahpo.optimize(_sphere, space, max_evals=1, optimizer=opt, seed=CONTRACT_SEED)
+
+    keys, _, best_score = _run_rounds(opt, CONTRACT_ROUNDS)
+
+    assert len(study.trials) == 1
+    assert len(keys) >= CONTRACT_ROUNDS
+    assert best_score <= study.best_score
+
+
+@pytest.mark.parametrize("make_optimizer", OPTIMIZER_FACTORIES)
+def test_optimizer_should_converge_as_well_on_a_sphere_scaled_by_1e_minus_20_when_evaluations_are_equal(
+    make_optimizer,
+):
+    """Given the 3-D sphere on [-5, 5]^3 and the same sphere times 1e-20, when optimize() runs 300 calls for
+    each of 21 seeds on both, then the runs use the same number of calls and the median of best_score / 1e-20
+    on the scaled sphere is at most 100 times the median best on the unscaled one.
+
+    Oracle: Optimizer docstring (scores are only compared, internally everything is minimised), so
+    multiplying every score by a positive constant must not ruin the search. Statistic: the median over 21
+    seeds is robust against a few unlucky runs. Bound: the two medians differ by a factor of about 0.8 to 2
+    for ABC (onlooker probabilities, which use 1 / (1 + f), become uniform at 1e-20); an acceptance rule on
+    1 / (1 + f) rejects every neighbour at that scale, because all fitness values round to 1.0, and gives
+    medians about 10**4 times worse, so 100 is generous yet still decisive. Every optimizer must be added to
+    OPTIMIZER_FACTORIES.
+    """
+    unscaled, unscaled_calls = _median_scaled_best(make_optimizer, 1.0)
+    scaled, scaled_calls = _median_scaled_best(make_optimizer, SPHERE_SCALE)
+
+    assert scaled_calls == unscaled_calls
+    assert scaled <= SPHERE_MEDIAN_FACTOR * unscaled

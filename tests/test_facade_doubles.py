@@ -20,7 +20,9 @@ Unspecified, not asserted: whether an equal but distinct Space object is accepte
 checks identity); Trial.number values and the order of Study.trials; which candidates of a truncated batch
 are evaluated (only that exactly the evaluated ones are told); whether the facade tells once per batch or
 per candidate; how many times ask() is called; whether candidate ids increase (only uniqueness is needed
-by the tell protocol); what a real ABCOptimizer does on a later ask() after a truncated run.
+by the tell protocol). CancellingScriptedOptimizer adds cancel() to the double, so the facade's cancel of
+the candidates a budget cuts off is checked against recorded calls; the plain double keeps the inherited
+cancel() that raises NotImplementedError, the case of an optimizer written before cancel() existed.
 
 optimize() (facade.py) driven by doubles of the user objective: stubs, sequenced stubs, mocks and a spy.
 
@@ -1158,3 +1160,115 @@ def test_study_should_expose_float64_scores_with_raw_non_finite_values_when_some
     assert (~np.isfinite(scores)).tolist() == [t.failed for t in study.trials]
     assert [t.failed for t in study.trials] == [True, False, True, False, True, True, False]
     assert scores[[1, 3, 6]].tolist() == [2.0, 1.0, 4.0]
+
+
+class CancellingScriptedOptimizer(ScriptedOptimizer):
+    """ScriptedOptimizer that also implements cancel(): it records the ids of each cancel call in `cancels`
+    and removes those candidates from `pending`, raising ValueError ('not asked') for one that is not
+    pending, as ABCOptimizer does."""
+
+    def __init__(self, space, direction, script):
+        super().__init__(space, direction, script)
+        self.cancels = []
+
+    def cancel(self, candidates):
+        if any(c.id not in self.pending for c in candidates):
+            raise ValueError("a candidate was not asked for or was already told")
+        self.cancels.append([c.id for c in candidates])
+        for c in candidates:
+            del self.pending[c.id]
+
+
+def _popping_objective(params):
+    """Objective that empties the dict it receives: pops every parameter, then sums the squares."""
+    return sum(params.pop(name) ** 2 for name in list(params))
+
+
+def _float_space_3d():
+    """Three linear Floats; the objective pops their names."""
+    return Space({"a": Float(-1.0, 1.0), "b": Float(-1.0, 1.0), "c": Float(-1.0, 1.0)})
+
+
+POPPING_RUN_EVALS = 60
+
+
+def test_cancelling_scripted_optimizer_should_record_the_cancelled_ids_and_ask_again_after_a_cancel():
+    """Given the cancelling double over FACADE_SCRIPT with its first batch of 3 pending, when 1 candidate is
+    told and the other 2 are cancelled, then the cancel is recorded with their ids and the next ask hands
+    out the second scripted batch.
+
+    Oracle: the double's own docstring (P-T3-07: the fake the facade tests rely on gets its own tests) and
+    the Optimizer.cancel docstring (withdrawn candidates no longer block ask()).
+    """
+    fake = CancellingScriptedOptimizer(_two_param_space(), "min", FACADE_SCRIPT)
+    first = fake.ask()
+    fake.tell(first[:1], [stub_objective(first[0].params)])
+
+    fake.cancel(first[1:])
+    second = fake.ask()
+
+    assert fake.cancels == [[1, 2]]
+    assert _ids(second) == [3]
+
+
+@pytest.mark.parametrize(
+    ("max_evals", "expected_cancels"),
+    [
+        pytest.param(1, [[1, 2]], id="one-of-three"),
+        pytest.param(2, [[2]], id="two-of-three"),
+        pytest.param(3, [], id="whole-batch"),
+    ],
+)
+def test_optimize_should_cancel_exactly_the_cut_candidates_when_the_budget_truncates_a_batch(
+    max_evals, expected_cancels
+):
+    """Given the cancelling double with batches of 3, 1, 1, when optimize() runs max_evals evaluations, then
+    the candidates cut from the first batch are cancelled once, in batch order, and nothing stays pending.
+
+    Oracle: optimize docstring ('When the budget cuts a batch short, the candidates that are not evaluated
+    are withdrawn with `optimizer.cancel()`'). Inputs: 1 and 2 cut the batch of 3, 3 is the boundary where
+    nothing is cut and cancel must not be called at all.
+    """
+    space = _two_param_space()
+    fake = CancellingScriptedOptimizer(space, "min", FACADE_SCRIPT)
+
+    study = optimize(stub_objective, space, max_evals=max_evals, optimizer=fake)
+
+    assert len(study.trials) == max_evals
+    assert fake.cancels == expected_cancels
+    assert fake.pending == {}
+
+
+def test_optimize_should_keep_the_cut_candidates_pending_when_the_optimizer_does_not_implement_cancel():
+    """Given the scripted double, which inherits the base cancel() that raises NotImplementedError, when
+    optimize() runs 2 evaluations of its batch of 3, then the run ends with 2 trials and the third candidate
+    stays pending.
+
+    Oracle: optimize docstring ('an optimizer that does not implement cancel() keeps them pending') and the
+    Optimizer.cancel docstring. Decisive: a facade that lets NotImplementedError escape breaks every
+    optimizer written before cancel() existed.
+    """
+    space = _two_param_space()
+    fake = _scripted_facade_optimizer(space)
+
+    study = optimize(stub_objective, space, max_evals=2, optimizer=fake)
+
+    assert len(study.trials) == 2
+    assert list(fake.pending) == [2]
+
+
+def test_optimize_should_hand_the_objective_a_copy_of_the_params_when_the_objective_empties_the_dict():
+    """Given a real ABCOptimizer and an objective that pops every parameter from the dict it receives, when
+    optimize() runs 60 evaluations, then no error escapes and every trial keeps the names a, b and c.
+
+    Oracle: optimize docstring ('`function` receives a copy of the candidate's params, so changing the dict
+    does not reach the optimizer') and the Candidate docstring (params as the user's function receives
+    them). Decisive: with the optimizer's own dict the popped names vanish from the trials, and a later
+    neighbour of such a source hands the objective a dict without them, so pop raises KeyError.
+    """
+    space = _float_space_3d()
+
+    study = optimize(_popping_objective, space, max_evals=POPPING_RUN_EVALS, seed=ANY_SEED)
+
+    assert len(study.trials) == POPPING_RUN_EVALS
+    assert {tuple(t.params) for t in study.trials} == {("a", "b", "c")}

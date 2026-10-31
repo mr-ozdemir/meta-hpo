@@ -34,6 +34,12 @@ class Optimizer:
 
     Scores are given in the user's direction; internally everything is minimised, and a NaN or infinite
     score becomes the worst possible value for the direction (-inf when maximising, +inf when minimising).
+
+    Every optimizer keeps this contract: tell() accepts only candidates this optimizer handed out and has not
+    been told yet, each at most once per call, and every score must convert with float(). The whole batch is
+    checked first, so a failing batch raises and leaves the optimizer unchanged. The optimizer keeps its own
+    copy of what it handed out, so changing `cand.params` does not change the search. cancel() withdraws
+    pending candidates that will not be evaluated.
     """
 
     def __init__(self, space: Space, direction: Direction = "min", seed: int | None = None) -> None:
@@ -59,6 +65,14 @@ class Optimizer:
         return self._uniforms.pop()
 
     def tell(self, candidates: Sequence[Candidate], scores: Sequence[float]) -> None:
+        raise NotImplementedError
+
+    def cancel(self, candidates: Sequence[Candidate]) -> None:
+        """Withdraws pending candidates that will not be evaluated, so the optimizer can ask again.
+
+        optimize() calls it for the candidates of a batch that the budget cuts off. An optimizer that does
+        not override it keeps such candidates pending.
+        """
         raise NotImplementedError
 
     @property

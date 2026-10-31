@@ -32,6 +32,11 @@ def optimize(
     use up the budget. The search stops early only when the space is exhausted: every parameter set of a
     space without Float has been evaluated, or `_MAX_REPEATS` candidates in a row were repeats. The default
     optimizer is ABCOptimizer.
+
+    `function` receives a copy of the candidate's params, so changing the dict does not reach the optimizer.
+    When the budget cuts a batch short, the candidates that are not evaluated are withdrawn with
+    `optimizer.cancel()`, so a passed optimizer can still be used with ask/tell afterwards; an optimizer
+    that does not implement cancel() keeps them pending.
     """
     if max_evals < 1:
         raise ValueError("max_evals must be at least 1")
@@ -42,11 +47,17 @@ def optimize(
     seen: dict[tuple[Any, ...], float] = {}
     calls = repeats = 0
     while calls < max_evals and repeats < _MAX_REPEATS and len(seen) < space.size:
-        cands = opt.ask()[: max_evals - calls]
+        batch = opt.ask()
+        cands, cut = batch[: max_evals - calls], batch[max_evals - calls :]
+        if cut:
+            try:
+                opt.cancel(cut)
+            except NotImplementedError:
+                pass
         scores = []
         for cand in cands:
             cached = cache and cand.key in seen
-            score = seen[cand.key] if cached else float(function(cand.params))
+            score = seen[cand.key] if cached else float(function(dict(cand.params)))
             if cache:
                 seen.setdefault(cand.key, score)
             calls += not cached

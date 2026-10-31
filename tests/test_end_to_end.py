@@ -54,7 +54,6 @@ CHANGELOG Added traceability:
    "failed".
 
 Unspecified, not asserted:
-- the number of evaluations the README ask/tell loop performs (the first ask returns a batch);
 - which of several different parameter sets with the same best score is reported as best, and, on the
   ask/tell side, which of several candidates told the same best score is reported (tie order);
 - the distribution of log-scaled values inside the closed range (only that lr spans its two decades);
@@ -76,7 +75,6 @@ README_SEED = 1
 README_MAX_EVALS = 300
 README_COLONY_SIZE = 10
 README_LIMIT = 15
-README_ROUNDS = 300
 QUICK_START_KEYS = {"lr", "kernel", "units", "dropout"}
 KERNEL_BONUS = {3: 0.0, 5: 0.02, 7: 0.01}
 DIVERGES_ABOVE_DROPOUT = 0.4
@@ -204,11 +202,13 @@ def _run_readme_ask_tell_loop(objective):
         space, direction="max", colony_size=README_COLONY_SIZE, limit=README_LIMIT, seed=README_SEED
     )
     told = []
-    for _ in range(README_ROUNDS):
+    evals = 0
+    while evals < README_MAX_EVALS:
         candidates = opt.ask()
         scores = [objective(c.params) for c in candidates]
         opt.tell(candidates, scores)
         told.extend(zip(candidates, scores, strict=True))
+        evals += len(candidates)
     return opt, told
 
 
@@ -488,7 +488,7 @@ def test_study_should_raise_value_error_for_the_best_when_every_trial_failed(att
 
 def test_ask_tell_should_report_the_best_told_score_and_its_candidate_params_when_running_the_readme_loop():
     """Given the README ask/tell loop verbatim (direction='max', colony_size=10, limit=15, seed=1, 300
-    rounds) with a stub train, when the loop ends, then best_score is the largest score told and
+    evaluations) with a stub train, when the loop ends, then best_score is the largest score told and
     best_params are the params of the first candidate told that score.
 
     Oracle: README Ask and tell section and Optimizer.best_params / best_score (best in the user's
@@ -497,7 +497,7 @@ def test_ask_tell_should_report_the_best_told_score_and_its_candidate_params_whe
     params, so the tie order (first or last told) cannot be observed here and is not asserted. lr is
     log-scaled, and Candidate.params and best_params may decode it along different float
     paths, so values are compared with pytest.approx at a relative tolerance of 1e-12; ints compare exactly.
-    The number of evaluations of the loop is not asserted (undocumented).
+    The loop itself stops on the evaluation count, so that count is not asserted.
     """
     opt, told = _run_readme_ask_tell_loop(stub_objective)
     largest = _largest_finite_told_score(told)
