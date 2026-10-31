@@ -31,7 +31,8 @@ pytest
 - No `#` comment lines in Python, YAML or TOML files. Explanations belong in docstrings or in the text.
 - Line endings are LF; `.gitattributes` takes care of it.
 - Inner loops work on numpy arrays; single values use plain Python, because a numpy call on one number
-  costs more than the arithmetic itself.
+  costs more than the arithmetic itself. The exception is a single-value path that must agree bit for bit
+  with its array path, such as the log decode of `Space.move`.
 
 ## Tests
 
@@ -39,6 +40,12 @@ pytest
 - Tests are deterministic: pass a `seed` to anything random.
 - A new optimizer needs at least a convergence test on a benchmark function, a same-seed-same-result test
   and a test of its ask/tell protocol.
+- Each test file must also pass on its own, and the suite must pass in reverse order:
+  `METAHPO_TEST_REVERSE=1 pytest`.
+- Coverage is measured with `coverage run -m pytest` and `coverage report -m --branch`; every statement and
+  branch of `src/metahpo` outside abstract methods is covered.
+- `docs/test-izlenebilirlik.md` maps each test-writing rule to the tests that satisfy it; update it when a
+  test is added for a new rule.
 
 ## Branches and pull requests
 

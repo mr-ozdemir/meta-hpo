@@ -21,7 +21,7 @@ rule than rows() would show. Since 0.0 and 1.0 decode to different values in eve
 cases where move must really change the value.
 
 Unspecified, not asserted:
-- bit-exact agreement for log-scaled Float: move uses math.log/math.exp and rows numpy, so that column is
+- bit-exact agreement for log-scaled Float: move decodes one value and rows an array, so that column is
   compared with a relative tolerance of LOG_REL_TOL;
 - what move returns for u outside [0, 1]; only the unit interval is used here.
 

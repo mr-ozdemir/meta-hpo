@@ -365,8 +365,8 @@ def test_optimize_should_give_every_trial_the_params_of_a_fresh_decode_of_its_po
     neighbour params from Space.move, which decodes only the changed coordinate in pure Python and copies
     the rest. Only the chain runs both paths on the same points. Oracle: Space.move docstring ('(key,
     params) of a point differing from a decoded point only in coordinate j'), Candidate docstring (params
-    as the user's function receives them for x). Input: the log Float column is where math.exp and numpy
-    exp could disagree; 600 evaluations are far past the 5 initial ones.
+    as the user's function receives them for x). Input: the log Float column is where the one-value and
+    array decodes could disagree; 600 evaluations are far past the 5 initial ones.
     """
     space = _readme_space()
 

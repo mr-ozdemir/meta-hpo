@@ -14,7 +14,7 @@ the reference decoding, and the task specification (invalid parameters raise Val
 
 Unspecified, therefore not asserted: the exact rounding of log-scaled integers inside the range (only
 bounds, ends and monotonicity are checked), and bit-exact equality of log Float values between move and rows
-(math.exp and numpy exp may differ in the last bit, so those are compared with a relative tolerance).
+(the one-value and array decodes are not specified to agree bit for bit, so a relative tolerance is used).
 
 Unit tests of Space and its parameter types (space.py) for statements the repository tests do not reach.
 
@@ -278,7 +278,7 @@ def test_space_move_should_equal_rows_of_the_moved_point_within_rounding_when_th
     rows.
 
     Oracle: Space.move docstring with Space.rows as the reference. Tolerance: relative 1e-12, because the
-    one-value path uses math.exp and the vectorised path numpy exp (unspecified last-bit difference). Sites:
+    one-value and vectorised paths are not specified to agree in the last bit. Sites:
     Float.decode_one log branch (space lines 83-84).
     """
     space = Space(MIXED_SPACE_PARAMETERS)
@@ -288,8 +288,14 @@ def test_space_move_should_equal_rows_of_the_moved_point_within_rounding_when_th
 
     moved_key, moved_params = space.move(key, params, j, u)
 
-    assert moved_key == pytest.approx(reference_key, rel=1e-12)
-    assert moved_params == pytest.approx(reference_params, rel=1e-12)
+    assert list(moved_key[:j]) + list(moved_key[j + 1 :]) == list(reference_key[:j]) + list(
+        reference_key[j + 1 :]
+    )
+    assert moved_key[j] == pytest.approx(reference_key[j], rel=1e-12)
+    assert {k: v for k, v in moved_params.items() if k != column} == {
+        k: v for k, v in reference_params.items() if k != column
+    }
+    assert moved_params[column] == pytest.approx(reference_params[column], rel=1e-12)
     assert _types(moved_params) == _types(reference_params)
 
 
