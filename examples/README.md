@@ -5,6 +5,7 @@ Each script tunes a small convolutional network on CIFAR-10 with `optimize()`.
 | Script | Framework | Install |
 |---|---|---|
 | [cifar10_pytorch.py](cifar10_pytorch.py) | PyTorch | `pip install meta-hpo torch torchvision` |
+| [cifar10_tensorflow.py](cifar10_tensorflow.py) | TensorFlow | `pip install meta-hpo tensorflow` |
 
 Run a script from this folder:
 

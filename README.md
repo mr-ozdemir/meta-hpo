@@ -84,6 +84,7 @@ print(study.best_params, study.best_score)
 [examples/](examples/) has runnable scripts that tune a small convolutional network on CIFAR-10:
 
 - [PyTorch](examples/cifar10_pytorch.py)
+- [TensorFlow](examples/cifar10_tensorflow.py)
 
 ## Ask and tell
 
