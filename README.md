@@ -79,6 +79,13 @@ study = mh.optimize(score, space, direction="max", max_evals=300, seed=1)
 print(study.best_params, study.best_score)
 ```
 
+## Examples
+
+[examples/](examples/) has runnable scripts that tune a small convolutional network on CIFAR-10:
+
+- [PyTorch](examples/cifar10_pytorch.py)
+- [TensorFlow](examples/cifar10_tensorflow.py)
+
 ## Ask and tell
 
 For full control over where and how candidates are evaluated, ask for candidates and tell their scores.
