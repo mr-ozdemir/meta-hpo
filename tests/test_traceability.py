@@ -10,12 +10,14 @@ A test is listed as '<module>::<function>' or '<module>::<Class>::<method>'.
 The matrix is checked in both directions: every requirement has at least one existing test and every test
 in the modules of TRACED_MODULES belongs to at least one requirement. The quoted sentences are re-read from
 the files on every run, so a changed README, CHANGELOG or docstring shows up as an outdated requirement, and
-every README Behaviour bullet, Search space row and CHANGELOG 'Added' bullet must be quoted by some entry.
+every README Behaviour bullet, Search space row and CHANGELOG 'Added' bullet (of every release) must be
+quoted by some entry.
 
 The meta-tests of this module are not listed in the matrix; they check the matrix and the suite itself.
 Further health checks run over every tests/test_*.py: only pytest, numpy, metahpo, the suite's own
 conftest and standard-library imports, no clock or global random module, no np.random call on numpy's
-global state, seeded generators, a seed for every ABCOptimizer and optimize call outside pytest.raises, no
+global state, seeded generators, a seed for every ABCOptimizer, PSOOptimizer and optimize call outside
+pytest.raises, no
 comment lines, no placeholder or unconditionally skipped test, no unfinished-work marker, and for every new
 test a docstring and a body without if statements, loops or conditional expressions; no two tests have the
 same body. Each checker is a pure function with
@@ -64,7 +66,7 @@ GENERATOR_API = frozenset(
         "MT19937",
     }
 )
-SEED_POSITION = {"ABCOptimizer": 4, "optimize": 5}
+SEED_POSITION = {"ABCOptimizer": 4, "PSOOptimizer": 7, "optimize": 5}
 TRACED_MODULES = frozenset(
     {
         "test_abc",
@@ -509,6 +511,56 @@ REQUIREMENTS = {
         ],
         "tests": ["test_facade_spec::test_optimize_should_propagate_a_user_exception_unwrapped"],
     },
+    "R-PSO-OPTIMIZER": {
+        "source": [
+            "CHANGELOG.md | `PSOOptimizer`: Particle Swarm Optimization with the inertia-weight update, "
+            "the Clerc & Kennedy constants as defaults, a global-best topology and velocity clamping in "
+            "unit-cube widths.",
+            "metahpo.optimizers.pso | The topology is the global best (star) of the 1995 paper",
+        ],
+        "tests": [
+            "test_pso::test_pso_optimizer_should_store_the_documented_defaults",
+            "test_pso::test_pso_guide_should_be_the_best_personal_best_when_the_flight_is_asked",
+            "test_pso::test_pso_velocity_should_stay_within_max_velocity_over_several_iterations",
+            "test_operators_pso::test_pso_velocity_should_combine_inertia_cognitive_and_social_terms_when_no_bound_is_hit",
+            "test_api_contract::test_pso_optimizer_should_declare_documented_default",
+        ],
+    },
+    "R-PSO-BATCH": {
+        "source": [
+            "CHANGELOG.md | `PSOOptimizer` hands out the whole swarm as one batch per iteration, so its "
+            "candidates can be evaluated in parallel.",
+            "metahpo.optimizers.pso | Only the initial population and each iteration's flight are handed "
+            "out as batches, because their evaluations are independent.",
+        ],
+        "tests": [
+            "test_pso::test_pso_ask_should_hand_out_the_whole_swarm_as_distinct_initial_candidates",
+            "test_pso::test_pso_flight_should_hand_out_one_candidate_per_particle_inside_the_cube",
+            "test_pso::test_pso_next_flight_should_not_depend_on_the_order_in_which_a_flight_is_told",
+        ],
+    },
+    "R-PSO-WALLS": {
+        "source": [
+            "CHANGELOG.md | A `PSOOptimizer` coordinate that leaves the unit cube stops on the wall with "
+            "zero velocity.",
+            "metahpo.operators.pso_absorb | Absorbing walls: positions clipped to [0, 1], and the velocity "
+            "of every clipped coordinate set to 0.",
+        ],
+        "tests": [
+            "test_pso::test_pso_walls_should_absorb_a_particle_that_overshoots_the_upper_bound",
+            "test_operators_pso::test_pso_absorb_should_place_outside_coordinates_on_the_wall_and_zero_their_velocity",
+        ],
+    },
+    "R-PSO-CONSTRICTION": {
+        "source": [
+            "CHANGELOG.md | `operators.constriction()` computes the Clerc & Kennedy constriction "
+            "coefficient for any phi above 4.",
+        ],
+        "tests": [
+            "test_operators_pso::test_constriction_should_give_the_clerc_kennedy_chi_for_phi_4_1",
+            "test_operators_pso::test_constriction_should_raise_value_error_when_phi_is_not_a_finite_number_above_4",
+        ],
+    },
 }
 
 
@@ -640,8 +692,16 @@ def _spec_items():
         "behaviour": _bullets(_section(readme, "## Behaviour")),
         "search_space": [row.split("|")[2].strip() for row in rows[2:]],
         "unit_cube": [line.strip() for line in readme if "Optimizers search the unit cube" in line],
-        "changelog_added": _bullets(_section(changelog, "### Added")),
+        "changelog_added": [
+            item for lines in _all_sections(changelog, "### Added") for item in _bullets(lines)
+        ],
     }
+
+
+def _all_sections(lines, heading):
+    """The body of every section with this exact heading, in document order."""
+    starts = [i for i, line in enumerate(lines) if line == heading]
+    return [_section(lines[start:], heading) for start in starts]
 
 
 def _test_files():
@@ -1062,7 +1122,8 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 5 'Added' bullets are found.
+    bullets, 3 Search space rows, 1 unit-cube sentence and 9 'Added' bullets (4 under Unreleased, 5 under
+    0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would
     let the quote check pass vacuously; a new bullet makes this test fail as a reminder to trace it.
@@ -1071,7 +1132,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 5}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 9}
 
 
 @pytest.mark.parametrize(

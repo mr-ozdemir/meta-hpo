@@ -46,12 +46,13 @@ SRC = ROOT / "src"
 CONFTEST = TESTS_DIR / "conftest.py"
 LAYOUT = Path(__file__).resolve()
 
-MODULES = frozenset({"space", "operators", "base", "abc", "study", "facade"})
+MODULES = frozenset({"space", "operators", "base", "abc", "pso", "study", "facade"})
 FEATURES = [
     "search space",
     "ABC operators",
     "optimizer base protocol",
     "ABC optimizer",
+    "PSO optimizer",
     "study results",
     "optimize facade",
     "cross-cutting",
@@ -69,7 +70,7 @@ CROSS_CUTTING = frozenset(
         "test_traceability.py",
     }
 )
-UNIT_NAME = re.compile(r"test_(space|operators|base|abc|study|facade)(_[a-z_]+)?\.py")
+UNIT_NAME = re.compile(r"test_(space|operators|base|abc|pso|study|facade)(_[a-z_]+)?\.py")
 STATIC_LABEL = "static (outside the triangle, P-T1-48)"
 LAYER_OF_LABEL = {"unit": "unit", "integration": "integration", "system": "system", STATIC_LABEL: "static"}
 EXEMPT = frozenset({"test_space.py", "test_abc.py"})
@@ -815,7 +816,7 @@ def test_plan_should_keep_the_unit_integration_and_system_layers_non_empty():
 
 
 def test_plan_should_give_every_module_its_own_unit_layer_file():
-    """Given the six library modules, when test_<module>.py is looked up in the table, then each is labelled
+    """Given the seven library modules, when test_<module>.py is looked up in the table, then each is labelled
     unit, also test_abc.py, which calls optimize() as well.
 
     Oracle: P-T3-20 acceptance (every unit has its own unit-layer file besides integration or system
@@ -859,7 +860,7 @@ def test_plan_should_state_that_the_process_is_iterative():
 
 
 def test_plan_should_give_each_unit_exactly_one_strategy_with_its_coverage_target():
-    """Given the strategy table, when its rows are read, then each of the six units has exactly one row:
+    """Given the strategy table, when its rows are read, then each of the seven units has exactly one row:
     code-based with branch coverage, except abc, model-based with every FSM transition as target.
 
     Oracle: P-T7-41 (source code available: code-based with code coverage; model-based with model coverage
@@ -872,6 +873,7 @@ def test_plan_should_give_each_unit_exactly_one_strategy_with_its_coverage_targe
         "operators": code_based,
         "base": code_based,
         "abc": ("model-based on the phase FSM", "every transition of the phase FSM"),
+        "pso": code_based,
         "study": code_based,
         "facade": code_based,
     }
@@ -1334,11 +1336,12 @@ def test_unit_name_pattern_should_reject_names_just_outside_the_rule(name):
     assert match is None
 
 
-def test_package_discovery_should_find_exactly_the_six_library_modules():
-    """Given the installed metahpo package, when pkgutil walks it, then the leaf modules are exactly the six
-    units, so a module added later must be added to the plan.
+def test_package_discovery_should_find_exactly_the_seven_library_modules():
+    """Given the installed metahpo package, when pkgutil walks it, then the leaf modules are exactly the
+    seven units, so a module added later must be added to the plan.
 
-    Oracle: P-T7-24 acceptance (discovered leaf modules equal space, operators, base, abc, study, facade).
+    Oracle: P-T7-24 acceptance (discovered leaf modules equal space, operators, base, abc, pso, study,
+    facade).
     """
     package_path = metahpo.__path__
 
@@ -1491,7 +1494,7 @@ def test_existing_test_file_should_keep_all_its_test_functions(name, expected):
 
 
 def test_selection_map_should_use_only_library_modules_and_init_as_keys():
-    """Given the selection map, when its keys are read, then they are the six modules plus __init__.
+    """Given the selection map, when its keys are read, then they are the seven modules plus __init__.
 
     Oracle: P-T6-30 acceptance (every module in the map exists) and P-T7-24 (__init__ maps to
     test_api_contract.py).
@@ -1607,7 +1610,9 @@ def test_selection_map_should_select_every_test_file_for_the_modules_it_uses():
         pytest.param("from metahpo import ABCOptimizer, Study", {"abc", "study"}, id="two-names"),
         pytest.param("import metahpo as mh\nmh.optimize", {"facade"}, id="package-alias"),
         pytest.param(
-            "from metahpo import *", {"abc", "base", "space", "study", "facade"}, id="star-import-binds-all"
+            "from metahpo import *",
+            {"abc", "pso", "base", "space", "study", "facade"},
+            id="star-import-binds-all",
         ),
         pytest.param("import metahpo", set(), id="bare-package-not-followed"),
         pytest.param("import numpy", set(), id="no-metahpo"),
