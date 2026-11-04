@@ -6,10 +6,13 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-05
+
 ### Fixed
 
 - `ABCOptimizer.cancel()` keeps a parameter set reserved when another candidate with the same key
   was already told, so an evaluated set is not handed out again as new.
+- The PyPI badge in the README refreshes within an hour instead of showing an old version.
 
 ## [0.3.0] - 2026-11-04
 
