@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
 ### Added
 
 - `PSOOptimizer`: Particle Swarm Optimization with the inertia-weight update, the Clerc & Kennedy
@@ -14,6 +16,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
   parallel.
 - A `PSOOptimizer` coordinate that leaves the unit cube stops on the wall with zero velocity.
 - `operators.constriction()` computes the Clerc & Kennedy constriction coefficient for any phi above 4.
+
+### Fixed
+
+- README links point to the GitHub repository, so they also work on the PyPI page.
 
 ## [0.2.1] - 2026-10-31
 
