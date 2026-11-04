@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master, develop]
+    branches: [develop]
   pull_request:
 
 permissions:
@@ -12,18 +12,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SKIP: ${{ github.event_name == 'pull_request' && github.head_ref == 'develop' && github.base_ref == 'master' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: env.SKIP != 'true'
+        uses: actions/checkout@v4
+      - if: env.SKIP != 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy
+      - if: env.SKIP != 'true'
+        run: pip install -e ".[dev]"
+      - if: env.SKIP != 'true'
+        run: ruff check .
+      - if: env.SKIP != 'true'
+        run: ruff format --check .
+      - if: env.SKIP != 'true'
+        run: mypy
 
   test:
     runs-on: ${{ matrix.os }}
@@ -38,20 +47,29 @@ jobs:
           - os: macos-latest
             python-version: "3.14"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: env.SKIP != 'true'
+        uses: actions/checkout@v4
+      - if: env.SKIP != 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
-      - run: pytest
+      - if: env.SKIP != 'true'
+        run: pip install -e ".[dev]"
+      - if: env.SKIP != 'true'
+        run: pytest
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - if: env.SKIP != 'true'
+        uses: actions/checkout@v4
+      - if: env.SKIP != 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install build twine
-      - run: python -m build
-      - run: twine check dist/*
+      - if: env.SKIP != 'true'
+        run: pip install build twine
+      - if: env.SKIP != 'true'
+        run: python -m build
+      - if: env.SKIP != 'true'
+        run: twine check dist/*
