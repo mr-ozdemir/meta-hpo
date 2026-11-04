@@ -6,6 +6,15 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `PSOOptimizer`: Particle Swarm Optimization with the inertia-weight update, the Clerc & Kennedy
+  constants as defaults, a global-best topology and velocity clamping in unit-cube widths.
+- `PSOOptimizer` hands out the whole swarm as one batch per iteration, so its candidates can be evaluated in
+  parallel.
+- A `PSOOptimizer` coordinate that leaves the unit cube stops on the wall with zero velocity.
+- `operators.constriction()` computes the Clerc & Kennedy constriction coefficient for any phi above 4.
+
 ## [0.2.1] - 2026-10-31
 
 ### Fixed

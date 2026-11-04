@@ -3,9 +3,9 @@
 Suite
 -----
 The suite under tests/ checks the metahpo package: the search space, the ABC operators, the ask/tell
-optimizer base, the ABC optimizer, the study results and the optimize() facade. It is built top-down: the
-system is first split into features, each feature gets one plan, and each plan lists its scenario groups and
-the test files that hold them. Every file under tests/ belongs to exactly one plan.
+optimizer base, the ABC optimizer, the PSO optimizer, the study results and the optimize() facade. It is
+built top-down: the system is first split into features, each feature gets one plan, and each plan lists its
+scenario groups and the test files that hold them. Every file under tests/ belongs to exactly one plan.
 
 Features
 --------
@@ -13,9 +13,10 @@ Features
 2. ABC operators (metahpo.operators)
 3. optimizer base protocol (metahpo.optimizers.base)
 4. ABC optimizer (metahpo.optimizers.abc)
-5. study results (metahpo.study)
-6. optimize facade (metahpo.facade)
-7. cross-cutting (the whole package)
+5. PSO optimizer (metahpo.optimizers.pso)
+6. study results (metahpo.study)
+7. optimize facade (metahpo.facade)
+8. cross-cutting (the whole package)
 
 Plans
 -----
@@ -44,13 +45,15 @@ mixed spaces; hand-written examples behind the grammar properties; sample() with
 Plan: ABC operators
 Scenario groups: neighbour_value clip formula; fitness and fitness_scalar branches; onlooker_probabilities
 including the all-zero case; stdlib mutation harness over operators.py; both sides of every threshold;
-equivalence classes of the formulas; generated valid inputs against invariants; branch coverage
+equivalence classes of the formulas; generated valid inputs against invariants; branch coverage; PSO
+velocity, absorbing walls and constriction
     test_operators.py | unit | formulas with discriminating literal inputs
     test_operators_mutation.py | unit | mutation harness and kill matrix for the operator tests
     test_operators_boundaries.py | unit | both sides of every threshold in operators.py
     test_operators_partition.py | unit | equivalence classes of the fitness and onlooker formulas
     test_operators_fuzz.py | unit | generated valid inputs checked against invariants
     test_operators_coverage.py | unit | branch coverage from the control flow graphs
+    test_operators_pso.py | unit | PSO velocity, absorbing walls and constriction formulas
 
 Plan: optimizer base protocol
 Scenario groups: direction handling and the worst-score mapping of NaN and inf; best_params and best_score
@@ -77,6 +80,14 @@ streams
     test_abc_coverage.py | unit | statement and branch coverage of optimizers/abc.py
     test_abc_spec.py | unit | specification gaps beyond test_abc.py
     test_abc_fuzz.py | unit | generated score streams with non-finite and extreme values
+
+Plan: PSO optimizer
+Scenario groups: constructor defaults and validation; init batch and partial tell; synchronous flight
+batches with a frozen guide; personal best and best tracking per direction; velocity clamping and
+absorbing walls; duplicate regeneration, discrete spaces and the cache; NaN scores; cancel; same seed same
+result; convergence on benchmark functions; ask/tell protocol with the real Space
+    test_pso.py | unit | swarm state, flight rules, bookkeeping, determinism and convergence
+    test_pso_protocol.py | integration | ask/tell protocol of PSOOptimizer with the real Space and optimize()
 
 Plan: study results
 Scenario groups: Trial.failed for non-finite scores; best_trial, best_params and best_score per direction;
@@ -156,6 +167,7 @@ One strategy and one coverage target per unit:
     operators | code-based (white box) | branch coverage
     base | code-based (white box) | branch coverage
     abc | model-based on the phase FSM | every transition of the phase FSM
+    pso | code-based (white box) | branch coverage
     study | code-based (white box) | branch coverage
     facade | code-based (white box) | branch coverage
 The spec names no strategy for base; code-based (white box) is chosen to match the other small units.
@@ -202,10 +214,11 @@ Step 2: select that module's test files test_<module>*.py, the rows of every mod
 files that are always selected.
 Import graph of src/metahpo (module <- the modules that import it; both package __init__ files count as
 __init__):
-    space <- base, abc, facade, __init__
-    operators <- abc
-    base <- abc, study, facade, __init__
+    space <- base, abc, pso, facade, __init__
+    operators <- abc, pso
+    base <- abc, pso, study, facade, __init__
     abc <- facade, __init__
+    pso <- __init__
     study <- facade, __init__
     facade <- __init__
 Each row below contains the rows of all modules that import it, so the selection is closed over the import
@@ -213,24 +226,28 @@ graph: a test that uses a module's public names, or the names of a module that i
 package __init__ files, which import every module, are not followed as a path from a test to a module,
 otherwise every row would be the whole suite. The rows are a module-level superset of the
 modification-traversing tests (P-T6-32).
-    space: test_space*.py, test_base*.py, test_abc*.py, test_study*.py, test_facade*.py,
+    space: test_space*.py, test_base*.py, test_abc*.py, test_pso*.py, test_study*.py, test_facade*.py,
         test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
         test_api_contract.py
-    operators: test_operators*.py, test_abc*.py, test_facade*.py, test_base*.py, test_space_partition.py,
+    operators: test_operators*.py, test_abc*.py, test_pso*.py, test_facade*.py, test_base*.py,
+        test_space_partition.py,
         test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
         test_api_contract.py
-    base: test_base*.py, test_abc*.py, test_study*.py, test_facade*.py, test_space_partition.py,
+    base: test_base*.py, test_abc*.py, test_pso*.py, test_study*.py, test_facade*.py,
+        test_space_partition.py,
         test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
         test_api_contract.py
-    abc: test_abc*.py, test_facade*.py, test_base*.py, test_space_partition.py,
+    abc: test_abc*.py, test_facade*.py, test_base*.py, test_pso*.py, test_space_partition.py,
         test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
         test_api_contract.py
-    study: test_study*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py, test_space_partition.py,
+    study: test_study*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py, test_pso*.py,
+        test_space_partition.py,
         test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
         test_api_contract.py
-    facade: test_facade*.py, test_abc.py, test_abc_acceptance.py, test_space_partition.py,
+    facade: test_facade*.py, test_abc.py, test_abc_acceptance.py, test_pso*.py, test_space_partition.py,
         test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
         test_api_contract.py
+    pso: test_pso*.py, test_api_contract.py
     __init__: test_api_contract.py
 Always selected: test_static.py, test_suite_layout.py, test_traceability.py
 Statement-level selection of modification-traversing tests (P-T6-32) is out of scope for this plan.

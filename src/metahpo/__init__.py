@@ -1,7 +1,7 @@
 """meta-hpo: metaheuristic hyperparameter optimization."""
 
 from metahpo.facade import optimize
-from metahpo.optimizers import ABCOptimizer, Candidate, Optimizer
+from metahpo.optimizers import ABCOptimizer, Candidate, Optimizer, PSOOptimizer
 from metahpo.space import Categorical, Float, Int, Space
 from metahpo.study import Study, Trial
 
@@ -14,6 +14,7 @@ __all__ = [
     "Float",
     "Int",
     "Optimizer",
+    "PSOOptimizer",
     "Space",
     "Study",
     "Trial",

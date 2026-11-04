@@ -19,6 +19,9 @@ a change shows up as a named failure, not because a spec source states them:
   follow from README Behaviour and the facade docstring);
 - the defaults direction='min', colony_size=10, limit=15, seed=None, max_tries=100 of ABCOptimizer (the
   README passes colony_size=10 and limit=15 explicitly without calling them defaults);
+- the parameter order and defaults of PSOOptimizer (direction='min', swarm_size=20, inertia=0.7298,
+  cognitive=1.49618, social=1.49618, max_velocity=1.0, seed=None, max_tries=100), which the pso module
+  docstring and the issue #18 theory state;
 - the field order of Candidate and Trial, and the Trial field names;
 - Study.scores and Study.best_trial as properties (no docstring or README line names them).
 
@@ -52,7 +55,7 @@ the number of calls of the objective.
 Optimizer contract tests for every optimizer.
 
 OPTIMIZER_FACTORIES lists one factory per optimizer of the library, each called as factory(space, seed).
-Today it holds ABCOptimizer only. Every new optimizer (GA, PSO, DE, ...) must be added to this list, so
+Today it holds ABCOptimizer and PSOOptimizer. Every new optimizer (GA, DE, ...) must be added to this list, so
 that it runs the same contract tests that pin defects once found in ABCOptimizer: a candidate of another
 optimizer that carries a pending id is rejected; a score that float() rejects raises and keeps the
 candidate pending; a failing batch leaves the optimizer unchanged (checked against a twin with the same
@@ -87,6 +90,7 @@ DOCUMENTED_EXPORTS = (
     "Float",
     "Int",
     "Optimizer",
+    "PSOOptimizer",
     "Space",
     "Study",
     "Trial",
@@ -126,10 +130,11 @@ def _params_of(candidates):
 
 
 def test_metahpo_should_export_exactly_the_documented_names():
-    """Given the package, when __all__ is read, then it holds exactly the ten documented names once each.
+    """Given the package, when __all__ is read, then it holds exactly the eleven documented names once each.
 
     Oracle: README Quick start (Space, Float, Int, Categorical, optimize, ABCOptimizer), CHANGELOG 'Added'
-    (Study) and the __init__ export list (Candidate, Optimizer, Trial). Set equality is decisive: an added
+    (Study), the __init__ export list (Candidate, Optimizer, Trial) and the README optimizer list
+    (PSOOptimizer). Set equality is decisive: an added
     name and a removed name both fail, and the length check catches a duplicated entry.
     """
     expected = set(DOCUMENTED_EXPORTS)
@@ -149,6 +154,7 @@ def test_metahpo_should_export_exactly_the_documented_names():
         pytest.param("Float", inspect.isclass, id="Float"),
         pytest.param("Int", inspect.isclass, id="Int"),
         pytest.param("Optimizer", inspect.isclass, id="Optimizer"),
+        pytest.param("PSOOptimizer", inspect.isclass, id="PSOOptimizer"),
         pytest.param("Space", inspect.isclass, id="Space"),
         pytest.param("Study", inspect.isclass, id="Study"),
         pytest.param("Trial", inspect.isclass, id="Trial"),
@@ -291,6 +297,58 @@ def test_abc_optimizer_should_declare_documented_default(name, expected):
     expected_type = type(expected)
 
     default = inspect.signature(metahpo.ABCOptimizer).parameters[name].default
+
+    assert default == expected
+    assert type(default) is expected_type
+
+
+def test_pso_optimizer_should_declare_constructor_parameters_in_documented_order():
+    """Given the PSOOptimizer class, when its constructor is introspected, then space comes first, the
+    three coefficients and max_velocity follow swarm_size, and seed and max_tries come last.
+
+    Oracle: pso module docstring and the issue #18 theory (signature of section 3); characterised from the
+    current public signature. The seed position matters for the static seed checkers (index 7).
+    """
+    expected = [
+        "space",
+        "direction",
+        "swarm_size",
+        "inertia",
+        "cognitive",
+        "social",
+        "max_velocity",
+        "seed",
+        "max_tries",
+    ]
+
+    names = list(inspect.signature(metahpo.PSOOptimizer).parameters)
+
+    assert names == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        pytest.param("direction", "min", id="direction-min"),
+        pytest.param("swarm_size", 20, id="swarm_size-20"),
+        pytest.param("inertia", 0.7298, id="inertia-0.7298"),
+        pytest.param("cognitive", 1.49618, id="cognitive-1.49618"),
+        pytest.param("social", 1.49618, id="social-1.49618"),
+        pytest.param("max_velocity", 1.0, id="max_velocity-1.0"),
+        pytest.param("seed", None, id="seed-None"),
+        pytest.param("max_tries", 100, id="max_tries-100"),
+    ],
+)
+def test_pso_optimizer_should_declare_documented_default(name, expected):
+    """Given the PSOOptimizer class, when an optional constructor parameter is introspected, then its
+    default is the pinned value.
+
+    Oracle: pso module docstring (the Clerc & Kennedy constants w = 0.7298, c1 = c2 = 1.49618; v_max equal
+    to the range) and the issue #18 parameter table. The type check rejects 20.0 for 20 and 1 for 1.0.
+    """
+    expected_type = type(expected)
+
+    default = inspect.signature(metahpo.PSOOptimizer).parameters[name].default
 
     assert default == expected
     assert type(default) is expected_type
@@ -574,6 +632,7 @@ def test_abc_optimizer_should_ask_half_the_default_colony_as_first_batch_when_bu
 
 OPTIMIZER_FACTORIES = [
     pytest.param(lambda space, seed: metahpo.ABCOptimizer(space, seed=seed), id="abc"),
+    pytest.param(lambda space, seed: metahpo.PSOOptimizer(space, seed=seed), id="pso"),
 ]
 
 

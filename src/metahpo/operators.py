@@ -36,3 +36,37 @@ def onlooker_probabilities(fit: FloatArray) -> FloatArray:
     if top <= 0.0:
         return np.ones_like(fit)
     return 0.9 * (fit / top) + 0.1
+
+
+def pso_velocity(
+    v: FloatArray,
+    x: FloatArray,
+    p: FloatArray,
+    g: FloatArray,
+    inertia: float,
+    cognitive: float,
+    social: float,
+    r1: FloatArray,
+    r2: FloatArray,
+    max_velocity: float,
+) -> FloatArray:
+    """PSO velocity of Shi & Eberhart (1998): w * v + c1 * r1 * (p - x) + c2 * r2 * (g - x), clipped to
+    [-max_velocity, max_velocity] coordinate by coordinate."""
+    raw = inertia * v + cognitive * r1 * (p - x) + social * r2 * (g - x)
+    return np.asarray(np.clip(raw, -max_velocity, max_velocity), dtype=np.float64)
+
+
+def pso_absorb(x: FloatArray, v: FloatArray) -> tuple[FloatArray, FloatArray]:
+    """Absorbing walls: positions clipped to [0, 1], and the velocity of every clipped coordinate set to 0."""
+    outside = (x < 0.0) | (x > 1.0)
+    clipped = np.asarray(np.clip(x, 0.0, 1.0), dtype=np.float64)
+    return clipped, np.asarray(np.where(outside, 0.0, v), dtype=np.float64)
+
+
+def constriction(phi1: float, phi2: float) -> float:
+    """Constriction coefficient of Clerc & Kennedy (2002): chi = 2 / |2 - phi - sqrt(phi^2 - 4 phi)| with
+    phi = phi1 + phi2, defined for finite phi > 4; constriction(2.05, 2.05) = 0.7298..."""
+    phi = phi1 + phi2
+    if not (math.isfinite(phi) and phi > 4.0):
+        raise ValueError(f"constriction needs phi1 + phi2 > 4, got {phi}")
+    return 2.0 / abs(2.0 - phi - math.sqrt(phi * phi - 4.0 * phi))
