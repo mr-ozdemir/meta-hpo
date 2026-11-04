@@ -121,6 +121,9 @@ class ABCOptimizer(Optimizer):
             del self._pending[cand.id]
             if f < self.best_f or self.best_x is None:
                 self.best_f, self.best_x = f, entry.x.copy()
+            for twin in self._pending.values():
+                if twin.key == entry.key:
+                    twin.new_key = False
             i = entry.food
             if entry.kind == "init":
                 self._replace(i, entry, f)
@@ -140,9 +143,9 @@ class ABCOptimizer(Optimizer):
     def cancel(self, candidates: Sequence[Candidate]) -> None:
         """Withdraws pending candidates without a score; they count as never handed out.
 
-        Their parameter sets may be handed out again, and the next ask() hands out new candidates for the
-        same food sources. The batch is checked like in tell(); a failing batch leaves the optimizer
-        unchanged.
+        Their parameter sets may be handed out again unless another candidate with the same key is still
+        pending or has been told, and the next ask() hands out new candidates for the same food sources.
+        The batch is checked like in tell(); a failing batch leaves the optimizer unchanged.
         """
         entries = self._claim(candidates)
         for cand, entry in zip(candidates, entries, strict=True):

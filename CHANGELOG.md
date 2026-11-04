@@ -6,6 +6,11 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `ABCOptimizer.cancel()` keeps a parameter set reserved when another candidate with the same key
+  was already told, so an evaluated set is not handed out again as new.
+
 ## [0.3.0] - 2026-11-04
 
 ### Added

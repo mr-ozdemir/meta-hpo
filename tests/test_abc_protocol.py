@@ -1082,3 +1082,27 @@ def test_abc_optimizer_cancel_should_raise_value_error_and_cancel_nothing_when_o
     _tell_all(opt, pending)
 
     assert opt.phase == "employed"
+
+
+def test_abc_optimizer_cancel_should_keep_a_key_reserved_when_its_twin_in_the_batch_was_already_told():
+    """Given an initial batch on Int(0, 19) built with max_tries = 1, whose candidates 2, 7 and 10 share the
+    key (14,), when every candidate except candidate 2 is told, candidate 2 is cancelled and ask() is called
+    with max_tries = 100, then the re-asked candidate repeats none of the told keys.
+
+    Oracle: Optimizer docstring (a parameter set handed out before is not handed out again while a new one is
+    found in max_tries attempts) and the ABCOptimizer.cancel docstring (a cancelled key is freed only when no
+    candidate with the same key is pending or told). Regression: cancel() used to free (14,) although its
+    twins had been told, and seed 14 then handed out (14,) again as a new candidate.
+    """
+    space = Space({"k": Int(0, 19)})
+    opt = ABCOptimizer(space, colony_size=24, seed=14, max_tries=1)
+    batch = opt.ask()
+    told = [c for n, c in enumerate(batch) if n != 2]
+    opt.tell(told, [float(c.params["k"]) for c in told])
+    opt.cancel(batch[2:3])
+    opt.max_tries = 100
+
+    again = opt.ask()
+
+    assert [batch[n].key for n in (2, 7, 10)] == [(14.0,)] * 3
+    assert again[0].key not in {c.key for c in told}
