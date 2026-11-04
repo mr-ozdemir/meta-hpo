@@ -55,6 +55,8 @@ pytest
 - Open the pull request against `develop` and ask the other maintainer for review.
   Describe what changed, which tests were added, and the related decisions.
 - Pull requests are merged with a merge commit only, by a maintainer other than the author.
+- CI runs on every pull request and on pushes to `develop`. A pull request from `develop` to `master` skips
+  the CI steps, because the same commit was already tested on `develop`.
 - One topic per pull request.
 
 ## Commits
