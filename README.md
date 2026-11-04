@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/mr-ozdemir/meta-hpo/actions/workflows/ci.yml/badge.svg)](https://github.com/mr-ozdemir/meta-hpo/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/meta-hpo?label=PyPI)](https://pypi.org/project/meta-hpo/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mr-ozdemir/meta-hpo/blob/master/LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/mr-ozdemir/meta-hpo/blob/master/pyproject.toml)
 
 Metaheuristic hyperparameter optimization for Python, with a small numpy core.
 
@@ -82,10 +82,10 @@ print(study.best_params, study.best_score)
 
 ## Examples
 
-[examples/](examples/) has runnable scripts that tune a small convolutional network on CIFAR-10:
+[examples/](https://github.com/mr-ozdemir/meta-hpo/tree/master/examples) has runnable scripts that tune a small convolutional network on CIFAR-10:
 
-- [PyTorch](examples/cifar10_pytorch.py)
-- [TensorFlow](examples/cifar10_tensorflow.py)
+- [PyTorch](https://github.com/mr-ozdemir/meta-hpo/blob/master/examples/cifar10_pytorch.py)
+- [TensorFlow](https://github.com/mr-ozdemir/meta-hpo/blob/master/examples/cifar10_tensorflow.py)
 
 ## Ask and tell
 
@@ -182,8 +182,8 @@ scout per cycle. It deviates on purpose in four points:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+See [CONTRIBUTING.md](https://github.com/mr-ozdemir/meta-hpo/blob/master/CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](https://github.com/mr-ozdemir/meta-hpo/blob/master/CHANGELOG.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/mr-ozdemir/meta-hpo/blob/master/LICENSE)
