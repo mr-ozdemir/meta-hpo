@@ -9,7 +9,8 @@ Metaheuristic hyperparameter optimization for Python, with a small numpy core.
 
 You describe a search space and a function that trains your model and returns a score.
 meta-hpo searches for the parameters that maximise or minimise that score.
-The first optimizer is the Artificial Bee Colony (ABC); more metaheuristics will follow behind the same interface.
+Two optimizers are available, the Artificial Bee Colony (ABC, the default) and Particle Swarm Optimization
+(PSO); more metaheuristics will follow behind the same interface.
 
 ## Installation
 
@@ -110,6 +111,25 @@ print(opt.best_params, opt.best_score)
 
 This loop makes exactly 300 evaluations.
 
+## Optimizers
+
+| Optimizer | Batch per `ask()` | Main settings |
+|---|---|---|
+| `ABCOptimizer` | the initial population, then one candidate | `colony_size=10`, `limit=15` |
+| `PSOOptimizer` | the whole swarm, every iteration | `swarm_size=20`, `inertia=0.7298`, `cognitive=1.49618`, `social=1.49618`, `max_velocity=1.0` |
+
+Pass one to `optimize()` with `optimizer=`; both take `direction`, `seed` and `max_tries`:
+
+```python
+opt = mh.PSOOptimizer(space, direction="max", swarm_size=20, seed=1)
+study = mh.optimize(train, space, direction="max", max_evals=300, optimizer=opt)
+```
+
+`PSOOptimizer` moves every particle once per iteration with the velocity update of Shi & Eberhart (1998).
+Its defaults are the constriction constants of Clerc & Kennedy (2002); `max_velocity` is measured in widths
+of the unit cube. A coordinate that leaves the cube stops on the wall with zero velocity. Because a whole
+iteration is one batch, the candidates of an `ask()` can be trained in parallel.
+
 ## Search space
 
 | Parameter | Values | Example |
@@ -144,6 +164,13 @@ most visibly in small discrete spaces.
   artificial bee colony (ABC) algorithm. Journal of Global Optimization 39, 459–471.
   [doi:10.1007/s10898-007-9149-x](https://doi.org/10.1007/s10898-007-9149-x)
 - The official ABC page, with reference implementations: <https://abc.erciyes.edu.tr/>
+- Kennedy J., Eberhart R. (1995). Particle swarm optimization. Proceedings of IEEE International Conference
+  on Neural Networks, 1942–1948. [doi:10.1109/ICNN.1995.488968](https://doi.org/10.1109/ICNN.1995.488968)
+- Shi Y., Eberhart R. (1998). A modified particle swarm optimizer. IEEE International Conference on
+  Evolutionary Computation, 69–73. [doi:10.1109/ICEC.1998.699146](https://doi.org/10.1109/ICEC.1998.699146)
+- Clerc M., Kennedy J. (2002). The particle swarm: explosion, stability, and convergence in a
+  multidimensional complex space. IEEE Transactions on Evolutionary Computation 6(1), 58–73.
+  [doi:10.1109/4235.985692](https://doi.org/10.1109/4235.985692)
 
 meta-hpo follows the phase order of the reference ABC: employed bees, then onlooker bees, then at most one
 scout per cycle. It deviates on purpose in four points:
