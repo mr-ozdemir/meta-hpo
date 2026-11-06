@@ -349,7 +349,7 @@ def _is_unseeded_call(call, aliases):
         return not (_given(_argument(call, 5, "seed")) or _given(_argument(call, 4, "optimizer")))
     if short == "ABCOptimizer":
         return not _given(_argument(call, 4, "seed"))
-    if short == "PSOOptimizer":
+    if short in ("PSOOptimizer", "BBPSOOptimizer"):
         return not _given(_argument(call, 7, "seed"))
     if short == "sample" and isinstance(call.func, ast.Attribute):
         rng = _argument(call, 0, "rng")

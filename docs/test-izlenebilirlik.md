@@ -4,10 +4,10 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 
 ## Özet
 
-- Test dosyası: 61 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 4132, hepsi geçiyor; tüm paket yaklaşık 27 saniyede koşuyor.
+- Test dosyası: 64 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
+- Toplanan test: 4307, hepsi geçiyor; tüm paket yaklaşık 27 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (681 satırdan 677'si), dal kapsamı 208/208. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
+- Satır kapsamı %99 (1039 satırdan 1035'i), dal kapsamı 322/322. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -42,7 +42,7 @@ Gereksinim: Test paketinin düzeni: tests/conftest.py içindeki yazılı test pl
 | P-T6-02 | **test_suite_layout.py**: `test_plan_should_name_the_tests_directory_as_the_regression_suite`, `test_pyproject_should_make_the_tests_directory_the_only_test_path` |
 | P-T6-29 | **test_suite_layout.py**: `test_existing_test_file_should_keep_all_its_test_functions`, `test_plan_should_state_both_selection_steps` |
 | P-T6-30 | **test_suite_layout.py**: `test_plan_should_state_both_selection_steps`, `test_plan_should_write_down_the_import_graph_that_src_has`, `test_selection_map_should_contain_the_rows_of_all_importing_modules`, `test_selection_map_should_have_no_pattern_that_matches_nothing`, `test_selection_map_should_make_every_planned_file_selectable`, `test_selection_map_should_select_each_modules_own_test_files`, `test_selection_map_should_select_every_test_file_for_the_modules_it_uses`, `test_selection_map_should_use_only_library_modules_and_init_as_keys`, `test_used_module_mapping_should_cover_every_allowed_import_form` |
-| P-T7-24 | **test_suite_layout.py**: `test_every_discovered_library_module_should_have_a_unit_test_file`, `test_missing_unit_test_file_should_be_reported_for_a_copy_without_test_study`, `test_package_discovery_should_find_exactly_the_seven_library_modules`, `test_package_init_modules_should_map_to_the_api_contract_file`, `test_selection_map_should_use_only_library_modules_and_init_as_keys` |
+| P-T7-24 | **test_suite_layout.py**: `test_every_discovered_library_module_should_have_a_unit_test_file`, `test_missing_unit_test_file_should_be_reported_for_a_copy_without_test_study`, `test_package_discovery_should_find_exactly_the_eight_library_modules`, `test_package_init_modules_should_map_to_the_api_contract_file`, `test_selection_map_should_use_only_library_modules_and_init_as_keys` |
 | P-T7-41 | **test_suite_layout.py**: `test_plan_should_claim_no_numeric_coverage_level`, `test_plan_should_give_each_unit_exactly_one_strategy_with_its_coverage_target`, `test_plan_should_state_the_condition_of_the_named_fsm_edges`, `test_plan_should_write_out_every_transition_of_the_abc_phase_fsm` |
 | P-T8-10 | **test_suite_layout.py**: `test_abc_optimizer_plan_should_name_the_example_scenario_groups`, `test_plan_should_name_at_least_one_scenario_group_per_file_in_every_feature_plan` |
 | P-T8-11 | **test_suite_layout.py**: `test_plan_should_list_every_test_file_on_disk_in_exactly_one_file_row`, `test_plan_should_list_the_feature_plans_top_down_in_the_fixed_order` |
@@ -399,6 +399,19 @@ Gereksinim: `PSOOptimizer` (issue #18): Shi & Eberhart hız güncellemesi, Clerc
 | Bütçe ve tekrar | **test_pso.py**: üç değerli uzayda 3 çağrı, ayrık uzayda yalnız uçuşlarda yeniden üretimin etkisi, aynı uçuş içinde tekrar olmaması, cancel (uçuş, ilk toplu, ortak anahtar, bekleyen olmayan aday, iptal edilen anahtarın yeniden verilmesi, bekleyen ya da söylenmiş ikizin anahtarı koruması) |
 | Belirlenimcilik ve yakınsama | **test_pso.py**: aynı tohum aynı arama; küre (820 çağrıda < 1e-3), Rastrigin (ilk toplu adaydan iyi), karışık uzay (10 tohumun en az 9'u), max/min ve 1e-20 ölçek eşdeğerliği; **test_api_contract.py**: `OPTIMIZER_FACTORIES` içindeki `pso` ile tüm sözleşme testleri |
 
+### bbpso-optimizer
+
+Gereksinim: `BBPSOOptimizer` (Zhang, Lim & Liu 2023): beş hareket işlemi, ikinci uzak lider ve komşu rehber, parçacık başına işlem sırası, koşulsuz yer değiştirme, lider ve dört en iyi parçacığın Q-öğrenmeli kök bulma adımıyla iyileştirilmesi (IQI, secant, Steffensen, tek adım ITP), `target` ile kök fonksiyonu, tekrar üretimi, cancel ve sözleşme kuralları. İzlenebilirlik matrisinde R-BBPSO-OPTIMIZER, R-BBPSO-REFINEMENT ve R-BBPSO-TARGET kimlikleriyle CHANGELOG `[Unreleased]` maddelerine bağlıdır.
+
+| Konu | Testler |
+|---|---|
+| Formüller | **test_operators_bbpso.py**: Lévy ve Cauchy örnekleyicileri (değerler ve dağılım), korelasyon (d = 1, sabit vektör, simetri), repair, göreli küçük fark, secant ve IQI tam kök ve 1e-20 ölçek değişmezliği, Steffensen, ITP tek adımı (-0.024, 0.0889, 0.5) ve aralıklı kök, beş hareket |
+| Kurulum | **test_bbpso.py**: öntanımlılar, max yönünde target 1.0, 14 geçersiz ayar, en küçük geçerli ayarlarla tam iterasyon; **test_api_contract.py**: parametre sırası ve öntanımlılar |
+| Hareketler ve liderler | **test_bbpso.py**: tek tek hareket ve iyileştirmeye geçiş, kötü harekette de yer değiştirme, parçacık başına işlem sırası ve 5 → 1 dönüşü, ikinci liderin en az korelasyonlu seçimi, Gauss işleminde komşu, çaprazlama 0, işlem sırasının 1..5 içinde kalması |
+| İyileştirme | **test_bbpso.py**: iterasyon başına 1–10 değerlendirme, tam beş parçacık, -1 ve +1 ödülle Q değerleri, daha iyi denemenin parçacığa yerleşmesi, normalize Steffensen probe ve denemesi, max yönünde secant ve tek adım ITP yönü, IQI için ortak yokluğu, hedefte duran taban, NaN probe, hep NaN olunca iyileştirmenin atlanması |
+| Protokol ve bütçe | **test_bbpso_protocol.py**: Space ile key/params uyumu, optimize() ile elle döngü eşliği, yabancı/tekrarlı/söylenmiş aday, dönüşmeyen skor, params temizleme, yön uyuşmazlığı, max_evals=1 sonrası kullanım; **test_bbpso.py**: dört değerli uzayda 4 çağrı, yeniden üretim, cancel (hareket, probe, ortak anahtar, söylenmiş ikiz), tell'in rastgele sayı çekmemesi |
+| Belirlenimcilik ve yakınsama | **test_bbpso.py**: aynı tohum aynı arama; küre (300 çağrıda < 1e-3), Rastrigin, karışık uzay (10 tohumun en az 9'u), target 0 ile max/min eşdeğerliği; **test_api_contract.py**: `OPTIMIZER_FACTORIES` içindeki `bbpso` ile tüm sözleşme testleri (1e-20 ölçekli küre dahil) |
+
 ## Stil kontrol listesi
 
 Her test bu listeye uyar. Kural kimlikleri maddenin dayandığı test yazma kurallarıdır.
@@ -530,7 +543,7 @@ Belirtilmemiş davranış olarak not edildi, kusur sayılmadı: `optimize(..., o
 
 ## Düzeltilen kütüphane kusurları
 
-Kod incelemesinde bulunan ve mevcut kodda yeniden üretilen altı kusur kütüphane tarafında düzeltildi; her biri için gerileme testi eklendi. `tests/test_api_contract.py` içindeki `OPTIMIZER_FACTORIES` listesi bugün `ABCOptimizer` ve `PSOOptimizer` içerir; eklenecek her yeni optimizer (GA, DE, ...) bu listeye eklenmeli, böylece aynı sözleşme testlerinden geçer.
+Kod incelemesinde bulunan ve mevcut kodda yeniden üretilen altı kusur kütüphane tarafında düzeltildi; her biri için gerileme testi eklendi. `tests/test_api_contract.py` içindeki `OPTIMIZER_FACTORIES` listesi bugün `ABCOptimizer`, `PSOOptimizer` ve `BBPSOOptimizer` içerir; eklenecek her yeni optimizer (GA, DE, ...) bu listeye eklenmeli, böylece aynı sözleşme testlerinden geçer.
 
 | No | Kusur ve düzeltme | Testler |
 |---|---|---|

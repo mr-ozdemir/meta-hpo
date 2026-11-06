@@ -54,15 +54,15 @@ the number of calls of the objective.
 
 Optimizer contract tests for every optimizer.
 
-OPTIMIZER_FACTORIES lists one factory per optimizer of the library, each called as factory(space, seed).
-Today it holds ABCOptimizer and PSOOptimizer. Every new optimizer (GA, DE, ...) must be added to this list, so
-that it runs the same contract tests that pin defects once found in ABCOptimizer: a candidate of another
-optimizer that carries a pending id is rejected; a score that float() rejects raises and keeps the
-candidate pending; a failing batch leaves the optimizer unchanged (checked against a twin with the same
-seed that never sees the failing call); clearing cand.params between ask and tell does not change the
-search; optimize(max_evals=1, optimizer=opt) leaves opt usable for ask and tell; and the median best over
-21 seeds on the 3-D sphere scaled by 1e-20, divided by the scale, stays within a factor of 100 of the
-unscaled median with the same seeds and the same number of calls.
+OPTIMIZER_FACTORIES lists one factory per optimizer of the library, each called as factory(space, seed). Today
+it holds ABCOptimizer, PSOOptimizer and BBPSOOptimizer. Every new optimizer (GA, DE, ...) must be added to
+this list, so that it runs the same contract tests that pin defects once found in ABCOptimizer: a candidate of
+another optimizer that carries a pending id is rejected; a score that float() rejects raises and keeps the
+candidate pending; a failing batch leaves the optimizer unchanged (checked against a twin with the same seed
+that never sees the failing call); clearing cand.params between ask and tell does not change the search;
+optimize(max_evals=1, optimizer=opt) leaves opt usable for ask and tell; and the median best over 21 seeds on
+the 3-D sphere scaled by 1e-20, divided by the scale, stays within a factor of 100 of the unscaled median with
+the same seeds and the same number of calls.
 
 Oracles: the Optimizer docstring (the contract every optimizer keeps), the optimize docstring (cancel of
 the candidates a budget cuts off) and the Candidate docstring.
@@ -85,6 +85,7 @@ import metahpo
 
 DOCUMENTED_EXPORTS = (
     "ABCOptimizer",
+    "BBPSOOptimizer",
     "Candidate",
     "Categorical",
     "Float",
@@ -130,7 +131,7 @@ def _params_of(candidates):
 
 
 def test_metahpo_should_export_exactly_the_documented_names():
-    """Given the package, when __all__ is read, then it holds exactly the eleven documented names once each.
+    """Given the package, when __all__ is read, then it holds exactly the twelve documented names once each.
 
     Oracle: README Quick start (Space, Float, Int, Categorical, optimize, ABCOptimizer), CHANGELOG 'Added'
     (Study), the __init__ export list (Candidate, Optimizer, Trial) and the README optimizer list
@@ -149,6 +150,7 @@ def test_metahpo_should_export_exactly_the_documented_names():
     ("name", "expected_kind"),
     [
         pytest.param("ABCOptimizer", inspect.isclass, id="ABCOptimizer"),
+        pytest.param("BBPSOOptimizer", inspect.isclass, id="BBPSOOptimizer"),
         pytest.param("Candidate", inspect.isclass, id="Candidate"),
         pytest.param("Categorical", inspect.isclass, id="Categorical"),
         pytest.param("Float", inspect.isclass, id="Float"),
@@ -349,6 +351,58 @@ def test_pso_optimizer_should_declare_documented_default(name, expected):
     expected_type = type(expected)
 
     default = inspect.signature(metahpo.PSOOptimizer).parameters[name].default
+
+    assert default == expected
+    assert type(default) is expected_type
+
+
+def test_bbpso_optimizer_should_declare_constructor_parameters_in_documented_order():
+    """Given the BBPSOOptimizer class, when its constructor is introspected, then space comes first and seed
+    and max_tries come last.
+
+    Oracle: bbpso module docstring and the BBPSO theory write-up (constructor of section 4); characterised
+    from the current public signature. The seed position matters for the static seed checkers (index 7).
+    """
+    expected = [
+        "space",
+        "direction",
+        "swarm_size",
+        "target",
+        "crossover",
+        "q_alpha",
+        "q_gamma",
+        "seed",
+        "max_tries",
+    ]
+
+    names = list(inspect.signature(metahpo.BBPSOOptimizer).parameters)
+
+    assert names == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        pytest.param("direction", "min", id="direction-min"),
+        pytest.param("swarm_size", 20, id="swarm_size-20"),
+        pytest.param("target", None, id="target-None"),
+        pytest.param("crossover", 0.5, id="crossover-0.5"),
+        pytest.param("q_alpha", 0.1, id="q_alpha-0.1"),
+        pytest.param("q_gamma", 0.9, id="q_gamma-0.9"),
+        pytest.param("seed", None, id="seed-None"),
+        pytest.param("max_tries", 100, id="max_tries-100"),
+    ],
+)
+def test_bbpso_optimizer_should_declare_documented_default(name, expected):
+    """Given the BBPSOOptimizer class, when an optional constructor parameter is introspected, then its
+    default is the pinned value.
+
+    Oracle: bbpso module docstring and the BBPSO theory parameter table (swarm_size 20, crossover 0.5,
+    q_alpha 0.1, q_gamma 0.9, target None meaning 0.0 for min and 1.0 for max).
+    """
+    expected_type = type(expected)
+
+    default = inspect.signature(metahpo.BBPSOOptimizer).parameters[name].default
 
     assert default == expected
     assert type(default) is expected_type
@@ -633,6 +687,7 @@ def test_abc_optimizer_should_ask_half_the_default_colony_as_first_batch_when_bu
 OPTIMIZER_FACTORIES = [
     pytest.param(lambda space, seed: metahpo.ABCOptimizer(space, seed=seed), id="abc"),
     pytest.param(lambda space, seed: metahpo.PSOOptimizer(space, seed=seed), id="pso"),
+    pytest.param(lambda space, seed: metahpo.BBPSOOptimizer(space, seed=seed), id="bbpso"),
 ]
 
 

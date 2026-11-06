@@ -6,6 +6,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-06
+
+### Added
+
+- `BBPSOOptimizer`: enhanced bare-bones PSO of Zhang, Lim & Liu (2023) with five search operations, a
+  second remote leader and a neighbouring elite guide per particle.
+- `BBPSOOptimizer` refines the leader and four other particles after every iteration with a root-finding
+  step that Q-learning picks among inverse quadratic interpolation, secant, Steffensen and ITP.
+- `BBPSOOptimizer` takes `target`, the best score the objective can return, which the root-finding steps aim at.
+
 ## [0.3.1] - 2026-11-05
 
 ### Fixed
