@@ -5,7 +5,7 @@ from metahpo.optimizers import ABCOptimizer, BBPSOOptimizer, Candidate, Optimize
 from metahpo.space import Categorical, Float, Int, Space
 from metahpo.study import Study, Trial
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 __all__ = [
     "ABCOptimizer",

@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-06
+
 ### Added
 
 - `BBPSOOptimizer`: enhanced bare-bones PSO of Zhang, Lim & Liu (2023) with five search operations, a
