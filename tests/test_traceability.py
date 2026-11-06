@@ -16,7 +16,8 @@ quoted by some entry.
 The meta-tests of this module are not listed in the matrix; they check the matrix and the suite itself.
 Further health checks run over every tests/test_*.py: only pytest, numpy, metahpo, the suite's own
 conftest and standard-library imports, no clock or global random module, no np.random call on numpy's
-global state, seeded generators, a seed for every ABCOptimizer, PSOOptimizer and optimize call outside
+global state, seeded generators, a seed for every ABCOptimizer, PSOOptimizer, BBPSOOptimizer and optimize
+call outside
 pytest.raises, no
 comment lines, no placeholder or unconditionally skipped test, no unfinished-work marker, and for every new
 test a docstring and a body without if statements, loops or conditional expressions; no two tests have the
@@ -66,7 +67,7 @@ GENERATOR_API = frozenset(
         "MT19937",
     }
 )
-SEED_POSITION = {"ABCOptimizer": 4, "PSOOptimizer": 7, "optimize": 5}
+SEED_POSITION = {"ABCOptimizer": 4, "PSOOptimizer": 7, "BBPSOOptimizer": 7, "optimize": 5}
 TRACED_MODULES = frozenset(
     {
         "test_abc",
