@@ -562,6 +562,51 @@ REQUIREMENTS = {
             "test_operators_pso::test_constriction_should_raise_value_error_when_phi_is_not_a_finite_number_above_4",
         ],
     },
+    "R-BBPSO-OPTIMIZER": {
+        "source": [
+            "CHANGELOG.md | `BBPSOOptimizer`: enhanced bare-bones PSO of Zhang, Lim & Liu (2023) with five "
+            "search operations, a second remote leader and a neighbouring elite guide per particle.",
+            "metahpo.optimizers.bbpso | A move always replaces the particle's position",
+        ],
+        "tests": [
+            "test_bbpso::test_bbpso_optimizer_should_store_the_documented_defaults",
+            "test_bbpso::test_bbpso_move_should_replace_the_position_even_when_the_score_is_worse",
+            "test_bbpso::test_bbpso_flags_should_advance_only_for_particles_whose_move_was_not_strictly_better",
+            "test_bbpso::test_bbpso_flags_should_cycle_through_the_five_operations_and_wrap_to_the_first",
+            "test_operators_bbpso::test_move_two_leaders_should_step_by_levy_times_the_gap_to_the_leaders_midpoint",
+            "test_api_contract::test_bbpso_optimizer_should_declare_documented_default",
+        ],
+    },
+    "R-BBPSO-REFINEMENT": {
+        "source": [
+            "CHANGELOG.md | `BBPSOOptimizer` refines the leader and four other particles after every "
+            "iteration with a root-finding step that Q-learning picks among inverse quadratic "
+            "interpolation, secant, Steffensen and ITP.",
+            "metahpo.optimizers.bbpso | The reward is +1 when the best point the method produced is strictly "
+            "better than the refined base, else -1",
+        ],
+        "tests": [
+            "test_bbpso::test_bbpso_refinement_should_take_between_one_and_ten_evaluations_per_iteration",
+            "test_bbpso::test_bbpso_refinement_should_reward_minus_one_when_every_trial_is_worse",
+            "test_bbpso::test_bbpso_refinement_should_reward_plus_one_and_replace_the_particle_when_a_trial_is_better",
+            "test_bbpso::test_bbpso_steffensen_should_ask_a_normalised_probe_and_then_the_steffensen_trial",
+            "test_operators_bbpso::test_itp_point_should_take_one_step_without_a_sign_condition",
+        ],
+    },
+    "R-BBPSO-TARGET": {
+        "source": [
+            "CHANGELOG.md | `BBPSOOptimizer` takes `target`, the best score the objective can return, which "
+            "the root-finding steps aim at.",
+            "metahpo.optimizers.bbpso | The root methods work on h = s (f - target), so the point they "
+            "aim at is the best score the function can return.",
+        ],
+        "tests": [
+            "test_bbpso::test_bbpso_optimizer_should_default_the_target_to_one_when_maximising",
+            "test_bbpso::test_bbpso_secant_should_step_beyond_the_leader_away_from_a_worse_partner_when_maximising",
+            "test_bbpso::test_bbpso_itp_should_take_one_step_just_beyond_the_leader_without_a_sign_change",
+            "test_bbpso::test_bbpso_should_evaluate_the_same_points_when_maximising_minus_f_with_target_zero",
+        ],
+    },
 }
 
 
@@ -1123,8 +1168,8 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 9 'Added' bullets (4 under Unreleased, 5 under
-    0.1.0) are found.
+    bullets, 3 Search space rows, 1 unit-cube sentence and 12 'Added' bullets (3 under Unreleased, 4 under
+    0.3.0, 5 under 0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would
     let the quote check pass vacuously; a new bullet makes this test fail as a reminder to trace it.
@@ -1133,7 +1178,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 9}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 12}
 
 
 @pytest.mark.parametrize(

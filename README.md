@@ -9,8 +9,8 @@ Metaheuristic hyperparameter optimization for Python, with a small numpy core.
 
 You describe a search space and a function that trains your model and returns a score.
 meta-hpo searches for the parameters that maximise or minimise that score.
-Two optimizers are available, the Artificial Bee Colony (ABC, the default) and Particle Swarm Optimization
-(PSO); more metaheuristics will follow behind the same interface.
+Three optimizers are available: the Artificial Bee Colony (ABC, the default), Particle Swarm Optimization
+(PSO) and an enhanced bare-bones PSO (BBPSO); more metaheuristics will follow behind the same interface.
 
 ## Installation
 
@@ -117,8 +117,9 @@ This loop makes exactly 300 evaluations.
 |---|---|---|
 | `ABCOptimizer` | the initial population, then one candidate | `colony_size=10`, `limit=15` |
 | `PSOOptimizer` | the whole swarm, every iteration | `swarm_size=20`, `inertia=0.7298`, `cognitive=1.49618`, `social=1.49618`, `max_velocity=1.0` |
+| `BBPSOOptimizer` | the initial population, then one candidate | `swarm_size=20`, `target`, `crossover=0.5`, `q_alpha=0.1`, `q_gamma=0.9` |
 
-Pass one to `optimize()` with `optimizer=`; both take `direction`, `seed` and `max_tries`:
+Pass one to `optimize()` with `optimizer=`; all take `direction`, `seed` and `max_tries`:
 
 ```python
 opt = mh.PSOOptimizer(space, direction="max", swarm_size=20, seed=1)
@@ -129,6 +130,13 @@ study = mh.optimize(train, space, direction="max", max_evals=300, optimizer=opt)
 Its defaults are the constriction constants of Clerc & Kennedy (2002); `max_velocity` is measured in widths
 of the unit cube. A coordinate that leaves the cube stops on the wall with zero velocity. Because a whole
 iteration is one batch, the candidates of an `ask()` can be trained in parallel.
+
+`BBPSOOptimizer` follows Zhang, Lim & Liu (2023): particles move without a velocity, guided by the best
+point, a second remote leader and a better neighbour, and cycle through five search operations when they
+stop improving. After every iteration the leader and four other particles are refined by a root-finding
+step that Q-learning chooses. These steps aim at `target`, the best score your function can return: 1.0
+by default for `direction="max"` (accuracy, F1) and 0.0 for `direction="min"` (a loss). Set it when
+your score has another bound.
 
 ## Search space
 
@@ -171,6 +179,13 @@ most visibly in small discrete spaces.
 - Clerc M., Kennedy J. (2002). The particle swarm: explosion, stability, and convergence in a
   multidimensional complex space. IEEE Transactions on Evolutionary Computation 6(1), 58–73.
   [doi:10.1109/4235.985692](https://doi.org/10.1109/4235.985692)
+- Kennedy J. (2003). Bare bones particle swarms. IEEE Swarm Intelligence Symposium, 80–87.
+- Zhang L., Lim C. P., Liu C. (2023). Enhanced bare-bones particle swarm optimization based evolving deep
+  neural networks. Expert Systems with Applications 230, 120642.
+  [doi:10.1016/j.eswa.2023.120642](https://doi.org/10.1016/j.eswa.2023.120642)
+- Oliveira I. F. D., Takahashi R. H. C. (2020). An enhancement of the bisection method average
+  performance preserving minmax optimality. ACM Transactions on Mathematical Software 47(1), 5.
+  [doi:10.1145/3423597](https://doi.org/10.1145/3423597)
 
 meta-hpo follows the phase order of the reference ABC: employed bees, then onlooker bees, then at most one
 scout per cycle. It deviates on purpose in four points:
