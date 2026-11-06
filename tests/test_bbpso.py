@@ -910,3 +910,61 @@ def test_bbpso_cancel_should_keep_a_key_reserved_when_its_twin_in_the_batch_was_
 
     assert [batch[n].key for n in (2, 7, 10)] == [(14.0,)] * 3
     assert again[0].key not in {c.key for c in told}
+
+
+@pytest.mark.parametrize(
+    "score",
+    [pytest.param(lambda p: math.nan, id="all-nan"), pytest.param(lambda p: 0.5, id="constant")],
+)
+def test_bbpso_should_use_the_whole_budget_when_no_particle_is_ever_better(score):
+    """Given an objective that is NaN everywhere or constant, when optimize() runs 300 calls on a 1-D space,
+    then all 300 calls are made.
+
+    Oracle: module docstring (with no better particle the neighbour and the second leader are the least
+    correlated other particles, which keeps the swarm from collapsing onto G) and the optimize docstring
+    (the search stops early only when the space is exhausted or 1000 candidates in a row were repeats).
+    Regression: the swarm used to collapse onto G and the search stopped after 58 of 60 calls.
+    """
+    space = _unit()
+
+    study = optimize(
+        score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
+    )
+
+    assert study.n_calls == 300
+
+
+def test_bbpso_itp_should_skip_the_slot_when_the_only_partner_sits_on_the_leader():
+    """Given the only finite partner moved onto the leader's base point, when one ITP step is the best action,
+    then the slot hands out nothing (the segment has length 0) and its Q entry gets reward -1:
+    1 + 0.1 (-1 + 0.9 * max Q[ITP, :] - 1) = 0.8.
+
+    Oracle: module docstring (one ITP step on the segment towards a random partner) and the BBPSO theory (a
+    zero segment gives no candidate; a slot without a candidate is finished with reward -1). The partner's
+    position is set directly, a state that a collapsing swarm reaches by itself.
+    """
+    opt, _, _ = _two_finite_particles("max")
+    opt.q[:, IQI, ITP] = 1.0
+    opt.positions[1] = opt.best_x
+
+    opt.ask()
+
+    assert float(opt.q[0, IQI, ITP]) == pytest.approx(0.8)
+
+
+def test_bbpso_unique_best_particle_should_use_g_as_its_neighbour():
+    """Given particle 0 as the unique best of the initial batch and set to operation 3, when its first move is
+    asked, then it hands out G itself: its neighbour is G, so the Gaussian spread |neighbour - G| is 0.
+
+    Oracle: module docstring (with no better particle, the neighbour is G when some particle is worse). The
+    move repeats the initial point, which regeneration cannot change.
+    """
+    opt = BBPSOOptimizer(_box(), max_tries=2, seed=ANY_SEED)
+    init = opt.ask()
+    opt.tell(init, [1.0] + [2.0] * (SWARM - 1))
+    opt.flags[0] = 3
+
+    move = opt.ask()
+
+    assert np.array_equal(move[0].x, init[0].x)
+    assert np.array_equal(opt.guide, init[0].x)

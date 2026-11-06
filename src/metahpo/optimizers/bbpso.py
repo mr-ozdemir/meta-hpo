@@ -9,7 +9,11 @@ method is chosen by Q-learning.
 Leaders, frozen when the first move of an iteration is asked: G is the best point evaluated so far; the
 second leader S is, among the five best other particles, the one whose position correlates least with G
 (Pearson correlation, MATLAB corr2). The neighbour of particle i is a random better particle whose
-correlation with G is below -0.2, else the better particle with the lowest correlation, else G.
+correlation with G is below -0.2, else the better particle with the lowest correlation, else G when some
+particle is worse (particle i is a best one), and otherwise, when no particle is better or worse, the other
+particle with the lowest correlation. The paper defines no fallback; the last rule keeps a swarm whose
+scores are all equal or all NaN from collapsing onto G, where every operation would hand out G again. The
+second leader falls back to all other particles in the same way when no other particle has a finite score.
 
 The five operations, one random coefficient per coordinate, with c = (neighbour + G) / 2: (1) Levy step
 towards (S + G) / 2; (2) Cauchy step towards c; (3) Gaussian around c with standard deviation
@@ -305,7 +309,7 @@ class BBPSOOptimizer(Optimizer):
     def _second_leader(self, guide: FloatArray) -> FloatArray:
         ids = self._ranking(exclude=self._owner)[:ELITES]
         if not ids:
-            return np.array(guide, dtype=np.float64)
+            ids = [j for j in range(self.swarm_size) if j != self._owner]
         return self._position(self._least_correlated(ids, guide))
 
     def _neighbour(self, i: int) -> FloatArray:
@@ -316,7 +320,9 @@ class BBPSOOptimizer(Optimizer):
             return self._position(self._pick(remote))
         if fitter:
             return self._position(self._least_correlated(fitter, guide))
-        return np.array(guide, dtype=np.float64)
+        if any(self.f[j] > self.f[i] for j in range(self.swarm_size)):
+            return np.array(guide, dtype=np.float64)
+        return self._position(self._least_correlated([j for j in range(self.swarm_size) if j != i], guide))
 
     def _levy(self, d: int) -> FloatArray:
         """Levy(0, 1) draws; a normal draw of exactly 0 gives inf, which repair turns into the parent's
