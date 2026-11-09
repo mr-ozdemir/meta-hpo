@@ -252,3 +252,50 @@ def make_plots(
         ax.set(xlabel="real evaluations", ylabel="best score", title=f"Improvements ({len(best_history)})")
         save(fig, "11_improvements")
     return written
+
+
+def make_run_plots(runs: list[dict[str, Any]], folder: Path, direction: str) -> list[str]:
+    """Draws the comparison of several runs into folder/plots and returns the file paths: the best score
+    over the evaluations of every run, and the best score of every run."""
+    from matplotlib.figure import Figure
+
+    out = folder / "plots"
+    out.mkdir(exist_ok=True)
+    written: list[str] = []
+
+    fig = Figure(figsize=(10, 4.5), layout="constrained")
+    ax = fig.subplots()
+    _style(ax)
+    for r in runs:
+        history = r["best_history"]
+        if history:
+            calls = [b["calls"] for b in history] + [r["summary"]["calls"]]
+            curve = [b["score"] for b in history] + [history[-1]["score"]]
+            ax.step(calls, curve, where="post", lw=1.4, label=f"run {r['summary']['run']}")
+    ax.set(xlabel="real evaluations", ylabel="best score", title=f"Best score of {len(runs)} runs")
+    if any(r["best_history"] for r in runs):
+        ax.legend(fontsize=8, ncol=max(1, len(runs) // 10))
+    path = out / "runs_convergence.png"
+    fig.savefig(path, dpi=130, bbox_inches="tight")
+    written.append(str(path))
+
+    numbers = [r["summary"]["run"] for r in runs]
+    scores = np.array([r["score"] for r in runs], dtype=np.float64)
+    finite = np.isfinite(scores)
+    fig = Figure(figsize=(max(6, 0.5 * len(runs) + 3), 4), layout="constrained")
+    ax = fig.subplots()
+    _style(ax)
+    ax.scatter(np.array(numbers)[finite], scores[finite], s=50, color="C0", zorder=3)
+    if finite.any():
+        ax.axhline(float(np.mean(scores[finite])), color="C3", lw=1.2, ls="--", label="mean")
+        ax.legend(fontsize=8)
+        low, high = float(np.min(scores[finite])), float(np.max(scores[finite]))
+        pad = (high - low) * 0.2 or abs(high) * 0.05 or 1.0
+        ax.set_ylim(low - pad, high + pad)
+    ax.set_xticks(numbers)
+    better = "lower" if direction == "min" else "higher"
+    ax.set(xlabel="run", ylabel="best score", title=f"Best score per run ({better} is better)")
+    path = out / "runs_best.png"
+    fig.savefig(path, dpi=130, bbox_inches="tight")
+    written.append(str(path))
+    return written

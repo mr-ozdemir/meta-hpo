@@ -132,7 +132,7 @@ def test_report_should_note_a_missing_plot_library_as_a_plot_failure(tmp_path, m
 
     Oracle: plots module docstring (a failed plot is noted in report.md and the other files are written).
     """
-    monkeypatch.setattr(metahpo.plots, "make_plots", _raise(ImportError("no matplotlib")))
+    monkeypatch.setattr("metahpo.plots.make_plots", _raise(ImportError("no matplotlib")))
 
     names, folder = _plots(tmp_path, ABCOptimizer(_space(), direction="max", seed=ANY_SEED))
 
@@ -146,7 +146,7 @@ def test_report_should_note_a_plot_failure_and_still_write_the_summary(tmp_path,
 
     Oracle: report module docstring (summaries are written when the run ends).
     """
-    monkeypatch.setattr(metahpo.plots, "make_plots", _raise(RuntimeError("disk full")))
+    monkeypatch.setattr("metahpo.plots.make_plots", _raise(RuntimeError("disk full")))
 
     _, folder = _plots(tmp_path, ABCOptimizer(_space(), direction="max", seed=ANY_SEED))
 
@@ -205,3 +205,60 @@ def test_make_plots_should_draw_the_score_histogram_without_a_density_when_every
 
     assert "04_score_distribution.png" in names
     assert "Plots failed" not in (folder / "report.md").read_text(encoding="utf-8")
+
+
+def _run_plots(tmp_path, runs, function=_score):
+    """Runs optimize() `runs` times with a plotting ResultWriter; returns the run plot names and folder."""
+    space = _space()
+    optimize(
+        function,
+        space,
+        direction="max",
+        max_evals=30,
+        seed=ANY_SEED,
+        runs=runs,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path)],
+    )
+    folder = next(p for p in tmp_path.iterdir() if p.is_dir())
+    plots = folder / "plots"
+    return ({p.name for p in plots.iterdir()} if plots.is_dir() else set()), folder
+
+
+def test_make_run_plots_should_draw_the_comparison_of_several_runs(tmp_path):
+    """Given runs=2, when the runs end, then the results folder has the two run comparison plots and
+    report.md links them.
+
+    Oracle: report module docstring (plots/runs_convergence.png and plots/runs_best.png with several runs).
+    """
+    names, folder = _run_plots(tmp_path, 2)
+
+    assert names == {"runs_convergence.png", "runs_best.png"}
+    assert "plots/runs_best.png" in (folder / "report.md").read_text(encoding="utf-8")
+
+
+def test_make_run_plots_should_cope_with_runs_without_finite_scores(tmp_path):
+    """Given runs=2 and an objective that always returns NaN, when the runs end, then both run plots are
+    written and no plot fails.
+
+    Oracle: plots module docstring; report.md notes a failed plot, so no note means none failed.
+    """
+    names, folder = _run_plots(tmp_path, 2, lambda p: math.nan)
+
+    assert names == {"runs_convergence.png", "runs_best.png"}
+    assert "plots failed" not in (folder / "report.md").read_text(encoding="utf-8").lower()
+
+
+def test_report_should_note_a_failure_of_the_run_plots(tmp_path, monkeypatch):
+    """Given make_run_plots raising RuntimeError, when the runs end, then report.md notes the failure and
+    summary.json is written.
+
+    Oracle: report module docstring (summaries are written after every run) and the plots module docstring.
+    """
+    monkeypatch.setattr("metahpo.plots.make_run_plots", _raise(RuntimeError("disk full")))
+
+    _, folder = _run_plots(tmp_path, 2)
+
+    assert "Run plots failed: RuntimeError: disk full" in (folder / "report.md").read_text(encoding="utf-8")
+    assert (folder / "summary.json").is_file()

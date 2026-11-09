@@ -5,9 +5,9 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 ## Özet
 
 - Test dosyası: 64 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 4413, hepsi geçiyor; tüm paket yaklaşık 67 saniyede koşuyor.
+- Toplanan test: 4468, hepsi geçiyor; tüm paket yaklaşık 75 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (1716 satırdan 1712'si), dal kapsamı 486/486. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
+- Satır kapsamı %99 (1851 satırdan 1847'si), dal kapsamı 528/528. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -423,6 +423,18 @@ Gereksinim: `optimize()` raporlaması (issue #48): nesil başına konsol satır�
 | Durma ve hatalar | **test_report.py**: Ctrl+C ile çalışmanın dönmesi ve sonuçların yazılması, hedef fonksiyondaki hatanın sonuçlar yazıldıktan sonra yeniden fırlatılması, `exhausted` durma nedeni, cancel hata verse de kesmenin çalışmayı döndürmesi, toplu adayın son adayından sonra kesmede tüm toplu adayın söylenmesi |
 | Olaylar ve meta | **test_report.py**: callback olay sırası, adayların aşama/nesil/birey bilgisi, deneme başlangıç zamanı ve süresi, popülasyon uzunlukları, popülasyonu ve metası olmayan optimizer, taban optimizer'ın nesil 0 ve boş popülasyonu |
 | Grafikler | **test_plots.py**: her optimizer için 11 grafik, hep NaN koşu, eşit skorlarda yoğunluksuz histogram, popülasyonsuz optimizer'da çeşitlilik ve aşama grafiklerinin atlanması, denemesiz koşuda yalnız yakınsama grafiği, eksik kütüphane ve grafik hatasının report.md'ye not düşülmesi |
+
+### repeated-runs
+
+Gereksinim: `optimize(runs=...)` (issue #49): aramanın tekrarı, her koşuda yeni optimizer, ayrı cache ve tam `max_evals`, `runs=1`'de tek Study ve fazlasında Study listesi, tek tamsayı seed'in her koşuda kullanılması, koşu başına seed dizisi, seed alan optimizer fonksiyonu, Ctrl+C ve hata davranışı, tek sonuç klasöründe koşular, koşular üzerinden özet ve karşılaştırma grafikleri. İzlenebilirlik matrisinde R-RUNS ve R-RUNS-OPTIMIZER-REPORT kimlikleriyle CHANGELOG `[Unreleased]` maddelerine bağlıdır.
+
+| Konu | Testler |
+|---|---|
+| Koşular ve dönüş | **test_facade_runs.py**: `runs=1`'de Study, `runs=3`'te her biri tam bütçeli üç Study, geçersiz `runs` (0, -1, 1.5, True), `RunState` öntanımlısı |
+| Seed | **test_facade_runs.py**: tek tamsayı ve numpy tamsayı seed'in her koşuda aynı aramayı vermesi, seed dizisinin her elemanının tek koşuyla birebir aynı olması, uzunluğu tutmayan dizinin reddi |
+| Optimizer | **test_facade_runs.py**: optimizer nesnesinin birden çok koşuda reddi, fonksiyonun her koşuda kendi seed'iyle yeni optimizer kurması, tek koşuda fonksiyon, optimizer döndürmeyen argümanın reddi |
+| Cache, kesme, hata | **test_facade_runs.py**: her koşunun kendi cache'i, Ctrl+C'nin kalan koşuları durdurup o ana kadarki Study'leri döndürmesi, hatanın yayılması ve sonraki koşunun başlamaması |
+| Sonuç klasörü ve konsol | **test_report.py**: tek klasörde run_001–run_003 ve koşu başına summary.json, en iyi koşu ve koşu skorlarının istatistiği, eşitlikte ilk koşu, report.md koşu tablosu, tek koşuda değişmeyen düzen, kesmeden sonra o ana kadarki koşular, `run 1/2` başlığı ve koşular üzerinden son satır, hiç sonlu skor olmayan koşular; **test_plots.py**: iki karşılaştırma grafiği, NaN koşular, grafik hatasının not düşülmesi |
 
 ## Stil kontrol listesi
 

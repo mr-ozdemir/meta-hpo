@@ -136,7 +136,8 @@ trajectory level; repeated runs with one seed per run and optimizer functions
 Plan: results reporting
 Scenario groups: console lines per generation and per trial; environment overrides of output and verbose;
 results folder layout and file contents; live best.json and incremental files; generation and population
-statistics; parameter analysis; stop reasons, interrupt and error handling; compression of large runs
+statistics; parameter analysis; stop reasons, interrupt and error handling; compression of large runs;
+several runs in one folder with a summary over the runs
     test_report.py | unit | ConsoleReporter, ResultWriter and the run events through optimize()
 
 Plan: result plots

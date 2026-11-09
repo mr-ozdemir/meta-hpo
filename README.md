@@ -94,6 +94,20 @@ hpo_results/2026-11-09_18-26-15_abc/    one folder per optimize() call: start ti
 
 The environment variables `METAHPO_OUTPUT` and `METAHPO_VERBOSE` override `output` and `verbose`.
 
+## Repeated runs
+
+```python
+studies = mh.optimize(train, space, direction="max", max_evals=300, runs=5, seed=[1, 2, 3, 4, 5])
+```
+
+- `runs` repeats the search; every run gets a fresh optimizer, its own cache and the full `max_evals`.
+  The result is a list with one `Study` per run (a single `Study` when `runs=1`).
+- `seed` is one seed per run, one integer that every run uses, or `None` for random runs.
+- With several runs, pass your own optimizer as a function of the seed:
+  `optimizer=lambda seed: mh.PSOOptimizer(space, direction="max", seed=seed)`.
+- All runs go into one results folder (`run_001`, `run_002`, ...) with a summary and plots that
+  compare the runs.
+
 ## Examples
 
 Runnable scripts that tune a small convolutional network on CIFAR-10 are in

@@ -646,6 +646,34 @@ REQUIREMENTS = {
             "test_report::test_candidates_should_carry_their_phase_generation_and_individual",
         ],
     },
+    "R-RUNS": {
+        "source": [
+            "CHANGELOG.md | `optimize(runs=...)` repeats the search, every run with a fresh optimizer, "
+            "its own cache and the full `max_evals`, and returns one `Study` per run; `seed` takes one "
+            "seed per run or one integer for every run.",
+        ],
+        "tests": [
+            "test_facade_runs::test_optimize_should_return_one_study_per_run_each_with_the_full_budget",
+            "test_facade_runs::test_optimize_should_give_every_run_the_same_integer_seed",
+            "test_facade_runs::test_optimize_should_run_each_seed_of_a_sequence_like_a_single_run_with_that_seed",
+            "test_facade_runs::test_optimize_should_give_every_run_its_own_cache",
+            "test_facade_runs::test_optimize_should_return_a_study_when_runs_is_one",
+        ],
+    },
+    "R-RUNS-OPTIMIZER-REPORT": {
+        "source": [
+            "CHANGELOG.md | With several runs, `optimizer` is a function that builds an optimizer from a "
+            "seed, and the results folder holds every run, a summary over the runs and plots that "
+            "compare them.",
+        ],
+        "tests": [
+            "test_facade_runs::test_optimize_should_build_a_fresh_optimizer_per_run_from_an_optimizer_function",
+            "test_facade_runs::test_optimize_should_reject_an_optimizer_object_for_several_runs",
+            "test_report::test_result_writer_should_write_every_run_into_one_folder_with_a_summary_per_run",
+            "test_report::test_summary_should_name_the_best_run_and_the_statistics_of_the_run_scores",
+            "test_plots::test_make_run_plots_should_draw_the_comparison_of_several_runs",
+        ],
+    },
 }
 
 
@@ -1207,8 +1235,8 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 15 'Added' bullets (3 under 0.5.0, 3 under
-    0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
+    bullets, 3 Search space rows, 1 unit-cube sentence and 17 'Added' bullets (2 under Unreleased, 3
+    under 0.5.0, 3 under 0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would
     let the quote check pass vacuously; a new bullet makes this test fail as a reminder to trace it.
@@ -1217,7 +1245,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 15}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 17}
 
 
 @pytest.mark.parametrize(
