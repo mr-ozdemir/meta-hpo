@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -18,12 +18,19 @@ Direction = Literal["min", "max"]
 @dataclass(frozen=True)
 class Candidate:
     """A point to evaluate: `x` in the unit cube, `params` as the user's function receives them, and `key`,
-    the hashable decoded identity used for caching."""
+    the hashable decoded identity used for caching.
+
+    `meta` says how the optimizer produced the candidate, for reports: `phase` (for example 'init',
+    'employed', 'onlooker' or 'scout' in ABC), `generation` (the optimizer's generation counter when the
+    candidate was handed out) and `individual` (the food source or particle it belongs to); an optimizer
+    may add more keys.
+    """
 
     id: int
     x: NDArray[np.float64]
     params: dict[str, Any]
     key: tuple[Any, ...]
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 class Optimizer:
@@ -57,6 +64,31 @@ class Optimizer:
 
     def ask(self) -> list[Candidate]:
         raise NotImplementedError
+
+    @property
+    def generation(self) -> int:
+        """Completed generations: ABC cycles, PSO and BBPSO iterations; 0 for an optimizer without them."""
+        return 0
+
+    def population(self) -> dict[str, Any] | None:
+        """A snapshot of the current population for reports, or None for an optimizer without one.
+
+        The snapshot holds 'x', the (n, d) unit-cube positions, 'score', the n current scores in the user's
+        direction (NaN for a non-finite or unknown score), and optional optimizer-specific columns of length
+        n.
+        """
+        return None
+
+    def _external(self, f: float) -> float:
+        """Internal minimised value to the user's direction; NaN for a non-finite value."""
+        if not math.isfinite(f):
+            return math.nan
+        return f if self.direction == "min" else -f
+
+    @staticmethod
+    def _with_meta(cand: Candidate, phase: str, generation: int, individual: int, **extra: Any) -> Candidate:
+        meta = {"phase": phase, "generation": generation, "individual": individual, **extra}
+        return replace(cand, meta=meta)
 
     def _uniform(self) -> float:
         """Next U(0, 1) draw; drawn from the generator in blocks, so single draws cost no numpy call."""
