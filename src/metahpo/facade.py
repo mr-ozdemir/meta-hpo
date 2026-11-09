@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Literal, overload
+
+import numpy as np
 
 from metahpo.optimizers.abc import ABCOptimizer
 from metahpo.optimizers.base import Candidate, Direction, Optimizer
@@ -22,8 +24,44 @@ from metahpo.space import Space
 from metahpo.study import Study, Trial
 
 Objective = Callable[[dict[str, Any]], float]
+OptimizerFactory = Callable[[Any], Optimizer]
+Seed = int | Sequence[int | None] | None
 
 _MAX_REPEATS = 1000
+
+
+@overload
+def optimize(
+    function: Objective,
+    space: Space,
+    direction: Direction = "min",
+    max_evals: int = 500,
+    optimizer: Optimizer | OptimizerFactory | None = None,
+    seed: Seed = None,
+    cache: bool = True,
+    output: str | os.PathLike[str] | None = DEFAULT_OUTPUT,
+    verbose: int = 1,
+    log_every: int = 1,
+    callbacks: Sequence[Callback] | None = None,
+    runs: Literal[1] = 1,
+) -> Study: ...
+
+
+@overload
+def optimize(
+    function: Objective,
+    space: Space,
+    direction: Direction = "min",
+    max_evals: int = 500,
+    optimizer: Optimizer | OptimizerFactory | None = None,
+    seed: Seed = None,
+    cache: bool = True,
+    output: str | os.PathLike[str] | None = DEFAULT_OUTPUT,
+    verbose: int = 1,
+    log_every: int = 1,
+    callbacks: Sequence[Callback] | None = None,
+    runs: int = 1,
+) -> Study | list[Study]: ...
 
 
 def optimize(
@@ -31,14 +69,15 @@ def optimize(
     space: Space,
     direction: Direction = "min",
     max_evals: int = 500,
-    optimizer: Optimizer | None = None,
-    seed: int | None = None,
+    optimizer: Optimizer | OptimizerFactory | None = None,
+    seed: Seed = None,
     cache: bool = True,
     output: str | os.PathLike[str] | None = DEFAULT_OUTPUT,
     verbose: int = 1,
     log_every: int = 1,
     callbacks: Sequence[Callback] | None = None,
-) -> Study:
+    runs: int = 1,
+) -> Study | list[Study]:
     """Search `space` for the parameters that minimise or maximise `function(params) -> score`.
 
     `function` receives a dict of parameter values and returns a score (accuracy, F1, loss, ...); what it
@@ -60,12 +99,21 @@ def optimize(
     the study so far with stop_reason 'interrupted'; an exception raised by `function` is re-raised after the
     results so far are written. Every trial records its phase, generation and individual, its start time and
     its duration.
+
+    Repeated runs: `runs` repeats the whole search that many times, each run with a fresh optimizer, its own
+    cache and the full `max_evals`; with `runs=1` optimize() returns a Study, with more runs a list of
+    Study, one per run. `seed` is None (every run random), one integer (every run uses it) or a sequence
+    with one seed per run. An optimizer object holds the state of one search, so it is accepted only with
+    `runs=1`; for more runs pass a function that builds one from a seed, for example
+    `optimizer=lambda seed: PSOOptimizer(space, direction='max', seed=seed)`. A KeyboardInterrupt stops the
+    remaining runs as well. All runs are written to the same results folder (run_001, run_002, ...).
     """
     if max_evals < 1:
         raise ValueError("max_evals must be at least 1")
-    opt = optimizer or ABCOptimizer(space, direction=direction, seed=seed)
-    if opt.direction != direction or opt.space is not space:
-        raise ValueError("the optimizer must use the same space and direction as optimize()")
+    if isinstance(runs, bool) or not isinstance(runs, int) or runs < 1:
+        raise ValueError("runs must be an integer of at least 1")
+    seeds = _run_seeds(seed, runs)
+    make = _optimizer_factory(optimizer, space, direction, runs)
     level = resolve_verbose(verbose)
     listeners: list[Callback] = []
     if level > 0:
@@ -74,21 +122,61 @@ def optimize(
     if folder is not None:
         listeners.append(ResultWriter(folder))
     listeners.extend(callbacks or [])
-    study = Study(direction)
-    state = RunState(space, opt, direction, max_evals, seed, study)
-    run = _Run(function, space, opt, cache, max_evals, state, listeners)
-    for listener in listeners:
-        listener.on_run_start(state)
-    try:
-        run.loop()
-    except KeyboardInterrupt:
-        run.abandon("interrupted")
-    except BaseException:
-        run.abandon("error")
+    studies: list[Study] = []
+    for number, run_seed in enumerate(seeds, start=1):
+        opt = make(run_seed)
+        if not isinstance(opt, Optimizer):
+            raise TypeError("the optimizer function must return an Optimizer")
+        if opt.direction != direction or opt.space is not space:
+            raise ValueError("the optimizer must use the same space and direction as optimize()")
+        study = Study(direction)
+        studies.append(study)
+        state = RunState(space, opt, direction, max_evals, run_seed, study, run=number, runs=runs)
+        run = _Run(function, space, opt, cache, max_evals, state, listeners)
+        for listener in listeners:
+            listener.on_run_start(state)
+        try:
+            run.loop()
+        except KeyboardInterrupt:
+            run.abandon("interrupted")
+            run.finish()
+            break
+        except BaseException:
+            run.abandon("error")
+            run.finish()
+            raise
         run.finish()
-        raise
-    run.finish()
-    return study
+    return studies[0] if runs == 1 else studies
+
+
+def _run_seeds(seed: Seed, runs: int) -> list[Any]:
+    """One seed per run: None for every run, the same integer for every run, or the given sequence."""
+    if seed is None or isinstance(seed, (int, np.integer)):
+        return [seed] * runs
+    seeds = list(seed)
+    if len(seeds) != runs:
+        raise ValueError(f"seed holds {len(seeds)} values but runs={runs}; give one seed per run")
+    return seeds
+
+
+def _optimizer_factory(
+    optimizer: Optimizer | OptimizerFactory | None, space: Space, direction: Direction, runs: int
+) -> OptimizerFactory:
+    """A function seed -> optimizer for every run."""
+    if optimizer is None:
+        return lambda seed: ABCOptimizer(space, direction=direction, seed=seed)
+    if isinstance(optimizer, Optimizer):
+        if runs > 1:
+            raise ValueError(
+                "an optimizer object holds the state of one search and cannot be reused for several runs; "
+                "pass a function that builds one from a seed, for example "
+                "optimizer=lambda seed: PSOOptimizer(space, direction='max', seed=seed)"
+            )
+        instance = optimizer
+        return lambda seed: instance
+    if not callable(optimizer):
+        raise TypeError("optimizer must be an Optimizer, a function seed -> Optimizer, or None")
+    return optimizer
 
 
 class _Run:
