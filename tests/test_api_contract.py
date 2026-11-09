@@ -86,12 +86,16 @@ import metahpo
 DOCUMENTED_EXPORTS = (
     "ABCOptimizer",
     "BBPSOOptimizer",
+    "Callback",
     "Candidate",
+    "ConsoleReporter",
     "Categorical",
     "Float",
     "Int",
     "Optimizer",
     "PSOOptimizer",
+    "ResultWriter",
+    "RunState",
     "Space",
     "Study",
     "Trial",
@@ -131,7 +135,7 @@ def _params_of(candidates):
 
 
 def test_metahpo_should_export_exactly_the_documented_names():
-    """Given the package, when __all__ is read, then it holds exactly the twelve documented names once each.
+    """Given the package, when __all__ is read, then it holds exactly the sixteen documented names once each.
 
     Oracle: README Quick start (Space, Float, Int, Categorical, optimize, ABCOptimizer), CHANGELOG 'Added'
     (Study), the __init__ export list (Candidate, Optimizer, Trial) and the README optimizer list
@@ -151,6 +155,10 @@ def test_metahpo_should_export_exactly_the_documented_names():
     [
         pytest.param("ABCOptimizer", inspect.isclass, id="ABCOptimizer"),
         pytest.param("BBPSOOptimizer", inspect.isclass, id="BBPSOOptimizer"),
+        pytest.param("Callback", inspect.isclass, id="Callback"),
+        pytest.param("ConsoleReporter", inspect.isclass, id="ConsoleReporter"),
+        pytest.param("ResultWriter", inspect.isclass, id="ResultWriter"),
+        pytest.param("RunState", inspect.isclass, id="RunState"),
         pytest.param("Candidate", inspect.isclass, id="Candidate"),
         pytest.param("Categorical", inspect.isclass, id="Categorical"),
         pytest.param("Float", inspect.isclass, id="Float"),
@@ -204,7 +212,19 @@ def test_optimize_should_declare_parameters_in_documented_order():
     space are passed positionally in the README. The position of optimizer, seed and cache is characterised
     from the current public signature.
     """
-    expected = ["function", "space", "direction", "max_evals", "optimizer", "seed", "cache"]
+    expected = [
+        "function",
+        "space",
+        "direction",
+        "max_evals",
+        "optimizer",
+        "seed",
+        "cache",
+        "output",
+        "verbose",
+        "log_every",
+        "callbacks",
+    ]
 
     names = list(inspect.signature(metahpo.optimize).parameters)
 
@@ -232,6 +252,10 @@ def test_optimize_should_require_parameter_when_it_has_no_documented_default(nam
         pytest.param("optimizer", None, id="optimizer-None"),
         pytest.param("seed", None, id="seed-None"),
         pytest.param("cache", True, id="cache-True"),
+        pytest.param("output", "hpo_results", id="output-hpo_results"),
+        pytest.param("verbose", 1, id="verbose-1"),
+        pytest.param("log_every", 1, id="log_every-1"),
+        pytest.param("callbacks", None, id="callbacks-None"),
     ],
 )
 def test_optimize_should_declare_documented_default(name, expected):
