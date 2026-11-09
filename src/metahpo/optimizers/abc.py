@@ -195,7 +195,22 @@ class ABCOptimizer(Optimizer):
         self._next_id += 1
         return cand
 
+    @property
+    def generation(self) -> int:
+        """Completed cycles (employed, onlooker and scout phase)."""
+        return self.cycle
+
+    def population(self) -> dict[str, Any] | None:
+        """Food sources: positions, scores in the user's direction and each source's stagnation counter (the
+        trial counter that sends a scout at `limit`)."""
+        return {
+            "x": self.foods.copy(),
+            "score": [self._external(f) for f in self.f],
+            "stagnation": list(self.trial),
+        }
+
     def _issue(self, cands: list[Candidate], kind: str, foods: list[int]) -> list[Candidate]:
+        cands = [self._with_meta(c, kind, self.cycle, i) for c, i in zip(cands, foods, strict=True)]
         for cand, i in zip(cands, foods, strict=True):
             new_key = cand.key not in self._seen
             self._pending[cand.id] = _Issued(kind, i, cand.x.copy(), cand.key, dict(cand.params), new_key)

@@ -521,13 +521,14 @@ def test_categorical_should_declare_choices_as_its_only_parameter():
 
 
 def test_candidate_should_expose_documented_fields_in_order():
-    """Given Candidate, when its dataclass fields are listed, then they are id, x, params, key in that order.
+    """Given Candidate, when its dataclass fields are listed, then they are id, x, params, key, meta in that
+    order.
 
-    Oracle: base.Candidate docstring (x, params, key), README 'c.params', and the id that tell uses to match
-    a candidate; the order is characterised from the current public signature. Order equality catches a
-    reordering (positional construction breaks) as well as a rename such as params to parameters.
+    Oracle: base.Candidate docstring (x, params, key, meta), README 'c.params', and the id that tell uses to
+    match a candidate; the order is characterised from the current public signature. meta comes last with a
+    default, so positional construction with four arguments keeps working.
     """
-    expected = ["id", "x", "params", "key"]
+    expected = ["id", "x", "params", "key", "meta"]
 
     names = [f.name for f in dataclasses.fields(metahpo.Candidate)]
 
@@ -535,13 +536,14 @@ def test_candidate_should_expose_documented_fields_in_order():
 
 
 def test_trial_should_expose_documented_fields_in_order():
-    """Given Trial, when its dataclass fields are listed, then they are number, params, score, cached, x in
-    order.
+    """Given Trial, when its dataclass fields are listed, then they are number, params, score, cached, x,
+    meta, start_time, duration in order.
 
     Oracle: characterisation of the current public signature (see the module docstring); Trial.failed's
-    docstring refers to the score and Study.n_calls's docstring to cached repeats.
+    docstring refers to the score, Study.n_calls's docstring to cached repeats and the Trial docstring to
+    meta, start_time and duration, which come last with defaults.
     """
-    expected = ["number", "params", "score", "cached", "x"]
+    expected = ["number", "params", "score", "cached", "x", "meta", "start_time", "duration"]
 
     names = [f.name for f in dataclasses.fields(metahpo.Trial)]
 

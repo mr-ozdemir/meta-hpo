@@ -102,6 +102,7 @@ class PSOOptimizer(Optimizer):
         self.velocities = np.zeros((n, d))
         self.pbest = np.zeros((n, d))
         self.pbest_f = [math.inf] * n
+        self.f = [math.inf] * n
         self.phase = "init"
         self.iteration = 0
         self._initialised = [False] * n
@@ -159,6 +160,7 @@ class PSOOptimizer(Optimizer):
             i = entry.particle
             self.positions[i] = entry.x
             self.velocities[i] = entry.velocity
+            self.f[i] = f
             if entry.kind == "init":
                 self._set_pbest(i, entry, f)
                 self._initialised[i] = True
@@ -234,6 +236,7 @@ class PSOOptimizer(Optimizer):
         particles: list[int],
         velocities: list[NDArray[np.float64]],
     ) -> list[Candidate]:
+        cands = [self._with_meta(c, kind, self.iteration, i) for c, i in zip(cands, particles, strict=True)]
         for cand, i, v in zip(cands, particles, velocities, strict=True):
             new_key = cand.key not in self._seen
             self._pending[cand.id] = _Issued(
@@ -241,6 +244,20 @@ class PSOOptimizer(Optimizer):
             )
             self._seen.add(cand.key)
         return cands
+
+    @property
+    def generation(self) -> int:
+        """Completed iterations: every particle has flown once per iteration."""
+        return self.iteration
+
+    def population(self) -> dict[str, Any] | None:
+        """Particles: positions, current scores, personal-best scores and speeds (velocity norms)."""
+        return {
+            "x": self.positions.copy(),
+            "score": [self._external(f) for f in self.f],
+            "pbest_score": [self._external(f) for f in self.pbest_f],
+            "speed": np.linalg.norm(self.velocities, axis=1).tolist(),
+        }
 
     def _set_pbest(self, i: int, entry: _Issued, f: float) -> None:
         self.pbest[i] = entry.x
