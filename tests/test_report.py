@@ -859,3 +859,126 @@ def test_console_should_stop_printing_and_let_the_run_finish_when_the_stream_bre
     assert (len(study.trials), study.stop_reason) == (BUDGET, "budget")
     assert (folder / "summary.json").is_file()
     assert stream.writes == 1
+
+
+def test_result_writer_should_write_every_run_into_one_folder_with_a_summary_per_run(tmp_path):
+    """Given runs=3, when the runs end, then there is one results folder with run_001 to run_003, each with
+    its own summary.json, and config.json records three runs and their seeds.
+
+    Oracle: report module docstring (folder layout with several runs) and the optimize docstring (all runs
+    are written to the same results folder).
+    """
+    _, folder = _run(tmp_path, runs=3)
+
+    names = sorted(p.name for p in folder.iterdir() if p.is_dir())
+    assert names == ["run_001", "run_002", "run_003"]
+    assert [(folder / n / "summary.json").is_file() for n in names] == [True, True, True]
+    config = _json(folder / "config.json")
+    assert (config["runs"], config["seeds"]) == (3, [ANY_SEED, ANY_SEED, ANY_SEED])
+
+
+def test_summary_should_name_the_best_run_and_the_statistics_of_the_run_scores(tmp_path):
+    """Given seed=[1, 2, 3] and runs=3, when the runs end, then summary.json names the run with the highest
+    best score, lists the three runs with their seeds, and its run_scores mean is the mean of the best
+    scores.
+
+    Oracle: report module docstring (summary.json with several runs: runs, best_run, run_scores).
+    """
+    studies = optimize(
+        _score,
+        _space(),
+        direction="max",
+        max_evals=BUDGET,
+        seed=[1, 2, 3],
+        runs=3,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False)],
+    )
+
+    summary = _json(_folder(tmp_path) / "summary.json")
+    bests = [s.best_score for s in studies]
+    assert summary["best_run"] == 1 + bests.index(max(bests))
+    assert [r["seed"] for r in summary["runs"]] == [1, 2, 3]
+    assert summary["run_scores"]["mean"] == pytest.approx(float(np.mean(bests)))
+
+
+def test_summary_should_name_the_first_run_as_best_when_runs_tie(tmp_path):
+    """Given one integer seed and runs=2, so both runs reach the same best score, when the runs end, then
+    best_run is 1.
+
+    Oracle: report module docstring (best_run) and the optimize docstring (one integer is used by every run).
+    """
+    _, folder = _run(tmp_path, runs=2)
+
+    summary = _json(folder / "summary.json")
+
+    assert (summary["best_run"], summary["run_scores"]["std"]) == (1, 0.0)
+
+
+def test_report_md_should_start_with_a_table_of_the_runs(tmp_path):
+    """Given runs=3, when report.md is read, then it has a Runs section that links every run folder.
+
+    Oracle: report module docstring (report.md starts with a table of the runs).
+    """
+    _, folder = _run(tmp_path, runs=3)
+
+    text = (folder / "report.md").read_text(encoding="utf-8")
+
+    assert "## Runs" in text
+    assert ["`run_001`" in text, "`run_002`" in text, "`run_003`" in text] == [True, True, True]
+
+
+def test_single_run_should_keep_the_single_run_summary(tmp_path):
+    """Given the default runs, when the run ends, then summary.json has no runs entry, the run folder has no
+    summary.json, and config.json records one run.
+
+    Oracle: report module docstring (the per-run summary and the runs entries exist only with several runs).
+    """
+    _, folder = _run(tmp_path)
+
+    summary = _json(folder / "summary.json")
+
+    assert ("runs" in summary, (folder / "run_001" / "summary.json").exists()) == (False, False)
+    assert _json(folder / "config.json")["runs"] == 1
+
+
+def test_summary_should_cover_the_runs_so_far_after_an_interrupt(tmp_path):
+    """Given runs=3 and an objective interrupted in the second run, when optimize() returns, then
+    summary.json lists two runs and the second one stopped as interrupted.
+
+    Oracle: report module docstring (summary.json is rewritten after every run, so it covers the runs so far).
+    """
+    _, folder = _run(tmp_path, function=_interrupting(BUDGET + 5), runs=3)
+
+    summary = _json(folder / "summary.json")
+
+    assert [r["stop_reason"] for r in summary["runs"]] == ["budget", "interrupted"]
+
+
+def test_console_should_number_the_runs_and_end_with_a_line_over_all_runs(capsys, monkeypatch):
+    """Given runs=2 and verbose=1, when the runs end, then the first line names run 1/2 and the last line
+    sums up both runs.
+
+    Oracle: report module docstring (ConsoleReporter) and the RunState docstring (run, runs).
+    """
+    monkeypatch.delenv("METAHPO_VERBOSE", raising=False)
+
+    optimize(_score, _space(), direction="max", max_evals=BUDGET, seed=ANY_SEED, runs=2, output=None)
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("[meta-hpo] run 1/2 |")
+    assert lines[-1].startswith("[meta-hpo] 2 runs | best ")
+
+
+def test_console_should_say_no_finite_score_over_runs_that_never_scored(capsys, monkeypatch):
+    """Given runs=2 and an objective that always returns NaN, when the runs end, then the last line says
+    that the two runs have no finite score.
+
+    Oracle: report module docstring (ConsoleReporter) and the Study docstring (NaN is no finite score).
+    """
+    monkeypatch.delenv("METAHPO_VERBOSE", raising=False)
+
+    optimize(lambda p: math.nan, _space(), max_evals=10, seed=ANY_SEED, runs=2, output=None)
+
+    assert capsys.readouterr().out.splitlines()[-1] == "[meta-hpo] 2 runs | no finite score"
