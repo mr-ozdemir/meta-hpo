@@ -60,7 +60,8 @@ class RunState:
     """What a callback sees: the configuration, the live study and the running best.
 
     `best` is the best finite trial so far (None before one exists), `calls` the real calls made, `started`
-    the wall-clock start in seconds since the epoch.
+    the wall-clock start in seconds since the epoch. `run` is the number of this run and `runs` the number
+    of runs optimize() was asked for.
     """
 
     space: Space
@@ -73,6 +74,7 @@ class RunState:
     started: float = field(default_factory=time.time)
     calls: int = 0
     best: Trial | None = None
+    runs: int = 1
 
     @property
     def optimizer_name(self) -> str:
