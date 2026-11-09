@@ -426,7 +426,7 @@ Gereksinim: `optimize()` raporlaması (issue #48): nesil başına konsol satır�
 
 ### repeated-runs
 
-Gereksinim: `optimize(runs=...)` (issue #49): aramanın tekrarı, her koşuda yeni optimizer, ayrı cache ve tam `max_evals`, `runs=1`'de tek Study ve fazlasında Study listesi, tek tamsayı seed'in her koşuda kullanılması, koşu başına seed dizisi, seed alan optimizer fonksiyonu, Ctrl+C ve hata davranışı, tek sonuç klasöründe koşular, koşular üzerinden özet ve karşılaştırma grafikleri. İzlenebilirlik matrisinde R-RUNS ve R-RUNS-OPTIMIZER-REPORT kimlikleriyle CHANGELOG `[Unreleased]` maddelerine bağlıdır.
+Gereksinim: `optimize(runs=...)` (issue #49): aramanın tekrarı, her koşuda yeni optimizer, ayrı cache ve tam `max_evals`, `runs=1`'de tek Study ve fazlasında Study listesi, tek tamsayı seed'in her koşuda kullanılması, koşu başına seed dizisi, seed alan optimizer fonksiyonu, Ctrl+C ve hata davranışı, tek sonuç klasöründe koşular, koşular üzerinden özet ve karşılaştırma grafikleri. İzlenebilirlik matrisinde R-RUNS ve R-RUNS-OPTIMIZER-REPORT kimlikleriyle CHANGELOG `[0.5.1]` maddelerine bağlıdır.
 
 | Konu | Testler |
 |---|---|
