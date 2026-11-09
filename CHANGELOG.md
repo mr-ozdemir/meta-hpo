@@ -6,6 +6,23 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-09
+
+### Added
+
+- `optimize()` prints one line per generation and writes every run to a time-stamped folder below `output`
+  (default `hpo_results`): all trials, the best so far, generation and population statistics, a parameter
+  analysis, `report.md` and plots.
+- A Ctrl+C returns the study so far and an error raised by the objective is re-raised after the results are
+  written; `Study.stop_reason` says why the search ended.
+- `Callback` objects passed with `callbacks` receive the run, generation and trial events, and every trial
+  records its phase, generation, start time and duration.
+
+### Changed
+
+- matplotlib is a dependency; it draws the plots of the results folder.
+- The optimizer settings, algorithm notes and references moved from the README to `docs/optimizers.md`.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added

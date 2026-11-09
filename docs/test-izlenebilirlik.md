@@ -5,9 +5,9 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 ## Özet
 
 - Test dosyası: 64 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 4307, hepsi geçiyor; tüm paket yaklaşık 27 saniyede koşuyor.
+- Toplanan test: 4413, hepsi geçiyor; tüm paket yaklaşık 67 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (1039 satırdan 1035'i), dal kapsamı 322/322. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
+- Satır kapsamı %99 (1716 satırdan 1712'si), dal kapsamı 486/486. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -411,6 +411,18 @@ Gereksinim: `BBPSOOptimizer` (Zhang, Lim & Liu 2023): beş hareket işlemi, ikin
 | İyileştirme | **test_bbpso.py**: iterasyon başına 1–10 değerlendirme, tam beş parçacık, -1 ve +1 ödülle Q değerleri, daha iyi denemenin parçacığa yerleşmesi, normalize Steffensen probe ve denemesi, max yönünde secant ve tek adım ITP yönü, IQI için ortak yokluğu, hedefte duran taban, NaN probe, hep NaN olunca iyileştirmenin atlanması |
 | Protokol ve bütçe | **test_bbpso_protocol.py**: Space ile key/params uyumu, optimize() ile elle döngü eşliği, yabancı/tekrarlı/söylenmiş aday, dönüşmeyen skor, params temizleme, yön uyuşmazlığı, max_evals=1 sonrası kullanım; **test_bbpso.py**: dört değerli uzayda 4 çağrı, yeniden üretim, cancel (hareket, probe, ortak anahtar, söylenmiş ikiz), tell'in rastgele sayı çekmemesi |
 | Belirlenimcilik ve yakınsama | **test_bbpso.py**: aynı tohum aynı arama; küre (300 çağrıda < 1e-3), Rastrigin, karışık uzay (10 tohumun en az 9'u), target 0 ile max/min eşdeğerliği; **test_api_contract.py**: `OPTIMIZER_FACTORIES` içindeki `bbpso` ile tüm sözleşme testleri (1e-20 ölçekli küre dahil) |
+
+### results-reporting
+
+Gereksinim: `optimize()` raporlaması (issue #48): nesil başına konsol satırı (`verbose`, `log_every`), `output` altında zaman damgalı sonuç klasörü (config, summary, report.md, run klasöründe denemeler, canlı best.json, en iyi geçmişi, nesil ve popülasyon istatistikleri, parametre analizi), matplotlib grafikleri, Ctrl+C ve hata davranışı, `Study.stop_reason`, callback olayları, deneme meta/zaman alanları. İzlenebilirlik matrisinde R-REPORT-OUTPUT, R-REPORT-STOP ve R-REPORT-EVENTS kimlikleriyle CHANGELOG `[0.5.0]` maddelerine bağlıdır.
+
+| Konu | Testler |
+|---|---|
+| Dosyalar | **test_report.py**: belgelenen dosyaların hepsi, trials.csv satır ve meta sütunları, best.json içeriği ve her yeni en iyide diskte güncellenmesi, generations.csv çağrı sayıları, population.csv, categories.csv, parameters.csv (en iyi değer, üçten az başarılı denemede nan korelasyon), best_history, summary/config, report.md, 50 000 değerlendirmeden itibaren sıkıştırma, aynı saniyede iki koşuya ayrı klasör |
+| Konsol | **test_report.py**: başlık, nesil başına satır ve son satır, `log_every=2`, `verbose=2` deneme satırları, `verbose=0` sessizlik, ortam değişkenleri, `log_every < 1` hatası, hiç sonlu skor yokken son satır, bozuk akışta yazmayı bırakıp koşunun bitmesi |
+| Durma ve hatalar | **test_report.py**: Ctrl+C ile çalışmanın dönmesi ve sonuçların yazılması, hedef fonksiyondaki hatanın sonuçlar yazıldıktan sonra yeniden fırlatılması, `exhausted` durma nedeni, cancel hata verse de kesmenin çalışmayı döndürmesi, toplu adayın son adayından sonra kesmede tüm toplu adayın söylenmesi |
+| Olaylar ve meta | **test_report.py**: callback olay sırası, adayların aşama/nesil/birey bilgisi, deneme başlangıç zamanı ve süresi, popülasyon uzunlukları, popülasyonu ve metası olmayan optimizer, taban optimizer'ın nesil 0 ve boş popülasyonu |
+| Grafikler | **test_plots.py**: her optimizer için 11 grafik, hep NaN koşu, eşit skorlarda yoğunluksuz histogram, popülasyonsuz optimizer'da çeşitlilik ve aşama grafiklerinin atlanması, denemesiz koşuda yalnız yakınsama grafiği, eksik kütüphane ve grafik hatasının report.md'ye not düşülmesi |
 
 ## Stil kontrol listesi
 
