@@ -5,12 +5,12 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mr-ozdemir/meta-hpo/blob/master/LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/mr-ozdemir/meta-hpo/blob/master/pyproject.toml)
 
-Metaheuristic hyperparameter optimization for Python, with a small numpy core.
+Metaheuristic hyperparameter optimization for Python.
 
 You describe a search space and a function that trains your model and returns a score.
 meta-hpo searches for the parameters that maximise or minimise that score.
-Several metaheuristics share one interface (see [Optimizers](#optimizers)); the Artificial Bee Colony is
-the default. Every run is reported on the console and in a results folder.
+Several metaheuristics share one interface ([Optimizers](#optimizers)), and every run is reported on the
+console and in a results folder ([Results](#results)).
 
 ## Installation
 
@@ -18,44 +18,9 @@ the default. Every run is reported on the console and in a results folder.
 pip install meta-hpo
 ```
 
-meta-hpo needs Python 3.10+ and numpy. The plots of the results folder need matplotlib and seaborn:
-
-```console
-pip install "meta-hpo[report]"
-```
+meta-hpo needs Python 3.10+; pip installs numpy and matplotlib with it.
 
 ## Quick start
-
-```python
-import metahpo as mh
-
-space = mh.Space(
-    {
-        "lr": mh.Float(1e-4, 1e-2, log=True),
-        "kernel": mh.Categorical([3, 5, 7]),
-        "units": mh.Int(16, 256),
-        "dropout": mh.Float(0.0, 0.5),
-    }
-)
-
-
-def train(params):
-    model = build_model(params["kernel"], params["units"], params["dropout"])
-    return fit_and_score(model, lr=params["lr"])
-
-
-study = mh.optimize(train, space, direction="max", max_evals=300, seed=1)
-print(study.best_params, study.best_score)
-```
-
-`build_model` and `fit_and_score` stand for your own model code; they are not part of meta-hpo.
-`train` can do anything: a Keras or PyTorch training run, cross-validation, an F1 score.
-Its training budget is entirely yours; meta-hpo only counts evaluations.
-
-### Runnable example
-
-This version needs only numpy. A closed-form score with its peak at `lr=1e-3`, `kernel=5`, `units=128`
-and `dropout=0.2` stands in for training:
 
 ```python
 import numpy as np
@@ -72,7 +37,7 @@ space = mh.Space(
 )
 
 
-def score(params):
+def train(params):
     lr_term = 0.05 * (np.log10(params["lr"]) + 3) ** 2
     units_term = ((params["units"] - 128) / 256) ** 2
     dropout_term = (params["dropout"] - 0.2) ** 2
@@ -80,14 +45,19 @@ def score(params):
     return 0.9 - lr_term - units_term - dropout_term + kernel_bonus
 
 
-study = mh.optimize(score, space, direction="max", max_evals=300, seed=1)
+study = mh.optimize(train, space, direction="max", max_evals=300, seed=1)
 print(study.best_params, study.best_score)
 ```
 
+Here `train` is a closed-form score with its peak at `lr=1e-3`, `kernel=5`, `units=128` and
+`dropout=0.2`, so the example runs as it is. In your code `train` builds and trains the model with these
+parameters and returns its score: a Keras or PyTorch training run, cross-validation, an F1 score.
+Its training budget is entirely yours; meta-hpo only counts evaluations.
+
 ## Results
 
-`optimize()` prints one line per generation and writes everything it does to `hpo_results/` in the working
-directory while it runs:
+`optimize()` prints one line per generation and, while it runs, writes everything to `hpo_results/` in the
+working directory:
 
 ```text
 [meta-hpo] run 1 | ABCOptimizer | direction=max | max_evals=300 | seed=1 | 4 parameters
@@ -111,9 +81,9 @@ hpo_results/2026-11-09_18-26-15_abc/    one folder per optimize() call: start ti
     └── plots/                          convergence, diversity, distributions, correlations, ...
 ```
 
-`best.json` is written as soon as the best improves, so the best so far survives a crash. Ctrl+C stops
-the search and returns the study so far; an error raised by your function is re-raised after the results
-are written.
+- `best.json` is replaced on every improvement, so the best so far survives a crash.
+- Ctrl+C stops the search and returns the study so far.
+- An error raised by your function is re-raised after the results are written.
 
 | Setting | Effect |
 |---|---|
@@ -126,7 +96,8 @@ The environment variables `METAHPO_OUTPUT` and `METAHPO_VERBOSE` override `outpu
 
 ## Examples
 
-[examples/](https://github.com/mr-ozdemir/meta-hpo/tree/master/examples) has runnable scripts that tune a small convolutional network on CIFAR-10:
+Runnable scripts that tune a small convolutional network on CIFAR-10 are in
+[examples/](https://github.com/mr-ozdemir/meta-hpo/tree/master/examples):
 
 - [PyTorch](https://github.com/mr-ozdemir/meta-hpo/blob/master/examples/cifar10_pytorch.py)
 - [TensorFlow](https://github.com/mr-ozdemir/meta-hpo/blob/master/examples/cifar10_tensorflow.py)
@@ -134,12 +105,8 @@ The environment variables `METAHPO_OUTPUT` and `METAHPO_VERBOSE` override `outpu
 ## Ask and tell
 
 For full control over where and how candidates are evaluated, ask for candidates and tell their scores.
-
-A round is one `ask()` and one `tell()`; an evaluation is one call of `train`.
-The first `ask()` returns the whole initial population, `colony_size // 2` candidates.
-Every later `ask()` returns one candidate.
-So 300 rounds with `colony_size=10` make 304 evaluations.
-To set a budget, count evaluations instead of rounds:
+`ABCOptimizer`'s first `ask()` returns the initial population (`colony_size // 2` candidates) and every later
+`ask()` one candidate, so count evaluations, not rounds, to set a budget:
 
 ```python
 opt = mh.ABCOptimizer(space, direction="max", colony_size=10, limit=15, seed=1)
@@ -153,7 +120,7 @@ while evals < 300:
 print(opt.best_params, opt.best_score)
 ```
 
-This loop makes exactly 300 evaluations.
+This loop makes exactly 300 evaluations; 300 rounds of one `ask()` and one `tell()` would make 304.
 
 ## Optimizers
 
@@ -187,20 +154,18 @@ Optimizers search the unit cube `[0, 1]^d`; the space maps each point to typed p
   and does not count against `max_evals`.
 - The same `seed` reproduces the same search.
 
-`seed` makes the search reproducible: the same seed and the same scores give the same candidates.
-Training itself is reproducible only if you also seed your framework and configure it to run deterministically.
-If `train` returns different scores for the same parameters, the rest of the search differs too.
+`max_evals` counts real calls of your function. The same seed and the same scores give the same
+candidates; training itself is reproducible only if you also seed your framework and make it
+deterministic, and different scores for the same parameters change the rest of the search.
 
-Optimizers do not hand out a parameter set twice.
-When a new candidate repeats an earlier one, the optimizer draws it again, up to `max_tries` attempts
-(100 by default); only then may a repeat come back.
-So the proposed candidates follow a different distribution than in the textbook ABC,
-most visibly in small discrete spaces.
-`max_evals` counts real calls of your function.
+Optimizers do not hand out a parameter set twice: a repeat is drawn again, up to `max_tries` times (100
+by default), before it may come back. So candidates follow a different distribution than in the textbook
+algorithms, most visibly in small discrete spaces.
 
 ## Contributing
 
-See [CONTRIBUTING.md](https://github.com/mr-ozdemir/meta-hpo/blob/master/CONTRIBUTING.md). Changes are listed in [CHANGELOG.md](https://github.com/mr-ozdemir/meta-hpo/blob/master/CHANGELOG.md).
+See [CONTRIBUTING.md](https://github.com/mr-ozdemir/meta-hpo/blob/master/CONTRIBUTING.md); changes are
+listed in [CHANGELOG.md](https://github.com/mr-ozdemir/meta-hpo/blob/master/CHANGELOG.md).
 
 ## License
 

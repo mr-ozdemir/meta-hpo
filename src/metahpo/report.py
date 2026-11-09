@@ -607,8 +607,6 @@ class ResultWriter(Callback):
                     plot_files = plots.make_plots(
                         state, self.run_dir, self._generation_rows, self._best_history
                     )
-            except ImportError:
-                self._notes.append("Plots were skipped: install them with `pip install meta-hpo[report]`.")
             except Exception as exc:
                 self._notes.append(f"Plots failed: {type(exc).__name__}: {exc}")
         summary["plots"] = plot_files
