@@ -2,11 +2,11 @@
 
 Suite
 -----
-The suite under tests/ checks the metahpo package: the search space, the ABC operators, the ask/tell
-optimizer base, the ABC optimizer, the PSO optimizer, the BBPSO optimizer, the study results and the
-optimize() facade. It is built top-down: the system is first split into features, each feature gets one
-plan, and each plan lists its scenario groups and the test files that hold them. Every file under tests/
-belongs to exactly one plan.
+The suite under tests/ checks the metahpo package: the search space, the ABC operators, the ask/tell optimizer
+base, the ABC optimizer, the PSO optimizer, the BBPSO optimizer, the study results, the optimize() facade, the
+results reporting and the result plots. It is built top-down: the system is first split into features, each
+feature gets one plan, and each plan lists its scenario groups and the test files that hold them. Every file
+under tests/ belongs to exactly one plan.
 
 Features
 --------
@@ -18,7 +18,9 @@ Features
 6. BBPSO optimizer (metahpo.optimizers.bbpso)
 7. study results (metahpo.study)
 8. optimize facade (metahpo.facade)
-9. cross-cutting (the whole package)
+9. results reporting (metahpo.report)
+10. result plots (metahpo.plots)
+11. cross-cutting (the whole package)
 
 Plans
 -----
@@ -130,6 +132,16 @@ trajectory level
     test_facade_grammar.py | integration | hand-written cache=False example behind test_fuzz_grammar.py
     test_facade_direction.py | integration | direction='max' with an explicit ABCOptimizer
 
+Plan: results reporting
+Scenario groups: console lines per generation and per trial; environment overrides of output and verbose;
+results folder layout and file contents; live best.json and incremental files; generation and population
+statistics; parameter analysis; stop reasons, interrupt and error handling; compression of large runs
+    test_report.py | unit | ConsoleReporter, ResultWriter and the run events through optimize()
+
+Plan: result plots
+Scenario groups: every plot file written for each optimizer; plots skipped with a note when they fail
+    test_plots.py | unit | plot files of real runs in temporary folders
+
 Plan: cross-cutting
 Scenario groups: README examples end to end; seeded determinism and order independence; pinned
 characterisation snapshots and runtime budget; seeded fuzzing with an exception oracle; grammar-derived
@@ -181,6 +193,8 @@ One strategy and one coverage target per unit:
     abc | model-based on the phase FSM | every transition of the phase FSM
     pso | code-based (white box) | branch coverage
     bbpso | code-based (white box) | branch coverage
+    report | code-based (white box) | branch coverage
+    plots | code-based (white box) | branch coverage
     study | code-based (white box) | branch coverage
     facade | code-based (white box) | branch coverage
 The spec names no strategy for base; code-based (white box) is chosen to match the other small units.
@@ -214,8 +228,9 @@ specified.
 (3) Non-functional: out of scope except for the hang guard below. No performance requirement is specified.
 (4) Floating point: in scope. The clip bounds of neighbour_value, fitness at 0, negative, +inf and NaN,
 Float log decoding with approximate comparison, and Int and Categorical endpoints at u=1.0.
-(5) System level: out of scope. The library uses no I/O, network or OS resources; the platform is recorded
-in the report header.
+(5) System level: in scope for the results folder: ResultWriter writes files below `output`, which
+test_report.py checks in temporary folders; the library uses no network, and the platform is recorded in
+the report header.
 (6) Requirement misunderstanding: in scope through test_traceability.py and test_api_contract.py, because
 the source does not list it among the blind spots that may be ignored.
 
@@ -227,44 +242,47 @@ Step 2: select that module's test files test_<module>*.py, the rows of every mod
 files that are always selected.
 Import graph of src/metahpo (module <- the modules that import it; both package __init__ files count as
 __init__):
-    space <- base, abc, pso, bbpso, facade, __init__
+    space <- base, abc, pso, bbpso, facade, report, plots, __init__
     operators <- abc, pso, bbpso
-    base <- abc, pso, bbpso, study, facade, __init__
+    base <- abc, pso, bbpso, study, facade, report, __init__
     abc <- facade, __init__
     pso <- __init__
     bbpso <- __init__
-    study <- facade, __init__
+    study <- facade, report, __init__
     facade <- __init__
+    report <- facade, __init__
+    plots <- report
 Each row below contains the rows of all modules that import it, so the selection is closed over the import
 graph: a test that uses a module's public names, or the names of a module that imports it, is selected. The
 package __init__ files, which import every module, are not followed as a path from a test to a module,
 otherwise every row would be the whole suite. The rows are a module-level superset of the
 modification-traversing tests (P-T6-32).
-    space: test_space*.py, test_base*.py, test_abc*.py, test_pso*.py, test_bbpso*.py, test_study*.py,
-        test_facade*.py,
-        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
-        test_api_contract.py
-    operators: test_operators*.py, test_abc*.py, test_pso*.py, test_bbpso*.py, test_facade*.py, test_base*.py,
-        test_space_partition.py,
-        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
-        test_api_contract.py
-    base: test_base*.py, test_abc*.py, test_pso*.py, test_bbpso*.py, test_study*.py, test_facade*.py,
-        test_space_partition.py,
-        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
-        test_api_contract.py
-    abc: test_abc*.py, test_facade*.py, test_base*.py, test_pso*.py, test_bbpso*.py, test_space_partition.py,
-        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
-        test_api_contract.py
-    study: test_study*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py, test_pso*.py, test_bbpso*.py,
-        test_space_partition.py,
-        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
-        test_api_contract.py
-    facade: test_facade*.py, test_abc.py, test_abc_acceptance.py, test_pso*.py, test_bbpso*.py,
-        test_space_partition.py,
-        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
-        test_api_contract.py
-    pso: test_pso*.py, test_api_contract.py
-    bbpso: test_bbpso*.py, test_api_contract.py
+    space: test_space*.py, test_report*.py, test_plots*.py, test_base*.py, test_abc*.py, test_pso*.py,
+        test_bbpso*.py, test_study*.py, test_facade*.py, test_end_to_end.py, test_determinism.py,
+        test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    operators: test_operators*.py, test_report*.py, test_plots*.py, test_abc*.py, test_pso*.py,
+        test_bbpso*.py, test_facade*.py, test_base*.py, test_space_partition.py, test_end_to_end.py,
+        test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    base: test_base*.py, test_report*.py, test_plots*.py, test_abc*.py, test_pso*.py, test_bbpso*.py,
+        test_study*.py, test_facade*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py,
+        test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    abc: test_abc*.py, test_report*.py, test_plots*.py, test_facade*.py, test_base*.py, test_pso*.py,
+        test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py, test_regression.py,
+        test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    study: test_study*.py, test_report*.py, test_plots*.py, test_facade*.py, test_abc.py,
+        test_abc_acceptance.py, test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py,
+        test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    facade: test_facade*.py, test_report*.py, test_plots*.py, test_abc.py, test_abc_acceptance.py,
+        test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py,
+        test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    report: test_report*.py, test_plots*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py,
+        test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py,
+        test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    plots: test_plots*.py, test_report*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py,
+        test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py,
+        test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    pso: test_pso*.py, test_report*.py, test_plots*.py, test_api_contract.py
+    bbpso: test_bbpso*.py, test_report*.py, test_plots*.py, test_api_contract.py
     __init__: test_api_contract.py
 Always selected: test_static.py, test_suite_layout.py, test_traceability.py
 Statement-level selection of modification-traversing tests (P-T6-32) is out of scope for this plan.
@@ -315,6 +333,9 @@ suite is meant to finish in well under a minute.
 
 REVERSE_ENV = "METAHPO_TEST_REVERSE"
 """Environment variable that reverses the collection order when it is set to '1'."""
+
+os.environ.setdefault("METAHPO_OUTPUT", "none")
+os.environ.setdefault("METAHPO_VERBOSE", "0")
 
 
 def pytest_report_header(config):

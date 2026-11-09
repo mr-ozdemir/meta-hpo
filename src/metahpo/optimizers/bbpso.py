@@ -64,6 +64,7 @@ from metahpo.space import Space
 FloatArray = NDArray[np.float64]
 
 IQI, SECANT, STEFFENSEN, ITP = 0, 1, 2, 3
+ACTIONS = ("iqi", "secant", "steffensen", "itp")
 REMOTE = -0.2
 ELITES = 5
 
@@ -429,7 +430,25 @@ class BBPSOOptimizer(Optimizer):
         self._slot_stage = "choose"
         self._slot_x = None
 
+    @property
+    def generation(self) -> int:
+        """Completed iterations: every particle has moved once and the refinement has run."""
+        return self.iteration
+
+    def population(self) -> dict[str, Any] | None:
+        """Particles: positions, current scores and the operation index (1-5) each particle uses next."""
+        return {
+            "x": self.positions.copy(),
+            "score": [self._external(f) for f in self.f],
+            "operation": list(self.flags),
+        }
+
     def _issue(self, cands: list[Candidate], kind: str, particles: list[int]) -> list[Candidate]:
+        extra = {"action": ACTIONS[self._slot_action]} if kind in ("probe", "root") else {}
+        cands = [
+            self._with_meta(c, kind, self.iteration, i, **extra)
+            for c, i in zip(cands, particles, strict=True)
+        ]
         for cand, i in zip(cands, particles, strict=True):
             new_key = cand.key not in self._seen
             self._pending[cand.id] = _Issued(kind, i, cand.x.copy(), cand.key, dict(cand.params), new_key)
