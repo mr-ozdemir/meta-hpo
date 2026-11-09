@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-10
+
 ### Added
 
 - `optimize(runs=...)` repeats the search, every run with a fresh optimizer, its own cache and the full
