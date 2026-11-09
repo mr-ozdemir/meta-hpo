@@ -1,8 +1,9 @@
-"""Plots of an optimize() run for the `hpo_results` folder, drawn with matplotlib and seaborn.
+"""Plots of an optimize() run for the `hpo_results` folder, drawn with matplotlib.
 
-matplotlib and seaborn are optional (`pip install meta-hpo[report]`); they are imported only here, inside
-make_plots, so the rest of the library needs numpy alone. make_plots raises ImportError when they are
-missing, and ResultWriter then notes in report.md that plots were skipped.
+matplotlib is a dependency of meta-hpo. It is imported only here, inside make_plots, so `import metahpo`
+stays fast. The figures are drawn without pyplot and styled on their axes, so the backend is not switched
+and the open figures and the rcParams of the user's session are left untouched. When a plot fails,
+ResultWriter notes the error in report.md and the other result files are still written.
 """
 
 from __future__ import annotations
@@ -16,17 +17,45 @@ import numpy as np
 from metahpo.space import Categorical
 
 
+def _style(ax: Any) -> None:
+    """A light grid behind the data and no top or right spine, set on the axes, not in rcParams."""
+    ax.grid(True, color="#e6e6e6")
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#cccccc")
+
+
+def _kde(values: np.ndarray[Any, np.dtype[np.float64]]) -> tuple[Any, Any] | None:
+    """A Gaussian kernel density estimate on a grid (Scott's bandwidth), or None for fewer than two
+    distinct values. The values are binned first, so the cost does not grow with their number squared.
+    """
+    n, spread = len(values), float(np.std(values))
+    if n < 2 or spread == 0.0:
+        return None
+    h = 1.06 * spread * n ** (-0.2)
+    counts, edges = np.histogram(values, bins=256, range=(np.min(values) - 3 * h, np.max(values) + 3 * h))
+    grid = (edges[:-1] + edges[1:]) / 2
+    kernel = np.exp(-0.5 * ((grid[:, None] - grid[None, :]) / h) ** 2)
+    return grid, kernel @ counts / (n * h * math.sqrt(2 * math.pi))
+
+
+def _histogram(ax: Any, values: np.ndarray[Any, np.dtype[np.float64]], kde: bool = False) -> None:
+    """A 40-bin histogram, with its kernel density scaled to the counts when `kde`."""
+    _, edges, _ = ax.hist(values, bins=40, color="C0", alpha=0.6, edgecolor="white")
+    density = _kde(values) if kde else None
+    if density is not None:
+        grid, dens = density
+        ax.plot(grid, dens * len(values) * (edges[1] - edges[0]), color="C0", lw=1.5)
+
+
 def make_plots(
     state: Any, run_dir: Path, generations: list[dict[str, Any]], best_history: list[dict[str, Any]]
 ) -> list[str]:
     """Draws every plot of one run into run_dir/plots and returns the file paths."""
-    import matplotlib
+    from matplotlib.figure import Figure
 
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-
-    sns.set_theme(style="whitegrid", context="notebook")
     out = run_dir / "plots"
     out.mkdir(exist_ok=True)
     trials = state.study.trials
@@ -35,12 +64,15 @@ def make_plots(
     written: list[str] = []
 
     def subplots(*args: Any, **kwargs: Any) -> Any:
-        return plt.subplots(*args, layout="constrained", **kwargs)
+        fig = Figure(figsize=kwargs.pop("figsize", None), layout="constrained")
+        axes = fig.subplots(*args, **kwargs)
+        for ax in np.atleast_1d(axes).flat:
+            _style(ax)
+        return fig, axes
 
     def save(fig: Any, name: str) -> None:
         path = out / f"{name}.png"
         fig.savefig(path, dpi=130, bbox_inches="tight")
-        plt.close(fig)
         written.append(str(path))
 
     scores = np.array([t.score for t in real], dtype=np.float64)
@@ -101,7 +133,7 @@ def make_plots(
 
     if finite.any():
         fig, ax = subplots(figsize=(8, 4))
-        sns.histplot(scores[finite], bins=40, kde=True, ax=ax)
+        _histogram(ax, scores[finite], kde=True)
         ax.set(xlabel="score", title="Score distribution of real evaluations")
         save(fig, "04_score_distribution")
 
@@ -119,8 +151,14 @@ def make_plots(
             if isinstance(p, Categorical):
                 labels = [repr(v) for v in values]
                 order = [repr(c) for c in p.choices]
-                sns.boxplot(x=labels, y=ok_scores, order=order, ax=ax, color="C0")
-                sns.stripplot(x=labels, y=ok_scores, order=order, ax=ax, size=2, color="k", alpha=0.4)
+                where = np.array([order.index(label) for label in labels])
+                used = sorted(set(where.tolist()))
+                ax.boxplot(
+                    [ok_scores[where == i] for i in used], positions=used, widths=0.6, showfliers=False
+                )
+                jitter = np.random.default_rng(0).uniform(-0.15, 0.15, len(where))
+                ax.scatter(where + jitter, ok_scores, s=4, color="k", alpha=0.4)
+                ax.set_xticks(range(len(order)), order)
             else:
                 ax.scatter(values, ok_scores, s=10, alpha=0.5, c=np.arange(len(ok)), cmap="viridis")
                 if getattr(p, "log", False):
@@ -174,17 +212,13 @@ def make_plots(
             with np.errstate(invalid="ignore", divide="ignore"):
                 corr = np.corrcoef(data, rowvar=False)
             fig, ax = subplots(figsize=(1.2 * len(labels) + 3, 1.0 * len(labels) + 2))
-            sns.heatmap(
-                corr,
-                annot=True,
-                fmt=".2f",
-                xticklabels=labels,
-                yticklabels=labels,
-                vmin=-1,
-                vmax=1,
-                cmap="coolwarm",
-                ax=ax,
-            )
+            image = ax.imshow(corr, vmin=-1, vmax=1, cmap="coolwarm")
+            fig.colorbar(image, ax=ax)
+            ax.set_xticks(range(len(labels)), labels, rotation=45, ha="right")
+            ax.set_yticks(range(len(labels)), labels)
+            ax.grid(False)
+            for (i, j), value in np.ndenumerate(corr):
+                ax.text(j, i, f"{value:.2f}", ha="center", va="center", fontsize=8)
             ax.set_title("Correlation of numeric parameters and score")
             save(fig, "08_correlation")
 
@@ -193,7 +227,7 @@ def make_plots(
         fig, axes = subplots(1, 2, figsize=(12, 4))
         axes[0].plot(calls, durations, lw=0.8)
         axes[0].set(xlabel="real evaluation", ylabel="seconds", title="Duration per evaluation")
-        sns.histplot(durations, bins=40, ax=axes[1])
+        _histogram(axes[1], durations)
         axes[1].set(xlabel="seconds", title="Duration distribution")
         save(fig, "09_durations")
 

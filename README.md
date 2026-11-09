@@ -18,11 +18,7 @@ the default. Every run is reported on the console and in a results folder.
 pip install meta-hpo
 ```
 
-meta-hpo needs Python 3.10+ and numpy. The plots of the results folder need matplotlib and seaborn:
-
-```console
-pip install "meta-hpo[report]"
-```
+meta-hpo needs Python 3.10+; pip installs numpy and matplotlib with it.
 
 ## Quick start
 
@@ -54,7 +50,7 @@ Its training budget is entirely yours; meta-hpo only counts evaluations.
 
 ### Runnable example
 
-This version needs only numpy. A closed-form score with its peak at `lr=1e-3`, `kernel=5`, `units=128`
+This version needs no machine-learning framework. A closed-form score with its peak at `lr=1e-3`, `kernel=5`, `units=128`
 and `dropout=0.2` stands in for training:
 
 ```python

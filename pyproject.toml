@@ -17,11 +17,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["numpy>=1.23"]
+dependencies = ["numpy>=1.23", "matplotlib>=3.7"]
 
 [project.optional-dependencies]
-report = ["matplotlib>=3.7", "seaborn>=0.13"]
-dev = ["pytest>=7", "ruff>=0.5", "mypy>=1.8", "matplotlib>=3.7", "seaborn>=0.13"]
+dev = ["pytest>=7", "ruff>=0.5", "mypy>=1.8"]
 
 [project.urls]
 Repository = "https://github.com/mr-ozdemir/meta-hpo"
@@ -42,7 +41,7 @@ python_version = "3.10"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["seaborn", "seaborn.*", "matplotlib", "matplotlib.*"]
+module = ["matplotlib", "matplotlib.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
