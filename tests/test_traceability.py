@@ -607,6 +607,45 @@ REQUIREMENTS = {
             "test_bbpso::test_bbpso_should_evaluate_the_same_points_when_maximising_minus_f_with_target_zero",
         ],
     },
+    "R-REPORT-OUTPUT": {
+        "source": [
+            "CHANGELOG.md | `optimize()` prints one line per generation and writes every run to a "
+            "time-stamped folder below `output` (default `hpo_results`): all trials, the best so far, "
+            "generation and population statistics, a parameter analysis, `report.md` and plots.",
+        ],
+        "tests": [
+            "test_report::test_result_writer_should_write_the_documented_files",
+            "test_report::test_best_json_should_be_updated_on_disk_after_every_new_best",
+            "test_report::test_generations_csv_should_count_calls_up_to_the_last_call_of_the_run",
+            "test_report::test_parameters_csv_should_list_every_parameter_with_the_best_value",
+            "test_report::test_console_should_print_a_header_one_line_per_generation_and_a_final_line",
+            "test_plots::test_make_plots_should_write_every_plot_for_each_optimizer",
+        ],
+    },
+    "R-REPORT-STOP": {
+        "source": [
+            "CHANGELOG.md | A Ctrl+C returns the study so far and an error raised by the objective is "
+            "re-raised after the results are written; `Study.stop_reason` says why the search ended.",
+        ],
+        "tests": [
+            "test_report::test_keyboard_interrupt_should_return_the_study_so_far_and_write_the_results",
+            "test_report::test_error_in_the_objective_should_be_raised_after_the_results_are_written",
+            "test_report::test_stop_reason_should_be_exhausted_when_every_parameter_set_was_evaluated",
+            "test_report::test_best_json_should_hold_the_best_trial_and_the_stop_reason",
+        ],
+    },
+    "R-REPORT-EVENTS": {
+        "source": [
+            "CHANGELOG.md | `Callback` objects passed with `callbacks` receive the run, generation and "
+            "trial events, and every trial records its phase, generation, start time and duration.",
+        ],
+        "tests": [
+            "test_report::test_callbacks_should_receive_the_events_in_order",
+            "test_report::test_trials_csv_should_hold_one_row_per_trial_with_its_meta_and_score",
+            "test_report::test_trials_should_carry_a_start_time_and_a_duration",
+            "test_report::test_candidates_should_carry_their_phase_generation_and_individual",
+        ],
+    },
 }
 
 
@@ -1168,8 +1207,8 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 12 'Added' bullets (3 under Unreleased, 4 under
-    0.3.0, 5 under 0.1.0) are found.
+    bullets, 3 Search space rows, 1 unit-cube sentence and 15 'Added' bullets (3 under 0.5.0, 3 under
+    0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would
     let the quote check pass vacuously; a new bullet makes this test fail as a reminder to trace it.
@@ -1178,7 +1217,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 12}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 15}
 
 
 @pytest.mark.parametrize(
