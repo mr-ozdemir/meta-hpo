@@ -224,6 +224,7 @@ def test_optimize_should_declare_parameters_in_documented_order():
         "verbose",
         "log_every",
         "callbacks",
+        "runs",
     ]
 
     names = list(inspect.signature(metahpo.optimize).parameters)
@@ -256,6 +257,7 @@ def test_optimize_should_require_parameter_when_it_has_no_documented_default(nam
         pytest.param("verbose", 1, id="verbose-1"),
         pytest.param("log_every", 1, id="log_every-1"),
         pytest.param("callbacks", None, id="callbacks-None"),
+        pytest.param("runs", 1, id="runs-1"),
     ],
 )
 def test_optimize_should_declare_documented_default(name, expected):

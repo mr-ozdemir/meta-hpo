@@ -15,13 +15,19 @@ ship with the library and are switched on by default:
 The environment variables METAHPO_OUTPUT and METAHPO_VERBOSE replace the defaults of `output` and `verbose`
 (METAHPO_OUTPUT=none switches the folder off), which is useful in test suites and CI.
 
-Folder layout (one `run_001` folder per run):
+Folder layout (one `run_NNN` folder per run; `optimize(runs=...)` writes all runs into the same folder):
 
     <output>/<YYYY-mm-dd_HH-MM-SS>_<optimizer>/
         config.json, summary.json, report.md
+        plots/runs_convergence.png, plots/runs_best.png      (only with several runs)
         run_001/
             trials.csv, trials.jsonl, best.json, best_history.csv, generations.csv, population.csv,
             parameters.csv, categories.csv, plots/*.png
+            summary.json                                      (only with several runs)
+
+With several runs, summary.json holds the summary of the best run plus `runs` (one entry per run),
+`best_run` and `run_scores` (best, mean, median, std and worst of the runs' best scores), and report.md
+starts with a table of the runs. Both are rewritten after every run, so they cover the runs so far.
 
 Large searches (max_evals >= COMPRESS_FROM) write trials.csv and population.csv gzip-compressed
 (.csv.gz), which pandas and most tools read directly.
@@ -60,7 +66,8 @@ class RunState:
     """What a callback sees: the configuration, the live study and the running best.
 
     `best` is the best finite trial so far (None before one exists), `calls` the real calls made, `started`
-    the wall-clock start in seconds since the epoch.
+    the wall-clock start in seconds since the epoch. `run` is the number of this run and `runs` the number
+    of runs optimize() was asked for.
     """
 
     space: Space
@@ -73,6 +80,7 @@ class RunState:
     started: float = field(default_factory=time.time)
     calls: int = 0
     best: Trial | None = None
+    runs: int = 1
 
     @property
     def optimizer_name(self) -> str:
@@ -169,6 +177,7 @@ class ConsoleReporter(Callback):
         self.log_every = log_every
         self.stream = stream
         self._broken = False
+        self._run_bests: list[tuple[int, float]] = []
 
     def _print(self, text: str) -> None:
         if self._broken:
@@ -181,7 +190,7 @@ class ConsoleReporter(Callback):
     def on_run_start(self, state: RunState) -> None:
         seed = "random" if state.seed is None else state.seed
         self._print(
-            f"[meta-hpo] run {state.run} | {state.optimizer_name} | direction={state.direction} | "
+            f"[meta-hpo] run {_run_label(state)} | {state.optimizer_name} | direction={state.direction} | "
             f"max_evals={state.max_evals} | seed={seed} | {state.space.dim} parameters"
         )
 
@@ -222,9 +231,38 @@ class ConsoleReporter(Callback):
         else:
             result = f"best {_fmt(best.score)} at trial {best.number} | {best.params}"
         self._print(
-            f"[meta-hpo] run {state.run} finished ({state.study.stop_reason}) after {state.calls} calls in "
-            f"{_clock(elapsed)} | {result}"
+            f"[meta-hpo] run {_run_label(state)} finished ({state.study.stop_reason}) after {state.calls} "
+            f"calls in {_clock(elapsed)} | {result}"
         )
+        if state.runs == 1:
+            return
+        self._run_bests.append((state.run, best.score if best is not None else math.nan))
+        if state.run == state.runs or state.study.stop_reason == "interrupted":
+            self._print(_runs_line(self._run_bests, state.direction))
+
+
+def _run_label(state: RunState) -> str:
+    return str(state.run) if state.runs == 1 else f"{state.run}/{state.runs}"
+
+
+def _best_run(entries: Sequence[tuple[int, float]], direction: str) -> int | None:
+    """The run number with the best finite score, the first one on a tie; None when no run has one."""
+    finite = [(run, score) for run, score in entries if math.isfinite(score)]
+    if not finite:
+        return None
+    pick = min if direction == "min" else max
+    return pick(finite, key=lambda e: e[1])[0]
+
+
+def _runs_line(entries: Sequence[tuple[int, float]], direction: str) -> str:
+    stats = _stats([score for _, score in entries], direction)
+    best_run = _best_run(entries, direction)
+    if best_run is None:
+        return f"[meta-hpo] {len(entries)} runs | no finite score"
+    return (
+        f"[meta-hpo] {len(entries)} runs | best {_fmt(stats['best'])} (run {best_run}) | "
+        f"mean {_fmt(stats['mean'])} std {_fmt(stats['std'])} | worst {_fmt(stats['worst'])}"
+    )
 
 
 def _describe_space(space: Space) -> list[dict[str, Any]]:
@@ -325,6 +363,8 @@ class ResultWriter(Callback):
         self._notes: list[str] = []
         self._calls_at: dict[int, int] = {}
         self._best_at: dict[int, float] = {}
+        self._seeds: list[Any] = []
+        self._runs: list[dict[str, Any]] = []
 
     def _make_folder(self, state: RunState) -> Path:
         stamp = dt.datetime.fromtimestamp(state.started).strftime("%Y-%m-%d_%H-%M-%S")
@@ -337,7 +377,17 @@ class ResultWriter(Callback):
         return folder
 
     def on_run_start(self, state: RunState) -> None:
-        self.folder = self._make_folder(state)
+        if self.folder is None:
+            self.folder = self._make_folder(state)
+        self._files = {}
+        self._jsonl = None
+        self._pop_header = None
+        self._generation_rows = []
+        self._best_history = []
+        self._notes = []
+        self._calls_at = {}
+        self._best_at = {}
+        self._seeds.append(state.seed)
         self.run_dir = self.folder / f"run_{state.run:03d}"
         self.run_dir.mkdir()
         (self.run_dir / "plots").mkdir()
@@ -413,7 +463,9 @@ class ResultWriter(Callback):
             "optimizer": {"name": state.optimizer_name, "settings": _optimizer_settings(state.optimizer)},
             "direction": state.direction,
             "max_evals": state.max_evals,
-            "seed": state.seed,
+            "runs": state.runs,
+            "seed": self._seeds[0],
+            "seeds": self._seeds,
             "space": _describe_space(state.space),
             "started": _iso(state.started),
             "folder": str(self.folder),
@@ -612,8 +664,63 @@ class ResultWriter(Callback):
         summary["plots"] = plot_files
         summary["notes"] = self._notes
         summary["folder"] = str(self.folder)
+        if state.runs == 1:
+            _write_json(self.folder / "summary.json", summary)
+            _write_report(self.folder, self.run_dir, state, summary, self._generation_rows)
+            return
+        summary["run"] = state.run
+        _write_json(self.run_dir / "summary.json", summary)
+        score = summary["best"]["score"] if summary["best"] is not None else math.nan
+        self._runs.append(
+            {
+                "summary": summary,
+                "run_dir": self.run_dir,
+                "generations": self._generation_rows,
+                "best_history": self._best_history,
+                "score": score,
+            }
+        )
+        self._write_runs(state)
+
+    def _write_runs(self, state: RunState) -> None:
+        """summary.json, report.md and the run comparison plots of all runs so far."""
+        assert self.folder is not None
+        entries = [(r["summary"]["run"], r["score"]) for r in self._runs]
+        best_run = _best_run(entries, state.direction)
+        shown = next((r for r in self._runs if r["summary"]["run"] == best_run), self._runs[-1])
+        notes: list[str] = []
+        run_plots: list[str] = []
+        if self.plots:
+            try:
+                from metahpo import plots
+
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    run_plots = plots.make_run_plots(self._runs, self.folder, state.direction)
+            except Exception as exc:
+                notes.append(f"Run plots failed: {type(exc).__name__}: {exc}")
+        runs = [
+            {
+                "run": r["summary"]["run"],
+                "seed": r["summary"]["seed"],
+                "best_score": r["score"],
+                "stop_reason": r["summary"]["stop_reason"],
+                "calls": r["summary"]["calls"],
+                "duration_s": r["summary"]["duration_s"],
+                "folder": r["run_dir"].name,
+            }
+            for r in self._runs
+        ]
+        summary = {
+            **shown["summary"],
+            "runs": runs,
+            "best_run": best_run,
+            "run_scores": _stats([score for _, score in entries], state.direction),
+            "run_plots": run_plots,
+            "notes": [*shown["summary"]["notes"], *notes],
+        }
         _write_json(self.folder / "summary.json", summary)
-        _write_report(self.folder, self.run_dir, state, summary, self._generation_rows)
+        _write_report(self.folder, shown["run_dir"], state, summary, shown["generations"])
 
 
 def _version() -> str:
@@ -775,9 +882,28 @@ def _write_report(
         f"{summary['generations']}",
         f"- Direction: {summary['direction']}; seed: {summary['seed']}",
         "",
-        "## Best result",
-        "",
     ]
+    if "runs" in summary:
+        stats = summary["run_scores"]
+        lines += [
+            "## Runs",
+            "",
+            f"Best scores of {len(summary['runs'])} runs: best {_fmt(stats['best'])} (run "
+            f"{summary['best_run']}), mean {_fmt(stats['mean'])}, std {_fmt(stats['std'])}, worst "
+            f"{_fmt(stats['worst'])}. The sections below describe run {summary['run']}.",
+            "",
+            "| Run | Seed | Best score | Stop reason | Calls | Duration | Folder |",
+            "|---|---|---|---|---|---|---|",
+            *[
+                f"| {r['run']} | {r['seed']} | {_fmt(r['best_score'])} | {r['stop_reason']} | "
+                f"{r['calls']} | {_clock(r['duration_s'])} | `{r['folder']}` |"
+                for r in summary["runs"]
+            ],
+            "",
+            *[f"![{Path(p).stem}](plots/{Path(p).name})" for p in summary["run_plots"]],
+            "",
+        ]
+    lines += ["## Best result", ""]
     if best is None:
         lines.append("No trial returned a finite score.")
     else:

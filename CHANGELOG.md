@@ -6,6 +6,15 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-10
+
+### Added
+
+- `optimize(runs=...)` repeats the search, every run with a fresh optimizer, its own cache and the full
+  `max_evals`, and returns one `Study` per run; `seed` takes one seed per run or one integer for every run.
+- With several runs, `optimizer` is a function that builds an optimizer from a seed, and the results
+  folder holds every run, a summary over the runs and plots that compare them.
+
 ## [0.5.0] - 2026-11-09
 
 ### Added
