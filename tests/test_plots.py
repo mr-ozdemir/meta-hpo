@@ -1,10 +1,9 @@
 """Unit tests of metahpo.plots through the results folder of real runs.
 
-Oracles: the module docstring of metahpo.plots (matplotlib and seaborn are optional; make_plots draws every
-plot of a run into run_dir/plots) and of metahpo.report (report.md notes skipped or failed plots).
+Oracles: the module docstring of metahpo.plots (matplotlib is a dependency; make_plots draws every
+plot of a run into run_dir/plots) and of metahpo.report (report.md notes failed plots).
 
-The file-producing tests need matplotlib and seaborn and are skipped when they are missing; the note tests
-replace make_plots with a stub and run everywhere.
+The note tests replace make_plots with a stub that raises.
 
 Unspecified, therefore not asserted: the look of the plots and their pixel sizes.
 
@@ -101,15 +100,12 @@ def _raise(error):
     ],
 )
 def test_make_plots_should_write_every_plot_for_each_optimizer(tmp_path, make):
-    """Given matplotlib and seaborn and a run of each optimizer, when the run ends, then the eleven plot files
+    """Given a run of each optimizer, when the run ends, then the eleven plot files
     exist and report.md links them.
 
     Oracle: plots module docstring (make_plots draws every plot of a run) and the report module docstring
     (report.md links the plots).
     """
-    pytest.importorskip("matplotlib")
-    pytest.importorskip("seaborn")
-
     names, folder = _plots(tmp_path, make(_space()))
 
     assert names == EXPECTED
@@ -122,9 +118,6 @@ def test_make_plots_should_cope_with_a_run_without_finite_scores(tmp_path):
 
     Oracle: plots module docstring; report.md notes a failed plot, so no note means none failed.
     """
-    pytest.importorskip("matplotlib")
-    pytest.importorskip("seaborn")
-
     names, folder = _plots(
         tmp_path, ABCOptimizer(_space(), direction="max", seed=ANY_SEED), lambda p: math.nan
     )
@@ -133,19 +126,18 @@ def test_make_plots_should_cope_with_a_run_without_finite_scores(tmp_path):
     assert "Plots failed" not in (folder / "report.md").read_text(encoding="utf-8")
 
 
-def test_report_should_note_skipped_plots_when_the_plot_libraries_are_missing(tmp_path, monkeypatch):
-    """Given make_plots raising ImportError, when the run ends, then report.md tells how to install the plot
-    extra and no plot is written.
+def test_report_should_note_a_missing_plot_library_as_a_plot_failure(tmp_path, monkeypatch):
+    """Given make_plots raising ImportError, as a broken matplotlib install would, when the run ends, then
+    report.md notes the failure and no plot is written.
 
-    Oracle: plots module docstring (make_plots raises ImportError when the libraries are missing) and the
-    report module docstring.
+    Oracle: plots module docstring (a failed plot is noted in report.md and the other files are written).
     """
     monkeypatch.setattr(metahpo.plots, "make_plots", _raise(ImportError("no matplotlib")))
 
     names, folder = _plots(tmp_path, ABCOptimizer(_space(), direction="max", seed=ANY_SEED))
 
     assert names == set()
-    assert "pip install meta-hpo[report]" in (folder / "report.md").read_text(encoding="utf-8")
+    assert "Plots failed: ImportError: no matplotlib" in (folder / "report.md").read_text(encoding="utf-8")
 
 
 def test_report_should_note_a_plot_failure_and_still_write_the_summary(tmp_path, monkeypatch):
@@ -181,9 +173,6 @@ def test_make_plots_should_skip_the_diversity_and_phase_plots_for_an_optimizer_w
 
     Oracle: plots module docstring; diversity needs a population and phases need candidate meta.
     """
-    pytest.importorskip("matplotlib")
-    pytest.importorskip("seaborn")
-
     names, _ = _plots(tmp_path, _RandomSearch(_space(), direction="max", seed=ANY_SEED))
 
     assert names == EXPECTED - {"03_diversity.png", "10_phases.png"}
@@ -195,8 +184,6 @@ def test_make_plots_should_draw_only_the_convergence_plot_for_a_run_without_tria
 
     Oracle: plots module docstring (make_plots draws the plots of a run); a plot needs data to show.
     """
-    pytest.importorskip("matplotlib")
-    pytest.importorskip("seaborn")
     space = _space()
     state = metahpo.RunState(
         space, ABCOptimizer(space, seed=ANY_SEED), "min", 5, ANY_SEED, metahpo.Study("min")
@@ -206,3 +193,15 @@ def test_make_plots_should_draw_only_the_convergence_plot_for_a_run_without_tria
 
     assert len(written) == 1
     assert {p.name for p in (tmp_path / "plots").iterdir()} == {"01_convergence.png"}
+
+
+def test_make_plots_should_draw_the_score_histogram_without_a_density_when_every_score_is_equal(tmp_path):
+    """Given an objective that always returns 0.5, when the run ends, then the score distribution is still
+    written and no plot fails, although a density of a single value cannot be estimated.
+
+    Oracle: plots module docstring; report.md notes a failed plot, so no note means none failed.
+    """
+    names, folder = _plots(tmp_path, ABCOptimizer(_space(), direction="max", seed=ANY_SEED), lambda p: 0.5)
+
+    assert "04_score_distribution.png" in names
+    assert "Plots failed" not in (folder / "report.md").read_text(encoding="utf-8")
