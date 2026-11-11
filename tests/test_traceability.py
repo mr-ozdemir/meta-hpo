@@ -1313,7 +1313,7 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 20 'Added' bullets (3 under Unreleased, 2 under
+    bullets, 3 Search space rows, 1 unit-cube sentence and 20 'Added' bullets (3 under 0.6.0, 2 under
     0.5.1, 3 under 0.5.0, 3 under 0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would

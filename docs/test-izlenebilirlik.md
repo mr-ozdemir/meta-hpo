@@ -438,7 +438,7 @@ Gereksinim: `optimize(runs=...)` (issue #49): aramanın tekrarı, her koşuda ye
 
 ### resume
 
-Gereksinim: `resume(function, folder)`: durmuş bir aramanın (Ctrl+C, hedef fonksiyonda hata, öldürülen süreç, elektrik kesintisi) sonuç klasöründen sürdürülmesi ve kesintisiz bir koşunun vereceği aramanın aynısını, seed olmadan da vermesi; bitmiş koşuların fonksiyon çağrılmadan geri yüklenmesi, yarım kalan koşunun sürdürülmesi, hiç başlamamış koşuların çalıştırılması, daha büyük `max_evals` ile uzatma; klasörün bunun için tuttuğu kayıtlar (`state.json`, optimizer'ın tüm kurucu ayarları, cache bayrağı, JSON değeri olarak saklanan seçenekler, `trials.jsonl` içinde kesin skorlar ve en az saniyede bir diske eşitleme). İzlenebilirlik matrisinde R-RESUME, R-RESUME-RUNS-BUDGET ve R-RESUME-FOLDER kimlikleriyle CHANGELOG `[Unreleased]` maddelerine bağlıdır.
+Gereksinim: `resume(function, folder)`: durmuş bir aramanın (Ctrl+C, hedef fonksiyonda hata, öldürülen süreç, elektrik kesintisi) sonuç klasöründen sürdürülmesi ve kesintisiz bir koşunun vereceği aramanın aynısını, seed olmadan da vermesi; bitmiş koşuların fonksiyon çağrılmadan geri yüklenmesi, yarım kalan koşunun sürdürülmesi, hiç başlamamış koşuların çalıştırılması, daha büyük `max_evals` ile uzatma; klasörün bunun için tuttuğu kayıtlar (`state.json`, optimizer'ın tüm kurucu ayarları, cache bayrağı, JSON değeri olarak saklanan seçenekler, `trials.jsonl` içinde kesin skorlar ve en az saniyede bir diske eşitleme). İzlenebilirlik matrisinde R-RESUME, R-RESUME-RUNS-BUDGET ve R-RESUME-FOLDER kimlikleriyle CHANGELOG `[0.6.0]` maddelerine bağlıdır.
 
 | Konu | Testler |
 |---|---|
