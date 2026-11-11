@@ -100,6 +100,7 @@ DOCUMENTED_EXPORTS = (
     "Study",
     "Trial",
     "optimize",
+    "resume",
 )
 
 
@@ -135,10 +136,11 @@ def _params_of(candidates):
 
 
 def test_metahpo_should_export_exactly_the_documented_names():
-    """Given the package, when __all__ is read, then it holds exactly the sixteen documented names once each.
+    """Given the package, when __all__ is read, then it holds exactly the seventeen documented names once
+    each.
 
     Oracle: README Quick start (Space, Float, Int, Categorical, optimize, ABCOptimizer), CHANGELOG 'Added'
-    (Study), the __init__ export list (Candidate, Optimizer, Trial) and the README optimizer list
+    (Study, resume), the __init__ export list (Candidate, Optimizer, Trial) and the README optimizer list
     (PSOOptimizer). Set equality is decisive: an added
     name and a removed name both fail, and the length check catches a duplicated entry.
     """
@@ -169,11 +171,12 @@ def test_metahpo_should_export_exactly_the_documented_names():
         pytest.param("Study", inspect.isclass, id="Study"),
         pytest.param("Trial", inspect.isclass, id="Trial"),
         pytest.param("optimize", inspect.isfunction, id="optimize"),
+        pytest.param("resume", inspect.isfunction, id="resume"),
     ],
 )
 def test_metahpo_should_expose_each_documented_name_as_an_attribute(name, expected_kind):
     """Given a hard-coded documented name, when it is looked up on the package, then it exists and is a class,
-    or for optimize a function.
+    or for optimize and resume a function.
 
     Oracle: README Quick start uses the classes as mh.X(...) constructors and mh.optimize(...) as a
     function. The names are hard-coded rather than read from __all__, so a rename with a stale __all__ is
@@ -274,6 +277,33 @@ def test_optimize_should_declare_documented_default(name, expected):
 
     assert default == expected
     assert type(default) is expected_type
+
+
+def test_resume_should_declare_its_parameters_with_keyword_only_options():
+    """Given resume, when its signature is introspected, then function and folder come first without a
+    default and optimizer, space, max_evals, verbose, log_every and callbacks follow as keyword-only options
+    with their defaults.
+
+    Oracle: README 'Resuming a run' (mh.resume(train, folder)) and the resume docstring (optimizer, space and
+    max_evals are needed only sometimes; verbose None is the default level; log_every and callbacks as in
+    optimize()). The keyword-only kind is characterised from the current public signature.
+    """
+    positional, keyword = inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY
+    empty = inspect.Parameter.empty
+    expected = [
+        ("function", positional, empty),
+        ("folder", positional, empty),
+        ("optimizer", keyword, None),
+        ("space", keyword, None),
+        ("max_evals", keyword, None),
+        ("verbose", keyword, None),
+        ("log_every", keyword, 1),
+        ("callbacks", keyword, None),
+    ]
+
+    found = [(p.name, p.kind, p.default) for p in inspect.signature(metahpo.resume).parameters.values()]
+
+    assert found == expected
 
 
 def test_abc_optimizer_should_declare_constructor_parameters_in_documented_order():

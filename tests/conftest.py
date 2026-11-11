@@ -119,7 +119,8 @@ exceptions propagate; scripted optimizer and objective doubles; real ABC chain w
 budget edges, extreme scores and the all-NaN run; equivalence classes of budget and configuration;
 branches found unreached; specification gaps; generated spaces and non-finite score streams; the
 hand-written cache=False example behind the grammar property; direction 'max' at study, optimizer and
-trajectory level; repeated runs with one seed per run and optimizer functions
+trajectory level; repeated runs with one seed per run and optimizer functions; resuming a stopped, killed,
+finished or extended search from its results folder
     test_facade.py | unit | optimize() argument checks, budget and cache bookkeeping
     test_facade_budget.py | unit | exact trial and call counts of the evaluation budget
     test_facade_doubles.py | integration | scripted optimizer, objective stubs, spies and mocks
@@ -132,12 +133,14 @@ trajectory level; repeated runs with one seed per run and optimizer functions
     test_facade_grammar.py | integration | hand-written cache=False example behind test_fuzz_grammar.py
     test_facade_direction.py | integration | direction='max' with an explicit ABCOptimizer
     test_facade_runs.py | unit | repeated runs, seeds per run and optimizer functions
+    test_facade_resume.py | integration | resume() of interrupted, killed, finished and extended runs
 
 Plan: results reporting
 Scenario groups: console lines per generation and per trial; environment overrides of output and verbose;
 results folder layout and file contents; live best.json and incremental files; generation and population
 statistics; parameter analysis; stop reasons, interrupt and error handling; compression of large runs;
-several runs in one folder with a summary over the runs
+several runs in one folder with a summary over the runs; what a resume needs (state.json, every optimizer
+setting, JSON choices, exact scores in trials.jsonl and its throttled sync to disk)
     test_report.py | unit | ConsoleReporter, ResultWriter and the run events through optimize()
 
 Plan: result plots
@@ -248,8 +251,8 @@ __init__):
     operators <- abc, pso, bbpso
     base <- abc, pso, bbpso, study, facade, report, __init__
     abc <- facade, __init__
-    pso <- __init__
-    bbpso <- __init__
+    pso <- facade, __init__
+    bbpso <- facade, __init__
     study <- facade, report, __init__
     facade <- __init__
     report <- facade, __init__
@@ -283,8 +286,12 @@ modification-traversing tests (P-T6-32).
     plots: test_plots*.py, test_report*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py,
         test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py,
         test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
-    pso: test_pso*.py, test_report*.py, test_plots*.py, test_facade_runs.py, test_api_contract.py
-    bbpso: test_bbpso*.py, test_report*.py, test_plots*.py, test_api_contract.py
+    pso: test_pso*.py, test_report*.py, test_plots*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py,
+        test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py, test_regression.py,
+        test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    bbpso: test_bbpso*.py, test_report*.py, test_plots*.py, test_facade*.py, test_abc.py,
+        test_abc_acceptance.py, test_pso*.py, test_space_partition.py, test_end_to_end.py,
+        test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
     __init__: test_api_contract.py
 Always selected: test_static.py, test_suite_layout.py, test_traceability.py
 Statement-level selection of modification-traversing tests (P-T6-32) is out of scope for this plan.

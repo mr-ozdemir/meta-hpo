@@ -80,7 +80,7 @@ def make_plots(
     calls = np.arange(1, len(real) + 1)
     pick = np.fmin if direction == "min" else np.fmax
     best_curve = pick.accumulate(np.where(finite, scores, np.nan)) if len(real) else np.array([])
-    elapsed = np.array([t.start_time + t.duration - state.started for t in real], dtype=np.float64)
+    elapsed = np.array([state.elapsed(t.start_time + t.duration, t.number) for t in real], dtype=np.float64)
 
     fig, axes = subplots(1, 2, figsize=(12, 4.2))
     axes[0].plot(calls, best_curve, color="C0", lw=2, label="best so far")

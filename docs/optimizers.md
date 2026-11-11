@@ -9,6 +9,10 @@ opt = mh.PSOOptimizer(space, direction="max", swarm_size=20, seed=1)
 study = mh.optimize(train, space, direction="max", max_evals=300, optimizer=opt)
 ```
 
+`settings()` returns an optimizer's constructor settings; `optimize()` records them in `config.json`, and
+`resume()` builds the optimizer again from them. An optimizer of your own records its settings as long as it
+keeps each of them in an attribute of the same name; `resume()` takes it with `optimizer=`.
+
 | Optimizer | Batch per `ask()` | Main settings |
 |---|---|---|
 | `ABCOptimizer` | the initial population, then one candidate | `colony_size=10`, `limit=15` |

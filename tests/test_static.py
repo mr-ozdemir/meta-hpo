@@ -137,6 +137,11 @@ SEED_EXEMPTIONS = {
     "tests/test_abc.py::test_protocol_errors": (
         "ABCOptimizer(sphere_space(), colony_size=3) raises ValueError before any random number is drawn"
     ),
+    "tests/test_facade_resume.py::test_resume_should_continue_a_run_without_a_seed_exactly": (
+        "the property under test is that a run started with seed=None resumes exactly; the test stays "
+        "deterministic because it compares the resumed run with a twin whose generator starts in the state "
+        "the results folder recorded"
+    ),
 }
 """Test functions allowed to make an unseeded random call, as {'tests/<file>::<function>': reason}."""
 
