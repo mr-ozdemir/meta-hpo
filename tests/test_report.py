@@ -9,13 +9,18 @@ Every run writes into pytest's tmp_path; the suite switches the default folder a
 METAHPO_OUTPUT and METAHPO_VERBOSE in conftest, and the console tests remove METAHPO_VERBOSE first. Plots are
 switched off here (ResultWriter(plots=False) or through a stub) and tested in test_plots.py.
 
+The clock that spaces the syncs of trials.jsonl and os.fsync are replaced through metahpo.report in the
+sync tests, so they do not depend on real time.
+
 Unspecified, therefore not asserted: exact float formatting of the console lines, timings, folder names
 beyond the time stamp and optimizer suffix.
 
 Input space: Every objective, space, optimizer, budget and output setting, which is unbounded.
 Subset: The three optimizers on a four-parameter mixed space with small budgets; console levels 0, 1 and 2;
 log_every 1 and 2; objectives that stop with each stop reason (budget, exhausted, interrupted, error); an
-all-NaN objective; a budget above COMPRESS_FROM after lowering it.
+all-NaN objective; a budget above COMPRESS_FROM after lowering it; non-default settings of every optimizer
+and a custom optimizer; choices of every JSON type, of Python types and NaN; scores NaN, inf and -inf;
+trials 0.5 s and 2 s apart on a fake clock.
 """
 
 import csv
@@ -156,8 +161,8 @@ class _Recorder(Callback):
 def test_result_writer_should_write_the_documented_files(tmp_path):
     """Given optimize() with a ResultWriter, when the run ends, then the folder holds config.json,
     summary.json,
-    report.md and run_001 with trials.csv, trials.jsonl, best.json, best_history.csv, generations.csv,
-    population.csv, parameters.csv, categories.csv and a plots folder.
+    report.md and run_001 with trials.csv, trials.jsonl, state.json, best.json, best_history.csv,
+    generations.csv, population.csv, parameters.csv, categories.csv and a plots folder.
 
     Oracle: report module docstring (folder layout).
     """
@@ -167,6 +172,7 @@ def test_result_writer_should_write_the_documented_files(tmp_path):
         "report.md",
         "run_001/trials.csv",
         "run_001/trials.jsonl",
+        "run_001/state.json",
         "run_001/best.json",
         "run_001/best_history.csv",
         "run_001/generations.csv",
@@ -982,3 +988,261 @@ def test_console_should_say_no_finite_score_over_runs_that_never_scored(capsys, 
     optimize(lambda p: math.nan, _space(), max_evals=10, seed=ANY_SEED, runs=2, output=None)
 
     assert capsys.readouterr().out.splitlines()[-1] == "[meta-hpo] 2 runs | no finite score"
+
+
+def test_state_json_should_hold_the_start_time_and_the_generator_state_before_the_first_candidate(tmp_path):
+    """Given an ABCOptimizer whose generator state is copied before optimize(), when the run ends, then
+    state.json holds that state, a start time no later than the first trial and no pauses.
+
+    Oracle: report module docstring (state.json: the start time of the run, the generator state before the
+    first candidate was asked, and pauses).
+    """
+    opt = ABCOptimizer(_space(), direction="max", seed=ANY_SEED)
+    before = json.loads(json.dumps(opt.rng.bit_generator.state))
+
+    study, folder = _run(tmp_path, opt)
+
+    state = _json(folder / "run_001" / "state.json")
+    assert (state["generator"], state["pauses"]) == (before, [])
+    assert state["started"] <= study.trials[0].start_time
+
+
+@pytest.mark.parametrize(
+    ("make", "expected"),
+    [
+        pytest.param(
+            lambda s: ABCOptimizer(s, "max", colony_size=12, limit=7, seed=ANY_SEED, max_tries=50),
+            {"colony_size": 12, "limit": 7, "max_tries": 50},
+            id="abc",
+        ),
+        pytest.param(
+            lambda s: PSOOptimizer(s, "max", 5, 0.5, 1.0, 2.0, 0.3, seed=ANY_SEED, max_tries=50),
+            {
+                "swarm_size": 5,
+                "inertia": 0.5,
+                "cognitive": 1.0,
+                "social": 2.0,
+                "max_velocity": 0.3,
+                "max_tries": 50,
+            },
+            id="pso",
+        ),
+        pytest.param(
+            lambda s: BBPSOOptimizer(s, "max", 8, 0.9, 0.25, 0.2, 0.8, seed=ANY_SEED, max_tries=50),
+            {
+                "swarm_size": 8,
+                "target": 0.9,
+                "crossover": 0.25,
+                "q_alpha": 0.2,
+                "q_gamma": 0.8,
+                "max_tries": 50,
+            },
+            id="bbpso",
+        ),
+    ],
+)
+def test_config_json_should_record_every_constructor_setting_of_each_optimizer(tmp_path, make, expected):
+    """Given each optimizer built with settings other than its defaults, when the run ends, then config.json
+    records every constructor setting besides space, direction and seed, the cache flag and no resumes.
+
+    Oracle: report module docstring (config.json records the cache flag and the optimizer with every
+    constructor setting; resumes lists every resume) and Optimizer.settings (every further parameter of the
+    constructor).
+    """
+    _, folder = _run(tmp_path, make(_space()), max_evals=12)
+
+    config = _json(folder / "config.json")
+
+    assert config["optimizer"]["settings"] == expected
+    assert (config["cache"], config["resumes"]) == (True, [])
+
+
+class _Stepper(metahpo.Optimizer):
+    """A custom optimizer with a setting kept under its own name, one that may be None and one kept under
+    another name."""
+
+    def __init__(self, space, direction="min", step=0.1, label=None, seed=None, width=3):
+        super().__init__(space, direction, seed)
+        self.step = step
+        self.label = label
+        self._width = width
+
+
+def test_optimizer_settings_should_read_the_constructor_parameters_kept_under_their_own_names():
+    """Given a custom optimizer whose step and label are attributes of the same name and whose width is kept
+    as _width, when settings() is read, then it holds step and label, None included, and leaves out width.
+
+    Oracle: Optimizer.settings (every further parameter of the constructor is read from the attribute of
+    the same name; a parameter without such an attribute is left out).
+    """
+    opt = _Stepper(_space(), step=0.5, seed=ANY_SEED)
+
+    settings = opt.settings()
+
+    assert settings == {"step": 0.5, "label": None}
+
+
+def test_config_json_should_store_json_choices_as_values_and_mark_other_choices_as_repr(tmp_path):
+    """Given a Categorical of 1, 1.0, True, None and 'a' and a Categorical of the types int and float, when
+    the run ends, then config.json stores the first as values of the same types and the second as repr()
+    text marked "repr": true.
+
+    Oracle: report module docstring (choices that are strings, integers, finite floats, booleans or None are
+    JSON values; any other Categorical stores the repr() of each choice and is marked "repr": true).
+    """
+    space = Space({"plain": Categorical([1, 1.0, True, None, "a"]), "kind": Categorical([int, float])})
+    optimize(
+        lambda p: 1.0,
+        space,
+        max_evals=4,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False)],
+    )
+
+    plain, kind = _json(_folder(tmp_path) / "config.json")["space"]
+
+    expected = [(int, 1), (float, 1.0), (bool, True), (type(None), None), (str, "a")]
+    assert [(type(c), c) for c in plain["choices"]] == expected
+    assert (plain["repr"], kind["repr"], kind["choices"]) == (False, True, [repr(int), repr(float)])
+
+
+def test_config_json_should_mark_a_categorical_with_a_nan_choice_as_repr(tmp_path):
+    """Given a Categorical of 0.5 and NaN, when the run ends, then config.json stores its choices as repr()
+    text, because JSON has no NaN.
+
+    Oracle: report module docstring (only finite floats are JSON values).
+    """
+    space = Space({"value": Categorical([0.5, math.nan])})
+    optimize(
+        lambda p: 1.0,
+        space,
+        max_evals=2,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False)],
+    )
+
+    (value,) = _json(_folder(tmp_path) / "config.json")["space"]
+
+    assert (value["repr"], value["choices"]) == (True, ["0.5", "nan"])
+
+
+def _special(params):
+    """NaN, inf or -inf for the choice of that name, 0.5 for 'ok'."""
+    return {"nan": math.nan, "inf": math.inf, "-inf": -math.inf, "ok": 0.5}[params["s"]]
+
+
+def test_trials_jsonl_should_write_nan_and_infinite_scores_exactly_with_the_exact_start(tmp_path):
+    """Given an objective that returns NaN, inf, -inf and 0.5 for four choices, when the run ends, then
+    trials.jsonl holds the strings 'nan', 'inf' and '-inf' and the number 0.5, and every start_epoch is the
+    trial's start_time.
+
+    Oracle: report module docstring (a NaN or infinite score as the string 'nan', 'inf' or '-inf';
+    start_epoch, the exact start in seconds since the epoch).
+    """
+    space = Space({"s": Categorical(["nan", "inf", "-inf", "ok"])})
+
+    study = optimize(
+        _special,
+        space,
+        max_evals=4,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False)],
+    )
+
+    lines = (_folder(tmp_path) / "run_001" / "trials.jsonl").read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
+    expected = {"nan": "nan", "inf": "inf", "-inf": "-inf", "ok": 0.5}
+    assert {r["params"]["s"]: r["score"] for r in records} == expected
+    assert [r["start_epoch"] for r in records] == [t.start_time for t in study.trials]
+
+
+class _Clock:
+    """A fake monotonic clock that moves `step` seconds forward at every reading; the first reads 0."""
+
+    def __init__(self, step):
+        self.step = step
+        self.now = -step
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+@pytest.mark.parametrize(
+    ("step", "syncs"),
+    [
+        pytest.param(0.5, 2 + 5 + 1, id="cheap-trials-half-a-second-apart"),
+        pytest.param(2.0, 2 + 10 + 1, id="slow-trials"),
+    ],
+)
+def test_trials_jsonl_should_be_synced_once_a_second_and_when_the_run_ends(
+    tmp_path, monkeypatch, step, syncs
+):
+    """Given a fake clock that moves 0.5 s or 2 s per trial, when a run of 10 trials ends, then trials.jsonl
+    was synced once per second of the clock (after every second trial, or after every trial) and once more
+    when the run ended, besides the two syncs of config.json and state.json at the start.
+
+    Oracle: report module docstring (synced to disk once FSYNC_EVERY seconds have passed since the last
+    sync; a training that takes longer is synced after every trial; config.json and state.json are synced
+    when a run starts) and FSYNC_EVERY (1 second); the sync at the end comes from ResultWriter.close.
+    """
+    synced = []
+    monkeypatch.setattr(metahpo.report, "_monotonic", _Clock(step))
+    monkeypatch.setattr(metahpo.report.os, "fsync", synced.append)
+    space = Space({"x": Float(0.0, 1.0), "y": Float(0.0, 1.0)})
+
+    study = optimize(
+        lambda p: p["x"],
+        space,
+        max_evals=10,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False)],
+    )
+
+    assert len(study.trials) == 10
+    assert len(synced) == syncs
+
+
+class _DiskEvents:
+    """Records os.fsync calls and the file names that os.replace puts in place, in order."""
+
+    def __init__(self, replace):
+        self.replace_file = replace
+        self.events = []
+
+    def fsync(self, fd):
+        self.events.append("fsync")
+
+    def replace(self, src, dst):
+        self.events.append(dst.name)
+        self.replace_file(src, dst)
+
+
+def test_config_and_state_json_should_be_synced_to_disk_when_a_run_starts_and_best_json_should_not(
+    tmp_path, monkeypatch
+):
+    """Given os.fsync and os.replace recorded and a clock that never moves, when a run of 5 trials ends,
+    then config.json and state.json are each synced right before they replace the old file, best.json and
+    the summary files are not, and the only other sync is the one of trials.jsonl at the end of the run.
+
+    Oracle: report module docstring (config.json and state.json are synced to disk when a run starts;
+    trials.jsonl is synced once FSYNC_EVERY seconds have passed) and the _write_json docstring (the files
+    that are rewritten often are not synced).
+    """
+    disk = _DiskEvents(metahpo.report.os.replace)
+    monkeypatch.setattr(metahpo.report, "_monotonic", _Clock(0.0))
+    monkeypatch.setattr(metahpo.report.os, "fsync", disk.fsync)
+    monkeypatch.setattr(metahpo.report.os, "replace", disk.replace)
+
+    _run(tmp_path, max_evals=5)
+
+    assert disk.events[:5] == ["fsync", "config.json", "fsync", "state.json", "best.json"]
+    assert disk.events.count("fsync") == 3

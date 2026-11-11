@@ -6,6 +6,25 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-11
+
+### Added
+
+- `resume(function, folder)` continues a search that stopped (Ctrl+C, an error, a killed process or a power
+  cut) from its results folder and gives exactly the search an uninterrupted run would have given, also
+  without a seed.
+- `resume()` restores the finished runs of a folder without calling the objective, continues the unfinished
+  one, runs the ones that never started, and takes a larger `max_evals` to extend the search.
+- Every run folder holds `state.json` with the start time and the random generator state of the run,
+  `config.json` records every optimizer setting (`Optimizer.settings()`) and the cache flag, and
+  `trials.jsonl` is synced to disk at least once a second.
+
+### Changed
+
+- `config.json` stores Categorical choices that JSON can hold (strings, numbers, booleans, None) as values
+  instead of their `repr()`, and `trials.jsonl` writes a NaN or infinite score as `"nan"`, `"inf"` or
+  `"-inf"` instead of `null` and records the exact start time as `start_epoch`.
+
 ## [0.5.1] - 2026-11-10
 
 ### Added

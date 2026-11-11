@@ -18,7 +18,7 @@ Further health checks run over every tests/test_*.py: only pytest, numpy, metahp
 conftest and standard-library imports, no clock or global random module, no np.random call on numpy's
 global state, seeded generators, a seed for every ABCOptimizer, PSOOptimizer, BBPSOOptimizer and optimize
 call outside
-pytest.raises, no
+pytest.raises (except in the tests SEED_EXEMPTIONS names, each with its reason), no
 comment lines, no placeholder or unconditionally skipped test, no unfinished-work marker, and for every new
 test a docstring and a body without if statements, loops or conditional expressions; no two tests have the
 same body. Each checker is a pure function with
@@ -80,6 +80,14 @@ TRACED_MODULES = frozenset(
     }
 )
 OPTIMIZER_POSITION = 4
+SEED_EXEMPTIONS = {
+    "test_facade_resume::test_resume_should_continue_a_run_without_a_seed_exactly": (
+        "the property under test is that a run started with seed=None resumes exactly; the test stays "
+        "deterministic because it compares the resumed run with a twin whose generator starts in the state "
+        "the results folder recorded"
+    ),
+}
+"""Tests whose unseeded optimize or optimizer calls the seed check accepts, as {'<module>::<test>': why}."""
 CONTROL_FLOW_NODES = (
     ast.If,
     ast.IfExp,
@@ -674,6 +682,59 @@ REQUIREMENTS = {
             "test_plots::test_make_run_plots_should_draw_the_comparison_of_several_runs",
         ],
     },
+    "R-RESUME": {
+        "source": [
+            "CHANGELOG.md | `resume(function, folder)` continues a search that stopped (Ctrl+C, an error, a "
+            "killed process or a power cut) from its results folder and gives exactly the search an "
+            "uninterrupted run would have given, also without a seed.",
+            "README.md | A run that stopped (Ctrl+C, a crash, a power cut) continues from its results folder "
+            "and gives exactly the search an uninterrupted run would have given, also without a seed.",
+        ],
+        "tests": [
+            "test_facade_resume::test_resume_should_continue_an_interrupted_run_exactly_like_an_uninterrupted_run",
+            "test_facade_resume::test_resume_should_continue_a_killed_run_whose_last_log_line_is_torn",
+            "test_facade_resume::test_resume_should_continue_a_run_without_a_seed_exactly",
+            "test_facade_resume::test_resume_should_continue_a_resumed_run_that_stopped_again",
+            "test_facade_resume::test_resume_should_write_the_derived_files_of_an_uninterrupted_run",
+            "test_facade_resume::test_resume_should_refuse_an_optimizer_with_other_settings_and_leave_the_folder_unchanged",
+            "test_facade_resume::test_resume_should_continue_a_folder_written_by_version_0_5_1",
+            "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
+        ],
+    },
+    "R-RESUME-RUNS-BUDGET": {
+        "source": [
+            "CHANGELOG.md | `resume()` restores the finished runs of a folder without calling the objective, "
+            "continues the unfinished one, runs the ones that never started, and takes a larger `max_evals` "
+            "to extend the search.",
+        ],
+        "tests": [
+            "test_facade_resume::test_resume_should_return_the_study_of_a_finished_folder_without_calling_the_function",
+            "test_facade_resume::test_resume_should_restore_finished_runs_continue_the_unfinished_one_and_start_the_rest",
+            "test_facade_resume::test_resume_should_extend_the_budget_like_a_run_started_with_the_larger_budget",
+            "test_facade_resume::test_resume_should_reject_a_budget_below_the_logged_calls_or_not_a_positive_integer",
+            "test_facade_resume::test_resume_should_write_the_compressed_files_when_the_new_budget_reaches_compress_from",
+        ],
+    },
+    "R-RESUME-FOLDER": {
+        "source": [
+            "CHANGELOG.md | Every run folder holds `state.json` with the start time and the random "
+            "generator state of the run, `config.json` records every optimizer setting "
+            "(`Optimizer.settings()`) and the cache flag, and `trials.jsonl` is synced to disk "
+            "at least once a second.",
+        ],
+        "tests": [
+            "test_report::test_state_json_should_hold_the_start_time_and_the_generator_state_before_the_first_candidate",
+            "test_report::test_config_json_should_record_every_constructor_setting_of_each_optimizer",
+            "test_report::test_optimizer_settings_should_read_the_constructor_parameters_kept_under_their_own_names",
+            "test_report::test_config_json_should_store_json_choices_as_values_and_mark_other_choices_as_repr",
+            "test_report::test_trials_jsonl_should_write_nan_and_infinite_scores_exactly_with_the_exact_start",
+            "test_report::test_trials_jsonl_should_be_synced_once_a_second_and_when_the_run_ends",
+            "test_report::test_config_and_state_json_should_be_synced_to_disk_when_a_run_starts_and_best_json_should_not",
+            "test_facade_resume::test_resume_should_repeat_a_seeded_run_from_its_seed_when_state_json_is_unreadable",
+            "test_facade_resume::test_resume_should_refuse_a_run_without_a_seed_whose_state_json_is_unreadable",
+            "test_facade_resume::test_resume_should_leave_the_time_the_machine_was_off_out_of_every_duration",
+        ],
+    },
 }
 
 
@@ -1018,6 +1079,23 @@ def _unseeded_search_lines(tree):
     )
 
 
+def _exempted_unseeded_lines(tree, stem):
+    """Lines of the calls inside the tests that SEED_EXEMPTIONS names."""
+    return {
+        node.lineno
+        for ref, function in _test_functions(tree, stem)
+        if ref in SEED_EXEMPTIONS
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+    }
+
+
+def _unexempted_unseeded_search_lines(tree, stem):
+    """_unseeded_search_lines without the calls inside the tests that SEED_EXEMPTIONS names."""
+    exempt = _exempted_unseeded_lines(tree, stem)
+    return [line for line in _unseeded_search_lines(tree) if line not in exempt]
+
+
 def _control_flow_tests(tree, stem):
     """New tests (not in LEGACY_TESTS) whose body holds an if, a loop or a conditional expression;
     decorators such as parametrize tables are not part of the body."""
@@ -1235,8 +1313,8 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 17 'Added' bullets (2 under 0.5.1, 3
-    under 0.5.0, 3 under 0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
+    bullets, 3 Search space rows, 1 unit-cube sentence and 20 'Added' bullets (3 under 0.6.0, 2 under
+    0.5.1, 3 under 0.5.0, 3 under 0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would
     let the quote check pass vacuously; a new bullet makes this test fail as a reminder to trace it.
@@ -1245,7 +1323,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 17}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 20}
 
 
 @pytest.mark.parametrize(
@@ -1345,11 +1423,45 @@ def test_suite_should_seed_every_optimizer_and_optimize_call():
     each passes a seed that is not None, or hands optimize an optimizer of its own.
 
     Oracle: CONTRIBUTING.md 'Tests are deterministic: pass a `seed` to anything random.' and README 'The
-    same `seed` reproduces the same search.'; without a seed the search differs from run to run.
+    same `seed` reproduces the same search.'; without a seed the search differs from run to run. The tests
+    named in SEED_EXEMPTIONS are left out, each for its stated reason.
     """
-    violations = _scan_trees(_unseeded_search_lines)
+    violations = _scan_modules(_unexempted_unseeded_search_lines)
 
     assert violations == {}
+
+
+@pytest.mark.parametrize("reference", sorted(SEED_EXEMPTIONS))
+def test_suite_seed_exemption_should_name_a_test_that_still_makes_an_unseeded_call(reference):
+    """Given one entry of SEED_EXEMPTIONS, when its module is parsed, then the named test exists, has a
+    reason and still holds a call that the seed check reports, so a stale entry is caught.
+
+    Oracle: rule P-T1-48 (exemptions stay justified and point at real tests), as test_static.py applies it to
+    its own SEED_EXEMPTIONS.
+    """
+    stem = reference.split("::")[0]
+    tree = _parse(TESTS_DIR / f"{stem}.py")
+
+    exempt = _exempted_unseeded_lines(tree, stem)
+
+    assert set(_unseeded_search_lines(tree)) & exempt != set()
+    assert SEED_EXEMPTIONS[reference].strip() != ""
+
+
+def test_suite_seed_check_should_leave_out_only_the_exempted_tests():
+    """Given a module read as test_facade_resume with an unseeded optimize call in the exempted test and one
+    in another test, when the seed check with exemptions reads it, then only the second call is reported.
+
+    Oracle: SEED_EXEMPTIONS (the exemption covers the named test only); hand-written snippet.
+    """
+    name = next(iter(SEED_EXEMPTIONS)).split("::")[1]
+    tree = _tree(
+        f"def {name}():\n    optimize(f, s, seed=None)\n\ndef test_other():\n    optimize(f, s, seed=None)\n"
+    )
+
+    found = _unexempted_unseeded_search_lines(tree, "test_facade_resume")
+
+    assert found == [5]
 
 
 def test_suite_new_test_bodies_should_hold_no_if_or_loop():

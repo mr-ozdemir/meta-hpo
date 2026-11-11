@@ -21,8 +21,8 @@ Folder layout (one `run_NNN` folder per run; `optimize(runs=...)` writes all run
         config.json, summary.json, report.md
         plots/runs_convergence.png, plots/runs_best.png      (only with several runs)
         run_001/
-            trials.csv, trials.jsonl, best.json, best_history.csv, generations.csv, population.csv,
-            parameters.csv, categories.csv, plots/*.png
+            trials.csv, trials.jsonl, state.json, best.json, best_history.csv, generations.csv,
+            population.csv, parameters.csv, categories.csv, plots/*.png
             summary.json                                      (only with several runs)
 
 With several runs, summary.json holds the summary of the best run plus `runs` (one entry per run),
@@ -31,6 +31,31 @@ starts with a table of the runs. Both are rewritten after every run, so they cov
 
 Large searches (max_evals >= COMPRESS_FROM) write trials.csv and population.csv gzip-compressed
 (.csv.gz), which pandas and most tools read directly.
+
+What a resume needs (see metahpo.resume). config.json records the space, the direction, the budget, the
+runs and their seeds, the cache flag and the optimizer with every constructor setting
+(Optimizer.settings()). A Categorical whose choices are all strings, integers, finite floats, booleans or
+None stores them as JSON values; any other Categorical stores the repr() of each choice and is marked
+`"repr": true`, and resume() then needs the space passed in. `resumes` lists every resume with its time,
+library version, budget and the number of trials it restored; `library` keeps the version that started the
+folder. run_NNN/state.json holds the start time of the run (`started`, seconds since the epoch), the state
+of the optimizer's random generator before the first candidate was asked (`generator`), and `pauses`.
+config.json and state.json are synced to disk (os.fsync) when a run starts, so they survive a power cut
+together with the synced trials; resume() treats a state.json that is empty or not valid JSON as missing.
+
+trials.jsonl is the record of a run: one JSON line per trial, appended and flushed after every trial and
+synced to disk (os.fsync) once FSYNC_EVERY seconds have passed since the last sync, so a power cut loses
+at most the trials of the last second while cheap objectives are not slowed down; a training that takes
+longer than that is synced after every trial. Each line holds the trial's `score` (a NaN or infinite score
+as the string 'nan', 'inf' or '-inf'), `x`, `params`, its meta, `cached`, `start_epoch` (the exact start in
+seconds since the epoch) and `duration_s`. resume() never rewrites a logged line: it drops a line cut short
+by a kill and appends the new trials. Every other file of a run folder is derived from the trials and is
+written again from the start when a run is resumed.
+
+Time: `elapsed_s`, `found_after_s`, the `duration_s` of a generation or a run, the console clock and the
+convergence-by-time plot count search time, the wall-clock time since the run started minus the time the
+run was stopped. `pauses` lists, for each resume, the first trial number it applies to and the seconds the
+run had been stopped in total up to then (see RunState.elapsed); a run that never stopped has none.
 """
 
 from __future__ import annotations
@@ -59,6 +84,17 @@ from metahpo.study import Study, Trial
 
 DEFAULT_OUTPUT = "hpo_results"
 COMPRESS_FROM = 50_000
+FSYNC_EVERY = 1.0
+"""Seconds that pass at least between two syncs of trials.jsonl to disk."""
+
+
+def _paused_at(pauses: Sequence[tuple[int, float]], number: int) -> float:
+    """Seconds the run had been stopped before trial `number`: the last pause that applies from it on."""
+    paused = 0.0
+    for first, seconds in pauses:
+        if first <= number:
+            paused = seconds
+    return paused
 
 
 @dataclass
@@ -67,7 +103,13 @@ class RunState:
 
     `best` is the best finite trial so far (None before one exists), `calls` the real calls made, `started`
     the wall-clock start in seconds since the epoch. `run` is the number of this run and `runs` the number
-    of runs optimize() was asked for.
+    of runs optimize() was asked for; `seeds` holds the seed of every run and `cache` the cache flag.
+
+    resume() sets the rest. `restored` is the number of trials it restored from the results folder for this
+    run (0 for a run that starts fresh). `replaying` is True while the events of those trials are sent: their
+    scores, start times and durations come from trials.jsonl and the objective is not called; it turns False
+    at the first trial that is evaluated. `pauses` lists (first trial number, seconds stopped in total) for
+    every resume of the run, see elapsed().
     """
 
     space: Space
@@ -81,10 +123,29 @@ class RunState:
     calls: int = 0
     best: Trial | None = None
     runs: int = 1
+    seeds: list[Any] = field(default_factory=list)
+    cache: bool = True
+    restored: int = 0
+    replaying: bool = False
+    pauses: list[tuple[int, float]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self._replayed_until = self.started
 
     @property
     def optimizer_name(self) -> str:
         return type(self.optimizer).__name__
+
+    def now(self) -> float:
+        """The current wall-clock time; while restored trials are replayed, the end of the last of them."""
+        return self._replayed_until if self.replaying else time.time()
+
+    def elapsed(self, at: float | None = None, number: int | None = None) -> float:
+        """Search seconds at wall-clock time `at` (default now()) of trial `number` (default: the trial being
+        reported): the time since `started` minus the time the run was stopped before that trial."""
+        at = self.now() if at is None else at
+        number = len(self.study.trials) - int(self.replaying) if number is None else number
+        return at - self.started - _paused_at(self.pauses, number)
 
     def better(self, score: float, than: float) -> bool:
         if not math.isfinite(score):
@@ -95,13 +156,19 @@ class RunState:
 
 
 class Callback:
-    """Receives the events of optimize(); every method does nothing unless overridden."""
+    """Receives the events of optimize() and resume(); every method does nothing unless overridden.
+
+    resume() sends the events of the trials it restores from the results folder as well, in the original
+    order and with the logged start times and durations, so a callback that keeps its own state ends up as
+    after an uninterrupted run; `state.replaying` is True for these events.
+    """
 
     def on_run_start(self, state: RunState) -> None:
         """Before the first candidate is asked."""
 
     def on_trial(self, state: RunState, trial: Trial, new_best: bool) -> None:
-        """After every trial, cached repeats included; `new_best` is True when it improved the best."""
+        """After every trial, cached repeats included; `new_best` is True when it improved the best. During
+        resume() the restored trials come first, with `state.replaying` True."""
 
     def on_generation(self, state: RunState, generation: int, trials: list[Trial], population: Any) -> None:
         """When the optimizer's generation counter moves past `generation`, and once more for the last,
@@ -126,6 +193,11 @@ def resolve_verbose(verbose: int) -> int:
     if verbose == 1 and os.environ.get("METAHPO_VERBOSE", "").strip().isdigit():
         return int(os.environ["METAHPO_VERBOSE"])
     return verbose
+
+
+def _monotonic() -> float:
+    """The clock that spaces the syncs of trials.jsonl."""
+    return time.monotonic()
 
 
 def _clock(seconds: float) -> str:
@@ -167,7 +239,8 @@ class ConsoleReporter(Callback):
     """Epoch-style progress on the console: one line per generation, or per trial with verbose=2.
 
     When the console cannot be written (a closed stream or a broken pipe), it stops printing and the search
-    and the other listeners go on.
+    and the other listeners go on. The trials a resume restores print no lines; one 'resumed' line with
+    their number, their calls and their best score comes before the lines of the trials evaluated anew.
     """
 
     def __init__(self, verbose: int = 1, log_every: int = 1, stream: IO[str] | None = None) -> None:
@@ -178,6 +251,7 @@ class ConsoleReporter(Callback):
         self.stream = stream
         self._broken = False
         self._run_bests: list[tuple[int, float]] = []
+        self._resumed_due = False
 
     def _print(self, text: str) -> None:
         if self._broken:
@@ -193,8 +267,25 @@ class ConsoleReporter(Callback):
             f"[meta-hpo] run {_run_label(state)} | {state.optimizer_name} | direction={state.direction} | "
             f"max_evals={state.max_evals} | seed={seed} | {state.space.dim} parameters"
         )
+        self._resumed_due = state.restored > 0
+
+    def _resumed(self, state: RunState) -> None:
+        """Prints the 'resumed' line once, before the first line about a trial evaluated anew."""
+        if not self._resumed_due:
+            return
+        self._resumed_due = False
+        restored = state.study.trials[: state.restored]
+        best = _stats([t.score for t in restored], state.direction)["best"]
+        self._print(
+            f"[meta-hpo] run {_run_label(state)} | resumed | {len(restored)} trials restored "
+            f"({sum(not t.cached for t in restored)} calls) | best "
+            f"{'none' if math.isnan(best) else _fmt(best)}"
+        )
 
     def on_trial(self, state: RunState, trial: Trial, new_best: bool) -> None:
+        if state.replaying:
+            return
+        self._resumed(state)
         if self.verbose < 2:
             return
         mark = " *best*" if new_best else ""
@@ -207,10 +298,13 @@ class ConsoleReporter(Callback):
         )
 
     def on_generation(self, state: RunState, generation: int, trials: list[Trial], population: Any) -> None:
+        if state.replaying:
+            return
+        self._resumed(state)
         if (generation + 1) % self.log_every and state.study.stop_reason == "":
             return
         gen = _stats([t.score for t in trials], state.direction)
-        elapsed = time.time() - state.started
+        elapsed = state.elapsed()
         eta = elapsed / state.calls * (state.max_evals - state.calls) if state.calls else math.nan
         eta_txt = _clock(eta) if math.isfinite(eta) else "--"
         best = state.best
@@ -224,8 +318,9 @@ class ConsoleReporter(Callback):
         )
 
     def on_run_end(self, state: RunState) -> None:
+        self._resumed(state)
         best = state.best
-        elapsed = time.time() - state.started
+        elapsed = state.elapsed()
         if best is None:
             result = "no finite score"
         else:
@@ -265,11 +360,20 @@ def _runs_line(entries: Sequence[tuple[int, float]], direction: str) -> str:
     )
 
 
+def _json_native(choice: Any) -> bool:
+    """True for a choice that JSON stores and reads back as the same value of the same type."""
+    if type(choice) is float:
+        return math.isfinite(choice)
+    return choice is None or type(choice) in (str, int, bool)
+
+
 def _describe_space(space: Space) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for name, p in zip(space.names, space.parameters, strict=True):
         if isinstance(p, Categorical):
-            out.append({"name": name, "type": "Categorical", "choices": [repr(c) for c in p.choices]})
+            native = all(_json_native(c) for c in p.choices)
+            choices = list(p.choices) if native else [repr(c) for c in p.choices]
+            out.append({"name": name, "type": "Categorical", "choices": choices, "repr": not native})
         elif isinstance(p, Int):
             out.append({"name": name, "type": "Int", "low": p.low, "high": p.high, "log": p.log})
         else:
@@ -278,22 +382,38 @@ def _describe_space(space: Space) -> list[dict[str, Any]]:
     return out
 
 
-def _optimizer_settings(opt: Optimizer) -> dict[str, Any]:
-    names = (
-        "colony_size",
-        "limit",
-        "swarm_size",
-        "inertia",
-        "cognitive",
-        "social",
-        "max_velocity",
-        "target",
-        "crossover",
-        "q_alpha",
-        "q_gamma",
-        "max_tries",
-    )
-    return {n: getattr(opt, n) for n in names if isinstance(getattr(opt, n, None), (int, float))}
+def _space_key(described: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    """A comparable form of a space description; choices are compared by their repr(), so a description
+    that stores them as repr() strings (as 0.5.x did, without the 'repr' mark) compares too."""
+    key: list[tuple[Any, ...]] = []
+    for p in described:
+        if p["type"] == "Categorical":
+            texts = p["choices"] if p.get("repr", True) else [repr(c) for c in p["choices"]]
+            key.append((p["name"], p["type"], texts))
+        else:
+            key.append((p["name"], p["type"], p["low"], p["high"], p["log"]))
+    return key
+
+
+def _space_matches(space: Space, described: list[dict[str, Any]]) -> bool:
+    """True when `space` is the space that config.json describes."""
+    mine = json.loads(json.dumps(_jsonable(_describe_space(space))))
+    return _space_key(mine) == _space_key(described)
+
+
+def _rebuild_space(described: list[dict[str, Any]]) -> Space | None:
+    """The space that config.json describes; None when a Categorical stores its choices as repr()."""
+    parameters: dict[str, Any] = {}
+    for p in described:
+        if p["type"] == "Categorical":
+            if p.get("repr", True):
+                return None
+            parameters[p["name"]] = Categorical(p["choices"])
+        elif p["type"] == "Int":
+            parameters[p["name"]] = Int(p["low"], p["high"], log=p["log"])
+        else:
+            parameters[p["name"]] = Float(p["low"], p["high"], log=p["log"])
+    return Space(parameters)
 
 
 def _jsonable(value: Any) -> Any:
@@ -310,11 +430,29 @@ def _jsonable(value: Any) -> Any:
     return repr(value)
 
 
-def _write_json(path: Path, data: Any) -> None:
-    """Writes JSON atomically: a temporary file replaced in one step, so a reader never sees half a file."""
+def _write_json(path: Path, data: Any, sync: bool = False) -> None:
+    """Writes JSON atomically: a temporary file replaced in one step, so a reader never sees half a file.
+
+    With `sync` the temporary file is synced to disk (os.fsync) before it replaces the file, so the file
+    survives a power cut; the files that are rewritten often are not synced.
+    """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(_jsonable(data), indent=2, ensure_ascii=False), encoding="utf-8")
+    with tmp.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(_jsonable(data), indent=2, ensure_ascii=False))
+        if sync:
+            fh.flush()
+            os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def _read_state(path: Path) -> dict[str, Any] | None:
+    """state.json of a run folder; None when it is missing, empty or not valid JSON, as a power cut at the
+    start of a run can leave it."""
+    try:
+        state: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return state
 
 
 class _CsvFile:
@@ -347,6 +485,104 @@ def _cell(value: Any) -> Any:
     return value
 
 
+def _exact_score(score: float) -> float | str:
+    """A score for trials.jsonl: the number, or 'nan', 'inf' or '-inf', which JSON cannot hold as numbers."""
+    return score if math.isfinite(score) else repr(score)
+
+
+def _number(value: Any) -> float:
+    """A float written by ResultWriter: a number, 'nan', 'inf' or '-inf', or null (NaN, as 0.5.x wrote)."""
+    return math.nan if value is None else float(value)
+
+
+def _epoch(text: str) -> float:
+    """Seconds since the epoch of an ISO time written by ResultWriter; NaN for an empty text."""
+    return dt.datetime.fromisoformat(text).timestamp() if text else math.nan
+
+
+@dataclass(frozen=True)
+class _Logged:
+    """One line of trials.jsonl as resume() needs it."""
+
+    trial: int
+    x: list[float]
+    cached: bool
+    score: float
+    start: float
+    duration: float
+
+    @property
+    def end(self) -> float:
+        return self.start + self.duration
+
+
+def _logged(record: dict[str, Any]) -> _Logged:
+    """A trial record of trials.jsonl; a record of 0.5.x without `start_epoch` gives its ISO start time."""
+    start = _number(record["start_epoch"]) if "start_epoch" in record else _epoch(record["start_time"])
+    return _Logged(
+        int(record["trial"]),
+        [float(v) for v in record["x"]],
+        bool(record["cached"]),
+        _number(record["score"]),
+        start,
+        float(record["duration_s"]),
+    )
+
+
+@dataclass
+class _RunLog:
+    """What resume() reads from one run folder: the logged trials, the length in bytes of the complete lines
+    of trials.jsonl, and state.json (None when it is missing, empty or not valid JSON)."""
+
+    path: Path
+    trials: list[_Logged]
+    valid: int
+    state: dict[str, Any] | None
+
+    @property
+    def needed(self) -> int:
+        """The smallest budget that keeps every logged trial: the calls made, one more when cached trials
+        follow the last call."""
+        calls = sum(not t.cached for t in self.trials)
+        return calls + int(bool(self.trials) and self.trials[-1].cached)
+
+    def drop_torn_tail(self) -> None:
+        """Cuts trials.jsonl after its last complete line, removing a line a kill left unfinished."""
+        with self.path.open("r+b") as fh:
+            fh.truncate(self.valid)
+
+
+def _read_run(run_dir: Path) -> _RunLog | None:
+    """The log of a run folder, or None when the run never logged (no trials.jsonl).
+
+    Everything after the last line break is a line cut short and is not read; a complete line that is not
+    a trial record raises RuntimeError. A state.json that cannot be read counts as missing.
+    """
+    path = run_dir / "trials.jsonl"
+    if not path.is_file():
+        return None
+    data = path.read_bytes()
+    valid = data.rfind(b"\n") + 1
+    trials = []
+    for number, line in enumerate(data[:valid].splitlines(), start=1):
+        try:
+            trials.append(_logged(json.loads(line)))
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError(
+                f"line {number} of {path} is not a trial record, so the run cannot be resumed"
+            ) from exc
+    return _RunLog(path, trials, valid, _read_state(run_dir / "state.json"))
+
+
+def _read_config(folder: Path) -> dict[str, Any]:
+    """config.json of a results folder; ValueError when the folder has none."""
+    path = folder / "config.json"
+    if not path.is_file():
+        raise ValueError(f"{folder} is not a results folder of meta-hpo: it has no config.json")
+    config: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return config
+
+
 class ResultWriter(Callback):
     """Writes the `hpo_results` folder; see the module docstring for the layout and the files."""
 
@@ -365,6 +601,21 @@ class ResultWriter(Callback):
         self._best_at: dict[int, float] = {}
         self._seeds: list[Any] = []
         self._runs: list[dict[str, Any]] = []
+        self._kept: dict[str, Any] = {}
+        self._resumes: list[dict[str, Any]] = []
+        self._synced = 0.0
+        self._existing = False
+
+    @classmethod
+    def _continuing(cls, folder: Path, config: dict[str, Any], entry: dict[str, Any]) -> ResultWriter:
+        """A writer that writes into the existing results folder of a run that resume() continues: it keeps
+        the library and platform record of config.json and adds `entry` to its resumes."""
+        writer = cls(folder.parent)
+        writer.folder = folder
+        writer._kept = {k: config[k] for k in ("library", "python", "numpy", "platform") if k in config}
+        writer._resumes = [*config.get("resumes", []), entry]
+        writer._existing = True
+        return writer
 
     def _make_folder(self, state: RunState) -> Path:
         stamp = dt.datetime.fromtimestamp(state.started).strftime("%Y-%m-%d_%H-%M-%S")
@@ -389,8 +640,9 @@ class ResultWriter(Callback):
         self._best_at = {}
         self._seeds.append(state.seed)
         self.run_dir = self.folder / f"run_{state.run:03d}"
-        self.run_dir.mkdir()
-        (self.run_dir / "plots").mkdir()
+        (self.run_dir / "plots").mkdir(parents=True, exist_ok=self._existing)
+        for stale in ("trials.csv", "trials.csv.gz", "population.csv", "population.csv.gz"):
+            (self.run_dir / stale).unlink(missing_ok=True)
         compressed = state.max_evals >= COMPRESS_FROM
         names = list(state.space.names)
         self._files["trials"] = _CsvFile(
@@ -417,7 +669,8 @@ class ResultWriter(Callback):
             compressed,
         )
         self._compressed = compressed
-        self._jsonl = (self.run_dir / "trials.jsonl").open("w", encoding="utf-8")
+        self._jsonl = (self.run_dir / "trials.jsonl").open("a", encoding="utf-8")
+        self._synced = _monotonic()
         self._files["best_history"] = _CsvFile(
             self.run_dir / "best_history.csv",
             ["run", "trial", "generation", "phase", "score", "time", "elapsed_s", "calls", *names],
@@ -453,24 +706,37 @@ class ResultWriter(Callback):
             "duration_s",
         ]
         self._files["generations"] = _CsvFile(self.run_dir / "generations.csv", self._gen_header)
-        self._gen_started = state.started
+        self._gen_elapsed = 0.0
         self._last_best = math.nan
+        seeds = list(state.seeds) if state.seeds else self._seeds
         config = {
             "library": {"name": "meta-hpo", "version": _version()},
             "python": sys.version.split()[0],
             "numpy": np.__version__,
             "platform": platform.platform(),
-            "optimizer": {"name": state.optimizer_name, "settings": _optimizer_settings(state.optimizer)},
+            "optimizer": {"name": state.optimizer_name, "settings": state.optimizer.settings()},
             "direction": state.direction,
             "max_evals": state.max_evals,
             "runs": state.runs,
-            "seed": self._seeds[0],
-            "seeds": self._seeds,
+            "seed": seeds[0],
+            "seeds": seeds,
+            "cache": state.cache,
             "space": _describe_space(state.space),
             "started": _iso(state.started),
             "folder": str(self.folder),
+            "resumes": self._resumes,
         }
-        _write_json(self.folder / "config.json", config)
+        config.update(self._kept)
+        _write_json(self.folder / "config.json", config, sync=True)
+        _write_json(
+            self.run_dir / "state.json",
+            {
+                "started": state.started,
+                "generator": state.optimizer.rng.bit_generator.state,
+                "pauses": state.pauses,
+            },
+            sync=True,
+        )
         _write_json(self.run_dir / "best.json", {"status": "running", "best": None})
 
     def on_trial(self, state: RunState, trial: Trial, new_best: bool) -> None:
@@ -484,6 +750,7 @@ class ResultWriter(Callback):
         )
         detail = json.dumps(meta) if meta else ""
         end = trial.start_time + trial.duration if math.isfinite(trial.start_time) else math.nan
+        elapsed = state.elapsed(end, trial.number) if math.isfinite(end) else state.elapsed()
         best_score = state.best.score if state.best is not None else math.nan
         self._calls_at[trial.number] = state.calls
         self._best_at[trial.number] = best_score
@@ -507,31 +774,12 @@ class ResultWriter(Callback):
                 _iso(trial.start_time),
                 _iso(end),
                 f"{trial.duration:.6f}",
-                f"{(end if math.isfinite(end) else time.time()) - state.started:.6f}",
+                f"{elapsed:.6f}",
             ]
         )
-        record = {
-            "run": state.run,
-            "trial": trial.number,
-            "generation": generation,
-            "phase": phase,
-            "individual": individual,
-            "detail": meta,
-            "params": trial.params,
-            "x": xs,
-            "score": trial.score,
-            "failed": trial.failed,
-            "cached": trial.cached,
-            "best_so_far": best_score,
-            "is_new_best": new_best,
-            "start_time": _iso(trial.start_time),
-            "end_time": _iso(end),
-            "duration_s": trial.duration,
-        }
-        self._jsonl.write(json.dumps(_jsonable(record), ensure_ascii=False) + "\n")
-        self._jsonl.flush()
+        if not state.replaying:
+            self._log(state, trial, generation, phase, individual, meta, xs, best_score, new_best, end)
         if new_best:
-            elapsed = (end if math.isfinite(end) else time.time()) - state.started
             entry = {
                 "run": state.run,
                 "trial": trial.number,
@@ -559,9 +807,51 @@ class ResultWriter(Callback):
             )
             _write_json(self.run_dir / "best.json", {"status": "running", "best": entry})
 
+    def _log(
+        self,
+        state: RunState,
+        trial: Trial,
+        generation: Any,
+        phase: Any,
+        individual: Any,
+        meta: dict[str, Any],
+        xs: list[float],
+        best_score: float,
+        new_best: bool,
+        end: float,
+    ) -> None:
+        """Appends the trial to trials.jsonl, flushes it, and syncs it to disk when FSYNC_EVERY seconds have
+        passed since the last sync."""
+        assert self._jsonl is not None
+        record = {
+            "run": state.run,
+            "trial": trial.number,
+            "generation": generation,
+            "phase": phase,
+            "individual": individual,
+            "detail": meta,
+            "params": trial.params,
+            "x": xs,
+            "score": _exact_score(trial.score),
+            "failed": trial.failed,
+            "cached": trial.cached,
+            "best_so_far": best_score,
+            "is_new_best": new_best,
+            "start_time": _iso(trial.start_time),
+            "end_time": _iso(end),
+            "start_epoch": trial.start_time,
+            "duration_s": trial.duration,
+        }
+        self._jsonl.write(json.dumps(_jsonable(record), ensure_ascii=False) + "\n")
+        self._jsonl.flush()
+        now = _monotonic()
+        if now - self._synced >= FSYNC_EVERY:
+            os.fsync(self._jsonl.fileno())
+            self._synced = now
+
     def on_generation(self, state: RunState, generation: int, trials: list[Trial], population: Any) -> None:
         assert self.run_dir is not None
-        now = time.time()
+        now = state.now()
         gen = _stats([t.score for t in trials], state.direction)
         last = trials[-1].number if trials else -1
         row: dict[str, Any] = {
@@ -603,9 +893,10 @@ class ResultWriter(Callback):
         best_now = row["best_so_far"]
         row["improved"] = int(state.better(best_now, self._last_best))
         self._last_best = best_now
+        elapsed = state.elapsed(now)
         row["end_time"] = _iso(now)
-        row["duration_s"] = round(now - self._gen_started, 6)
-        self._gen_started = now
+        row["duration_s"] = round(elapsed - self._gen_elapsed, 6)
+        self._gen_elapsed = elapsed
         self._generation_rows.append(row)
         self._files["generations"].row([_cell(row.get(c, math.nan)) for c in self._gen_header])
 
@@ -636,13 +927,15 @@ class ResultWriter(Callback):
         for f in self._files.values():
             f.close()
         if self._jsonl is not None and not self._jsonl.closed:
+            self._jsonl.flush()
+            os.fsync(self._jsonl.fileno())
             self._jsonl.close()
 
     def on_run_end(self, state: RunState) -> None:
         assert self.folder is not None and self.run_dir is not None
         self.close()
         study = state.study
-        ended = time.time()
+        ended = state.now()
         summary = _run_summary(state, ended)
         _write_json(
             self.run_dir / "best.json",
@@ -742,7 +1035,7 @@ def _run_summary(state: RunState, ended: float) -> dict[str, Any]:
             "phase": best.meta.get("phase"),
             "individual": best.meta.get("individual"),
             "found_at": _iso(best.start_time + best.duration) if math.isfinite(best.start_time) else None,
-            "found_after_s": (best.start_time + best.duration - state.started)
+            "found_after_s": state.elapsed(best.start_time + best.duration, best.number)
             if math.isfinite(best.start_time)
             else None,
         }
@@ -760,7 +1053,7 @@ def _run_summary(state: RunState, ended: float) -> dict[str, Any]:
         "generations": state.optimizer.generation,
         "started": _iso(state.started),
         "ended": _iso(ended),
-        "duration_s": ended - state.started,
+        "duration_s": state.elapsed(ended),
         "trial_duration_s": {
             "mean": float(durations.mean()) if durations.size else None,
             "median": float(np.median(durations)) if durations.size else None,

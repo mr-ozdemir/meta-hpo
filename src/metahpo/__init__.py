@@ -1,12 +1,12 @@
 """meta-hpo: metaheuristic hyperparameter optimization."""
 
-from metahpo.facade import optimize
+from metahpo.facade import optimize, resume
 from metahpo.optimizers import ABCOptimizer, BBPSOOptimizer, Candidate, Optimizer, PSOOptimizer
 from metahpo.report import Callback, ConsoleReporter, ResultWriter, RunState
 from metahpo.space import Categorical, Float, Int, Space
 from metahpo.study import Study, Trial
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 __all__ = [
     "ABCOptimizer",
@@ -25,4 +25,5 @@ __all__ = [
     "Study",
     "Trial",
     "optimize",
+    "resume",
 ]

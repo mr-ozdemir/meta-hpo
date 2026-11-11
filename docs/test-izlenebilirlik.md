@@ -4,10 +4,10 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 
 ## Özet
 
-- Test dosyası: 64 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 4468, hepsi geçiyor; tüm paket yaklaşık 75 saniyede koşuyor.
+- Test dosyası: 65 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
+- Toplanan test: 4567, hepsi geçiyor; tüm paket yaklaşık 130 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (1851 satırdan 1847'si), dal kapsamı 528/528. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
+- Satır kapsamı %99 (2137 satırdan 2133'ü), dal kapsamı 606/606. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -435,6 +435,21 @@ Gereksinim: `optimize(runs=...)` (issue #49): aramanın tekrarı, her koşuda ye
 | Optimizer | **test_facade_runs.py**: optimizer nesnesinin birden çok koşuda reddi, fonksiyonun her koşuda kendi seed'iyle yeni optimizer kurması, tek koşuda fonksiyon, optimizer döndürmeyen argümanın reddi |
 | Cache, kesme, hata | **test_facade_runs.py**: her koşunun kendi cache'i, Ctrl+C'nin kalan koşuları durdurup o ana kadarki Study'leri döndürmesi, hatanın yayılması ve sonraki koşunun başlamaması |
 | Sonuç klasörü ve konsol | **test_report.py**: tek klasörde run_001–run_003 ve koşu başına summary.json, en iyi koşu ve koşu skorlarının istatistiği, eşitlikte ilk koşu, report.md koşu tablosu, tek koşuda değişmeyen düzen, kesmeden sonra o ana kadarki koşular, `run 1/2` başlığı ve koşular üzerinden son satır, hiç sonlu skor olmayan koşular; **test_plots.py**: iki karşılaştırma grafiği, NaN koşular, grafik hatasının not düşülmesi |
+
+### resume
+
+Gereksinim: `resume(function, folder)`: durmuş bir aramanın (Ctrl+C, hedef fonksiyonda hata, öldürülen süreç, elektrik kesintisi) sonuç klasöründen sürdürülmesi ve kesintisiz bir koşunun vereceği aramanın aynısını, seed olmadan da vermesi; bitmiş koşuların fonksiyon çağrılmadan geri yüklenmesi, yarım kalan koşunun sürdürülmesi, hiç başlamamış koşuların çalıştırılması, daha büyük `max_evals` ile uzatma; klasörün bunun için tuttuğu kayıtlar (`state.json`, optimizer'ın tüm kurucu ayarları, cache bayrağı, JSON değeri olarak saklanan seçenekler, `trials.jsonl` içinde kesin skorlar ve en az saniyede bir diske eşitleme). İzlenebilirlik matrisinde R-RESUME, R-RESUME-RUNS-BUDGET ve R-RESUME-FOLDER kimlikleriyle CHANGELOG `[0.6.0]` maddelerine bağlıdır.
+
+| Konu | Testler |
+|---|---|
+| Kesintisiz koşuyla eşitlik | **test_facade_resume.py**: üç optimizer için Ctrl+C sonrası deneme deneme aynı arama ve yalnız kaydedilmemiş denemeler için çağrı, öldürülmüş koşu (ilk çağrıda, ilk toplu adayın içinde, PSO uçuş toplu adayının içinde, daha sonra) ve yarım kalan son satırın silinmesi, seed'siz koşu, ikinci kesme ve ikinci devam, türetilmiş dosyaların kesintisiz koşununkilerle aynı olması |
+| Koşular ve bütçe | **test_facade_resume.py**: bitmiş klasörün fonksiyon çağrılmadan dönmesi ve konsol satırları, `max_evals` ile uzatmanın o bütçeyle başlatılmış koşuya eşitliği, kaydedilen çağrılardan küçük ya da geçersiz bütçenin reddi, üç koşuda bitmiş koşunun geri yüklenmesi, yarım koşunun sürdürülmesi ve başlamamış koşunun çalıştırılması, `COMPRESS_FROM` eşiğini aşan bütçede sıkıştırılmış dosyalar, tek koşuda Study |
+| Optimizer ve uzay | **test_facade_resume.py**: özel optimizer'da `optimizer=` istenmesi ve fonksiyonla sürdürme, fonksiyon seçenekli Categorical'da `space=` istenmesi, verilen uzayla sürdürme, klasöre uymayan uzayın reddi |
+| Uyuşmazlık | **test_facade_resume.py**: başka ayarlı optimizer'ın 3. denemede reddi ve klasörün değişmemesi, silinmiş satır, bozuk satır, aramanın bitişinden sonra kaydedilmiş deneme, config.json olmayan klasör |
+| Zaman, konsol, callback | **test_facade_resume.py**: makinenin kapalı kaldığı sürenin süre ve elapsed değerlerine girmemesi, tek 'resumed' satırı ve geri yüklenen denemeler için satır basılmaması, callback'lerin geri yüklenen denemeleri `replaying` ile alması |
+| 0.5.1 klasörleri ve okunamayan state.json | **test_facade_resume.py**: seed'li 0.5.1 klasörünün `space=` ile sürdürülmesi, seed'siz klasörün reddi ve `optimizer=` ile sürdürülmesi; boş ya da yarım kalmış state.json'da seed'li koşunun seed'den yeniden kurulması (kaydedilmiş denemelerle ve denemesiz), seed'siz koşunun 0.5.x demeyen açık bir hatayla reddi |
+| Klasör kayıtları | **test_report.py**: state.json (başlangıç zamanı, ilk adaydan önceki üreteç durumu), üç optimizer'ın tüm kurucu ayarları ve cache bayrağı, özel optimizer'da `settings()`, JSON değeri olarak saklanan ve repr işaretli seçenekler, NaN seçeneği, trials.jsonl içinde 'nan', 'inf', '-inf' ve `start_epoch`, sahte saatle saniyede bir ve koşu sonunda fsync, koşu başında config.json ve state.json'un os.replace öncesi fsync ile diske yazılması (best.json'un yazılmaması); **test_api_contract.py**: `resume` imzası ve dışa aktarımı |
+| Seed kuralı istisnası | **test_static.py** ve **test_traceability.py** içindeki `SEED_EXEMPTIONS`: seed'siz başlatılan koşunun birebir sürdürüldüğünü gösteren tek test, gerekçesiyle; istisnanın hâlâ gerektiği ve yalnız o testi kapsadığı da test edilir |
 
 ## Stil kontrol listesi
 

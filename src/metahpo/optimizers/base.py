@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
@@ -69,6 +70,17 @@ class Optimizer:
     def generation(self) -> int:
         """Completed generations: ABC cycles, PSO and BBPSO iterations; 0 for an optimizer without them."""
         return 0
+
+    def settings(self) -> dict[str, Any]:
+        """The constructor settings besides space, direction and seed, as config.json records them.
+
+        Every further parameter of the constructor is read from the attribute of the same name; a parameter
+        without such an attribute is left out. resume() builds an optimizer of the library again from these
+        settings, so an optimizer that keeps a setting under another name overrides this method.
+        """
+        names = list(inspect.signature(type(self).__init__).parameters)[1:]
+        skip = ("space", "direction", "seed")
+        return {name: getattr(self, name) for name in names if name not in skip and hasattr(self, name)}
 
     def population(self) -> dict[str, Any] | None:
         """A snapshot of the current population for reports, or None for an optimizer without one.
