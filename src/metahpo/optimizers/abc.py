@@ -69,6 +69,7 @@ class ABCOptimizer(Optimizer):
             raise ValueError("colony_size must be at least 4 (two food sources)")
         if limit < 1:
             raise ValueError("limit must be at least 1")
+        self.colony_size = colony_size
         self.food_number = sn = colony_size // 2
         self.limit = limit
         self.foods = np.zeros((sn, space.dim))

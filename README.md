@@ -11,6 +11,8 @@ You describe a search space and a function that trains your model and returns a 
 meta-hpo searches for the parameters that maximise or minimise that score.
 Several metaheuristics share one interface ([Optimizers](#optimizers)), and every run is reported on the
 console and in a results folder ([Results](#results)).
+A run that stops half way continues from that folder as if it had never stopped
+([Resuming a run](#resuming-a-run)).
 
 ## Installation
 
@@ -54,6 +56,15 @@ Here `train` is a closed-form score with its peak at `lr=1e-3`, `kernel=5`, `uni
 parameters and returns its score: a Keras or PyTorch training run, cross-validation, an F1 score.
 Its training budget is entirely yours; meta-hpo only counts evaluations.
 
+If the run stops before it ends (Ctrl+C, a crash, a power cut, the computer switched off for the night),
+no finished evaluation is lost. Pass `train` and the results folder of the run to `mh.resume` and the
+search goes on as if it had never stopped ([Resuming a run](#resuming-a-run)):
+
+```python
+study = mh.resume(train, "hpo_results/2026-11-09_18-26-15_abc")
+print(study.best_params, study.best_score)
+```
+
 ## Results
 
 `optimize()` prints one line per generation and, while it runs, writes everything to `hpo_results/` in the
@@ -74,6 +85,7 @@ hpo_results/2026-11-09_18-26-15_abc/    one folder per optimize() call: start ti
 └── run_001/
     ├── best.json                       the best so far, replaced on every improvement
     ├── trials.csv, trials.jsonl        every trial: params, score, phase, generation, time, duration
+    ├── state.json                      start time and random generator state, for resuming
     ├── best_history.csv                every improvement of the best
     ├── generations.csv                 score and population statistics per generation
     ├── population.csv                  the population after every generation
@@ -84,6 +96,7 @@ hpo_results/2026-11-09_18-26-15_abc/    one folder per optimize() call: start ti
 - `best.json` is replaced on every improvement, so the best so far survives a crash.
 - Ctrl+C stops the search and returns the study so far.
 - An error raised by your function is re-raised after the results are written.
+- A stopped run continues from this folder with `mh.resume` ([Resuming a run](#resuming-a-run)).
 
 | Setting | Effect |
 |---|---|
@@ -107,6 +120,39 @@ studies = mh.optimize(train, space, direction="max", max_evals=300, runs=5, seed
   `optimizer=lambda seed: mh.PSOOptimizer(space, direction="max", seed=seed)`.
 - All runs go into one results folder (`run_001`, `run_002`, ...) with a summary and plots that
   compare the runs.
+
+## Resuming a run
+
+A run that stopped (Ctrl+C, a crash, a power cut) continues from its results folder and gives exactly the
+search an uninterrupted run would have given, also without a seed.
+
+```python
+study = mh.resume(train, "hpo_results/2026-11-09_18-26-15_abc")
+print(study.best_params, study.best_score)
+```
+
+Stopped after 120 of its 300 evaluations and resumed, the [Quick start](#quick-start) run restores those
+120 trials without training again and ends on the same lines as the uninterrupted run in
+[Results](#results):
+
+```text
+[meta-hpo] run 1 | ABCOptimizer | direction=max | max_evals=300 | seed=1 | 4 parameters
+[meta-hpo] run 1 | resumed | 120 trials restored (120 calls) | best 0.919322
+gen   11 | evals    126/300 | best 0.919326 (trial 122) | gen best 0.919326 mean 0.900067 std 0.0231047 | ...
+gen   29 | evals    300/300 | best 0.92 (trial 288) | gen best 0.919993 mean 0.913963 std 0.00801146 | ...
+[meta-hpo] run 1 finished (budget) after 300 calls in 00:00:00 | best 0.92 at trial 288 | {...}
+```
+
+- The folder provides the space, the optimizer and its settings, the budget, the seeds and every finished
+  trial; only `train` is passed again.
+- The trial that was running when the run stopped is evaluated again; finished trials are not.
+- `max_evals=` extends a run to a larger budget.
+- `optimizer=` is needed for an optimizer of your own and `space=` for Categorical choices that JSON
+  cannot store, such as classes or functions.
+- With several runs, the finished runs are restored, the unfinished run continues and the runs that never
+  started run with their recorded seeds.
+- A folder whose runs finished returns its studies without calling `train`.
+- The results go on in the same folder.
 
 ## Examples
 
