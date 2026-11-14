@@ -4,10 +4,10 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 
 ## Özet
 
-- Test dosyası: 65 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 4567, hepsi geçiyor; tüm paket yaklaşık 130 saniyede koşuyor.
+- Test dosyası: 67 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
+- Toplanan test: 4729, hepsi geçiyor; tüm paket yaklaşık 90 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (2137 satırdan 2133'ü), dal kapsamı 606/606. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
+- Satır kapsamı %99 (2227 satırdan 2223'ü), dal kapsamı 634/634. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -450,6 +450,20 @@ Gereksinim: `resume(function, folder)`: durmuş bir aramanın (Ctrl+C, hedef fon
 | 0.5.1 klasörleri ve okunamayan state.json | **test_facade_resume.py**: seed'li 0.5.1 klasörünün `space=` ile sürdürülmesi, seed'siz klasörün reddi ve `optimizer=` ile sürdürülmesi; boş ya da yarım kalmış state.json'da seed'li koşunun seed'den yeniden kurulması (kaydedilmiş denemelerle ve denemesiz), seed'siz koşunun 0.5.x demeyen açık bir hatayla reddi |
 | Klasör kayıtları | **test_report.py**: state.json (başlangıç zamanı, ilk adaydan önceki üreteç durumu), üç optimizer'ın tüm kurucu ayarları ve cache bayrağı, özel optimizer'da `settings()`, JSON değeri olarak saklanan ve repr işaretli seçenekler, NaN seçeneği, trials.jsonl içinde 'nan', 'inf', '-inf' ve `start_epoch`, sahte saatle saniyede bir ve koşu sonunda fsync, koşu başında config.json ve state.json'un os.replace öncesi fsync ile diske yazılması (best.json'un yazılmaması); **test_api_contract.py**: `resume` imzası ve dışa aktarımı |
 | Seed kuralı istisnası | **test_static.py** ve **test_traceability.py** içindeki `SEED_EXEMPTIONS`: seed'siz başlatılan koşunun birebir sürdürüldüğünü gösteren tek test, gerekçesiyle; istisnanın hâlâ gerektiği ve yalnız o testi kapsadığı da test edilir |
+
+### stop
+
+Gereksinim: `optimize(stop=...)` (issue #71, 1. aşama): aramayı bütçeden önce bitiren durdurma kuralları; `Patience(evals, min_delta)` iyileşme olmadan geçen `evals` çağrıdan sonra (`patience`), `MaxTime(seconds, minutes, hours)` arama süresi dolunca (`time`), `TargetScore(score)` en iyi skor hedefe ulaşınca (`target`); kendi kuralı için `Stopper` taban sınıfı (`reason`, `should_stop(state)`, `settings()`); her kuralın her denemeden sonra sırayla bir kez sorulması, durduran ilk kuralın nedeni, toplu adayın değerlendirilen kısmının söylenip kalanının geri çekilmesi, her koşuda kuralların kendi kopyası. İzlenebilirlik matrisinde R-STOP ve R-STOPPER kimlikleriyle CHANGELOG `[Unreleased]` maddelerine bağlıdır. Sonuç klasörüne kuralların yazılması ve `resume()` ile durdurma kuralları 2. aşamadadır.
+
+| Konu | Testler |
+|---|---|
+| Patience | **test_stop.py**: tam `evals` çağrıda durma (min ve max, eşit skorun iyileşme sayılmaması), `min_delta`'dan büyük kazancın iyileşme sayılması ve referansın yalnız iyileşmede kayması, `min_delta`'ya eşit kazancın iyileşme sayılmaması, cache tekrarlarının çağrı sayılmaması, NaN/inf/-inf skorların iyileşmesiz çağrı sayılması ve ilk sonlu skorun iyileşme olması, geçersiz `evals` (0, -1, 1.5, 2.0, True, "3") ve `min_delta` (negatif, NaN, inf), en küçük geçerli değerler ve numpy tamsayı |
+| MaxTime ve TargetScore | **test_stop.py**: saniye, dakika, saat ve toplamlarında sınırın bir milisaniye altında durmama ve sınırda durma, sıfır, negatif, NaN, sonsuz ve taşan toplamın reddi; hedefe tam ulaşma, hiç ulaşmama ve NaN/sonsuz skorlardan sonra ulaşma (min ve max), NaN, sonsuz ve metin hedefin reddi |
+| Stopper | **test_stop.py**: yerleşik kuralların `patience`, `time`, `target` nedenleri, `settings()` içinde kurucu parametrelerinin aynı adlı niteliklerden okunması ve başka adla tutulanın atlanması, taban sınıfın boş nedeni ve `should_stop` için `NotImplementedError`; **test_api_contract.py**: dışa aktarımlar, `optimize` içinde `stop` konumu ve öntanımlısı, üç kuralın kurucu imzası, `Stopper` üyeleri |
+| optimize() ile durma | **test_facade_stop.py**: Patience'ın elle sayılan denemede bitirmesi (min ve max), kesintisiz PSO koşusunun skor listesinden hesaplanan denemede TargetScore ve Patience ile durma ve kesintisiz koşunun önekine eşitlik, cache tekrarının çağrı sayılmaması, NaN ve sonsuz skorlar, bütçeyi bitiren denemede kural nedeninin kazanması, kural yokken bütçeye kadar koşma |
+| Toplu aday ve sıra | **test_facade_stop.py**: PSO ilk toplu adayının ortasında durunca değerlendirilen üç adayın söylenip kalan ikisinin geri çekildiği ikiz optimizer ile aynı sonraki toplu aday, duruştan sonra hedef fonksiyonun çağrılmaması, iki sırada ve farklı denemelerde ilk kuralın nedeni, durduran kuraldan sonraki kuralın da her denemede bir kez sorulması, kuralın denemeyi kayıtlı, `calls` ve `best` güncel, callback'ler bilgilendirilmiş halde görmesi (cache tekrarı dahil), kendi `Stopper` alt sınıfının nedeni |
+| Koşular ve doğrulama | **test_facade_stop.py**: `runs=3`'te her koşunun kendi kural kopyasıyla durması ve verilen nesnelerin değişmemesi, Stopper olmayan `stop` (sayı, metin, liste ve demet içinde yabancı değer, küme, sınıf, fonksiyon) için TypeError, boş, boşluklu, metin olmayan ve ayrılmış nedenler (`budget`, `exhausted`, `repeats`, `interrupted`, `error`) için hedef fonksiyon çağrılmadan ve sonuç klasörü açılmadan ValueError, nedeni olmayan taban sınıfın reddi |
+| Sonuç klasörü, konsol, süre | **test_facade_stop.py**: summary.json ve best.json içinde `patience` ve finished, trials.csv'de yedi deneme, generations.csv'nin son neslinin 7 çağrıda bitmesi, konsolun son nesil satırı ve `finished (patience)` satırı; `RunState.now` deneme başına bir dakika ilerleyen sahte saatle değiştirilerek MaxTime'ın sınıra ulaşan ilk denemeden sonra bitirmesi (uyumadan) |
 
 ## Stil kontrol listesi
 

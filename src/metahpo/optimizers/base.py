@@ -16,6 +16,14 @@ from metahpo.space import Space
 Direction = Literal["min", "max"]
 
 
+def _init_settings(obj: object, skip: Sequence[str] = ()) -> dict[str, Any]:
+    """The parameters of the constructor of `obj`'s class after self, each read from the attribute of the
+    same name; a parameter named in `skip` or without such an attribute is left out. Optimizer.settings()
+    and Stopper.settings() share it."""
+    names = list(inspect.signature(type(obj).__init__).parameters)[1:]
+    return {name: getattr(obj, name) for name in names if name not in skip and hasattr(obj, name)}
+
+
 @dataclass(frozen=True)
 class Candidate:
     """A point to evaluate: `x` in the unit cube, `params` as the user's function receives them, and `key`,
@@ -78,9 +86,7 @@ class Optimizer:
         without such an attribute is left out. resume() builds an optimizer of the library again from these
         settings, so an optimizer that keeps a setting under another name overrides this method.
         """
-        names = list(inspect.signature(type(self).__init__).parameters)[1:]
-        skip = ("space", "direction", "seed")
-        return {name: getattr(self, name) for name in names if name not in skip and hasattr(self, name)}
+        return _init_settings(self, skip=("space", "direction", "seed"))
 
     def population(self) -> dict[str, Any] | None:
         """A snapshot of the current population for reports, or None for an optimizer without one.

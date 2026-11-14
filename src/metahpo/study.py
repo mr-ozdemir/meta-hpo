@@ -42,8 +42,10 @@ class Study:
     """Every trial of one search and the reason it stopped.
 
     `stop_reason` is 'budget' (max_evals real calls made), 'exhausted' (every parameter set of a space
-    without Float evaluated), 'repeats' (too many cached repeats in a row), 'interrupted' (KeyboardInterrupt)
-    or 'error' (the objective raised); it is empty while the search runs.
+    without Float evaluated), 'repeats' (too many cached repeats in a row), 'interrupted' (KeyboardInterrupt),
+    'error' (the objective raised) or the reason of the stopping rule that ended the run: 'patience',
+    'time' or 'target' for the built-in rules, the `reason` of a Stopper of your own (see metahpo.stop); it is
+    empty while the search runs.
     """
 
     direction: Direction
