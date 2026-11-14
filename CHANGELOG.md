@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
 ### Added
 
 - `optimize(stop=...)` ends a search early with stopping rules: `Patience(evals, min_delta)` after `evals`
