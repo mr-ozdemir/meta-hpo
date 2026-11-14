@@ -735,6 +735,85 @@ REQUIREMENTS = {
             "test_facade_resume::test_resume_should_leave_the_time_the_machine_was_off_out_of_every_duration",
         ],
     },
+    "R-STOP": {
+        "source": [
+            "CHANGELOG.md | `optimize(stop=...)` ends a search early with stopping rules: `Patience(evals, "
+            "min_delta)` after `evals` calls without improvement, `MaxTime(seconds, minutes, hours)` after "
+            "that much search time and `TargetScore(score)` once the best score reaches `score`, recorded as "
+            "the stop reasons `patience`, `time` and `target`.",
+        ],
+        "tests": [
+            "test_facade_stop::test_optimize_should_end_the_run_when_patience_sees_evals_calls_without_improvement",
+            "test_facade_stop::test_optimize_should_stop_at_the_trial_where_an_uninterrupted_run_reaches_the_target",
+            "test_facade_stop::test_optimize_should_stop_at_the_trial_where_an_uninterrupted_run_runs_out_of_patience",
+            "test_facade_stop::test_optimize_should_not_count_cached_repeats_toward_patience",
+            "test_facade_stop::test_optimize_should_treat_nan_and_infinite_scores_as_no_improvement_and_never_as_the_target",
+            "test_facade_stop::test_optimize_should_record_the_rule_reason_when_the_same_trial_used_up_the_budget",
+            "test_facade_stop::test_optimize_should_reject_a_stop_argument_that_is_not_a_stopper",
+            "test_facade_stop::test_optimize_should_run_to_the_budget_without_rules",
+            "test_facade_stop::test_results_folder_should_record_the_rule_reason_and_end_the_run_as_usual",
+            "test_facade_stop::test_max_time_should_end_the_run_after_the_first_trial_that_reaches_the_limit",
+            "test_stop::test_patience_should_stop_after_exactly_evals_calls_without_improvement",
+            "test_stop::test_patience_should_count_only_gains_larger_than_min_delta_and_keep_its_reference",
+            "test_stop::test_patience_should_not_take_a_gain_equal_to_min_delta_as_an_improvement",
+            "test_stop::test_patience_should_not_count_cached_repeats_as_calls",
+            "test_stop::test_patience_should_count_nan_and_infinite_scores_as_calls_without_improvement",
+            "test_stop::test_patience_should_reject_an_invalid_evals_or_min_delta",
+            "test_stop::test_patience_should_accept_the_smallest_values_and_a_numpy_integer",
+            "test_stop::test_max_time_should_stop_once_the_search_time_reaches_the_sum_of_its_parts",
+            "test_stop::test_max_time_should_reject_a_time_that_is_not_positive_and_finite",
+            "test_stop::test_target_score_should_stop_once_the_best_score_is_at_least_as_good_as_the_target",
+            "test_stop::test_target_score_should_reject_a_score_that_is_not_a_finite_number",
+            "test_stop::test_built_in_rule_should_carry_its_documented_stop_reason",
+            "test_api_contract::test_optimize_should_declare_parameters_in_documented_order",
+            "test_api_contract::test_stopping_rules_should_declare_their_constructor_parameters_and_defaults",
+        ],
+    },
+    "R-STOPPER": {
+        "source": [
+            "CHANGELOG.md | `Stopper` is the base class of a stopping rule of your own: it sets `reason` and "
+            "overrides `should_stop(state)`, which is asked after every trial; the first rule that says stop "
+            "ends the run, and every run works on its own copy of the rules.",
+        ],
+        "tests": [
+            "test_facade_stop::test_optimize_should_end_the_run_with_the_reason_of_a_stopper_of_your_own",
+            "test_facade_stop::test_optimize_should_take_the_reason_of_the_first_rule_in_order_that_says_stop",
+            "test_facade_stop::test_optimize_should_ask_every_rule_once_after_every_trial_even_after_one_said_stop",
+            "test_facade_stop::test_optimize_should_ask_the_rules_after_the_trial_is_recorded_and_the_callbacks_were_told",
+            "test_facade_stop::test_optimize_should_tell_the_evaluated_part_of_the_batch_and_withdraw_the_rest",
+            "test_facade_stop::test_optimize_should_not_call_the_objective_after_a_rule_said_stop",
+            "test_facade_stop::test_optimize_should_give_every_run_a_fresh_copy_of_the_rules_and_leave_the_given_ones_unchanged",
+            "test_facade_stop::test_optimize_should_reject_a_rule_whose_reason_is_empty_or_reserved",
+            "test_facade_stop::test_optimize_should_reject_the_stopper_base_class_without_a_reason",
+            "test_stop::test_stopper_settings_should_read_the_constructor_parameters_from_their_attributes",
+            "test_stop::test_stopper_base_class_should_have_no_reason_and_leave_should_stop_to_subclasses",
+            "test_api_contract::test_stopper_should_expose_reason_should_stop_and_settings",
+        ],
+    },
+    "R-STOP-RESUME": {
+        "source": [
+            "CHANGELOG.md | `config.json` records the stopping rules of a search; `resume()` continues with "
+            "them, so a run a rule ended stays finished, or with the rules given as `resume(stop=...)`.",
+        ],
+        "tests": [
+            "test_report::test_config_json_should_record_the_stopping_rules_in_order_with_their_settings",
+            "test_report::test_console_header_should_name_the_stopping_rules_only_when_the_run_has_some",
+            "test_report::test_report_md_should_name_the_stopping_rules_only_when_the_run_has_some",
+            "test_report::test_run_state_should_hold_each_runs_own_copies_of_the_rules",
+            "test_facade_resume_stop::test_resume_should_return_a_folder_a_rule_ended_without_a_call_and_with_its_reason",
+            "test_facade_resume_stop::test_resume_should_continue_a_run_interrupted_before_its_rule_fired_like_an_uninterrupted_run",
+            "test_facade_resume_stop::test_resume_should_end_a_run_right_after_the_restore_when_a_given_rule_would_have_stopped_it_earlier",
+            "test_facade_resume_stop::test_resume_should_replace_the_recorded_rules_by_a_more_generous_rule_given_as_stop",
+            "test_facade_resume_stop::test_resume_should_run_to_the_budget_with_an_empty_stop",
+            "test_facade_resume_stop::test_resume_should_ask_for_stop_when_the_folder_records_a_rule_of_ones_own",
+            "test_facade_resume_stop::test_resume_should_reject_a_bad_stop_and_leave_the_folder_unchanged",
+            "test_facade_resume_stop::test_resume_should_restore_finished_runs_and_continue_the_interrupted_one_with_their_rules",
+            "test_facade_resume_stop::test_resume_should_treat_a_folder_without_a_stop_entry_as_one_without_rules",
+            "test_facade_resume_stop::test_resume_should_keep_a_run_that_max_time_ended_finished_and_give_it_more_time_with_a_longer_limit",
+            "test_facade_resume_stop::test_resume_should_count_the_logged_search_time_at_the_restored_trials_not_the_wall_clock",
+            "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
+        ],
+    },
 }
 
 
@@ -1313,8 +1392,8 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 20 'Added' bullets (3 under 0.6.0, 2 under
-    0.5.1, 3 under 0.5.0, 3 under 0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
+    bullets, 3 Search space rows, 1 unit-cube sentence and 23 'Added' bullets (3 under 0.7.0, 3 under
+    0.6.0, 2 under 0.5.1, 3 under 0.5.0, 3 under 0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would
     let the quote check pass vacuously; a new bullet makes this test fail as a reminder to trace it.
@@ -1323,7 +1402,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 20}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 23}
 
 
 @pytest.mark.parametrize(

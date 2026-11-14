@@ -92,12 +92,16 @@ DOCUMENTED_EXPORTS = (
     "Categorical",
     "Float",
     "Int",
+    "MaxTime",
     "Optimizer",
     "PSOOptimizer",
+    "Patience",
     "ResultWriter",
     "RunState",
     "Space",
+    "Stopper",
     "Study",
+    "TargetScore",
     "Trial",
     "optimize",
     "resume",
@@ -136,12 +140,12 @@ def _params_of(candidates):
 
 
 def test_metahpo_should_export_exactly_the_documented_names():
-    """Given the package, when __all__ is read, then it holds exactly the seventeen documented names once
+    """Given the package, when __all__ is read, then it holds exactly the twenty-one documented names once
     each.
 
     Oracle: README Quick start (Space, Float, Int, Categorical, optimize, ABCOptimizer), CHANGELOG 'Added'
-    (Study, resume), the __init__ export list (Candidate, Optimizer, Trial) and the README optimizer list
-    (PSOOptimizer). Set equality is decisive: an added
+    (Study, resume, Stopper, Patience, MaxTime, TargetScore), the __init__ export list (Candidate,
+    Optimizer, Trial) and the README optimizer list (PSOOptimizer). Set equality is decisive: an added
     name and a removed name both fail, and the length check catches a duplicated entry.
     """
     expected = set(DOCUMENTED_EXPORTS)
@@ -165,6 +169,10 @@ def test_metahpo_should_export_exactly_the_documented_names():
         pytest.param("Categorical", inspect.isclass, id="Categorical"),
         pytest.param("Float", inspect.isclass, id="Float"),
         pytest.param("Int", inspect.isclass, id="Int"),
+        pytest.param("MaxTime", inspect.isclass, id="MaxTime"),
+        pytest.param("Patience", inspect.isclass, id="Patience"),
+        pytest.param("Stopper", inspect.isclass, id="Stopper"),
+        pytest.param("TargetScore", inspect.isclass, id="TargetScore"),
         pytest.param("Optimizer", inspect.isclass, id="Optimizer"),
         pytest.param("PSOOptimizer", inspect.isclass, id="PSOOptimizer"),
         pytest.param("Space", inspect.isclass, id="Space"),
@@ -213,7 +221,8 @@ def test_optimize_should_declare_parameters_in_documented_order():
     Oracle: facade.optimize docstring ('function', 'space', 'max_evals', 'cache') and README calls
     optimize(train, space, direction=..., max_evals=..., seed=...); order matters because function and
     space are passed positionally in the README. The position of optimizer, seed and cache is characterised
-    from the current public signature.
+    from the current public signature; stop sits after callbacks and before runs, as CHANGELOG 'Added' names
+    `optimize(stop=...)`.
     """
     expected = [
         "function",
@@ -227,6 +236,7 @@ def test_optimize_should_declare_parameters_in_documented_order():
         "verbose",
         "log_every",
         "callbacks",
+        "stop",
         "runs",
     ]
 
@@ -260,6 +270,7 @@ def test_optimize_should_require_parameter_when_it_has_no_documented_default(nam
         pytest.param("verbose", 1, id="verbose-1"),
         pytest.param("log_every", 1, id="log_every-1"),
         pytest.param("callbacks", None, id="callbacks-None"),
+        pytest.param("stop", None, id="stop-None"),
         pytest.param("runs", 1, id="runs-1"),
     ],
 )
@@ -281,12 +292,13 @@ def test_optimize_should_declare_documented_default(name, expected):
 
 def test_resume_should_declare_its_parameters_with_keyword_only_options():
     """Given resume, when its signature is introspected, then function and folder come first without a
-    default and optimizer, space, max_evals, verbose, log_every and callbacks follow as keyword-only options
-    with their defaults.
+    default and optimizer, space, max_evals, stop, verbose, log_every and callbacks follow as keyword-only
+    options with their defaults.
 
     Oracle: README 'Resuming a run' (mh.resume(train, folder)) and the resume docstring (optimizer, space and
-    max_evals are needed only sometimes; verbose None is the default level; log_every and callbacks as in
-    optimize()). The keyword-only kind is characterised from the current public signature.
+    max_evals are needed only sometimes; stop None applies the recorded rules; verbose None is the default
+    level; log_every and callbacks as in optimize()). The keyword-only kind is characterised from the current
+    public signature.
     """
     positional, keyword = inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY
     empty = inspect.Parameter.empty
@@ -296,6 +308,7 @@ def test_resume_should_declare_its_parameters_with_keyword_only_options():
         ("optimizer", keyword, None),
         ("space", keyword, None),
         ("max_evals", keyword, None),
+        ("stop", keyword, None),
         ("verbose", keyword, None),
         ("log_every", keyword, 1),
         ("callbacks", keyword, None),
@@ -304,6 +317,45 @@ def test_resume_should_declare_its_parameters_with_keyword_only_options():
     found = [(p.name, p.kind, p.default) for p in inspect.signature(metahpo.resume).parameters.values()]
 
     assert found == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        pytest.param("Patience", [("evals", inspect.Parameter.empty), ("min_delta", 0.0)], id="Patience"),
+        pytest.param("MaxTime", [("seconds", 0.0), ("minutes", 0.0), ("hours", 0.0)], id="MaxTime"),
+        pytest.param("TargetScore", [("score", inspect.Parameter.empty)], id="TargetScore"),
+    ],
+)
+def test_stopping_rules_should_declare_their_constructor_parameters_and_defaults(name, expected):
+    """Given one of the three built-in stopping rules, when its constructor is introspected, then its
+    parameters come in the documented order with the documented defaults.
+
+    Oracle: CHANGELOG 'Added' (`Patience(evals, min_delta)`, `MaxTime(seconds, minutes, hours)`,
+    `TargetScore(score)`); the defaults 0.0 are characterised from the current public signature (the
+    MaxTime docstring adds up the parts, so a part left out counts as 0).
+    """
+    cls = getattr(metahpo, name)
+
+    found = [(p.name, p.default) for p in inspect.signature(cls).parameters.values()]
+
+    assert found == expected
+
+
+def test_stopper_should_expose_reason_should_stop_and_settings():
+    """Given the Stopper class, when its members are read, then it has the class attribute reason, the
+    methods should_stop and settings, and should_stop takes the run state.
+
+    Oracle: CHANGELOG 'Added' (`Stopper` sets `reason` and overrides `should_stop(state)`) and the
+    Stopper.settings docstring; the parameter name state is characterised from the current signature.
+    """
+    cls = metahpo.Stopper
+
+    parameters = list(inspect.signature(cls.should_stop).parameters)
+
+    assert type(cls.reason) is str
+    assert parameters == ["self", "state"]
+    assert callable(cls.settings)
 
 
 def test_abc_optimizer_should_declare_constructor_parameters_in_documented_order():

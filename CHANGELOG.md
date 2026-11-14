@@ -6,6 +6,20 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
+### Added
+
+- `optimize(stop=...)` ends a search early with stopping rules: `Patience(evals, min_delta)` after `evals`
+  calls without improvement, `MaxTime(seconds, minutes, hours)` after that much search time and
+  `TargetScore(score)` once the best score reaches `score`, recorded as the stop reasons `patience`, `time`
+  and `target`.
+- `Stopper` is the base class of a stopping rule of your own: it sets `reason` and overrides
+  `should_stop(state)`, which is asked after every trial; the first rule that says stop ends the run, and
+  every run works on its own copy of the rules.
+- `config.json` records the stopping rules of a search; `resume()` continues with them, so a run a rule
+  ended stays finished, or with the rules given as `resume(stop=...)`.
+
 ## [0.6.0] - 2026-11-11
 
 ### Added

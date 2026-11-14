@@ -213,7 +213,8 @@ def _shift_into_the_past(folder, seconds):
 
 def _make_legacy(folder):
     """Turns a folder into what meta-hpo 0.5.1 wrote: no state.json, no start_epoch, null for a non-finite
-    score, Categorical choices as repr() text, no cache flag, no resumes and no colony_size setting."""
+    score, Categorical choices as repr() text, no cache flag, no resumes, no stopping rules and no colony_size
+    setting."""
     (folder / "run_001" / "state.json").unlink()
     records = [json.loads(line) for line in _log(folder).read_text(encoding="utf-8").splitlines()]
     old = [_legacy_record(r) for r in records]
@@ -223,6 +224,7 @@ def _make_legacy(folder):
     config["optimizer"]["settings"].pop("colony_size")
     config.pop("cache")
     config.pop("resumes")
+    config.pop("stop")
     (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
 
 
