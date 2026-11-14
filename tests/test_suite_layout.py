@@ -47,7 +47,7 @@ CONFTEST = TESTS_DIR / "conftest.py"
 LAYOUT = Path(__file__).resolve()
 
 MODULES = frozenset(
-    {"space", "operators", "base", "abc", "pso", "bbpso", "study", "facade", "report", "plots"}
+    {"space", "operators", "base", "abc", "pso", "bbpso", "study", "facade", "report", "plots", "stop"}
 )
 FEATURES = [
     "search space",
@@ -60,6 +60,7 @@ FEATURES = [
     "optimize facade",
     "results reporting",
     "result plots",
+    "stopping rules",
     "cross-cutting",
 ]
 CROSS_CUTTING = frozenset(
@@ -75,7 +76,9 @@ CROSS_CUTTING = frozenset(
         "test_traceability.py",
     }
 )
-UNIT_NAME = re.compile(r"test_(space|operators|base|abc|pso|bbpso|study|facade|report|plots)(_[a-z_]+)?\.py")
+UNIT_NAME = re.compile(
+    r"test_(space|operators|base|abc|pso|bbpso|study|facade|report|plots|stop)(_[a-z_]+)?\.py"
+)
 STATIC_LABEL = "static (outside the triangle, P-T1-48)"
 LAYER_OF_LABEL = {"unit": "unit", "integration": "integration", "system": "system", STATIC_LABEL: "static"}
 EXEMPT = frozenset({"test_space.py", "test_abc.py"})
@@ -695,7 +698,7 @@ def _report_header_text():
 
 
 def test_plan_should_list_the_feature_plans_top_down_in_the_fixed_order():
-    """Given the conftest docstring, when its headings are read in order, then Suite, Features and the eleven
+    """Given the conftest docstring, when its headings are read in order, then Suite, Features and the twelve
     feature plans follow each other top-down.
 
     Oracle: P-T8-11 (suite first, then the split into features, then one plan per feature, then its files)
@@ -729,7 +732,7 @@ def test_plan_should_list_every_test_file_on_disk_in_exactly_one_file_row():
 
 
 def test_plan_should_name_at_least_one_scenario_group_per_file_in_every_feature_plan():
-    """Given the eleven feature plans, when their scenario groups and file rows are counted, then no plan has
+    """Given the twelve feature plans, when their scenario groups and file rows are counted, then no plan has
     fewer groups than files and none has zero groups.
 
     Oracle: P-T8-10 (a plan holds the related scenarios of one feature) and its acceptance (at least one
@@ -821,8 +824,8 @@ def test_plan_should_keep_the_unit_integration_and_system_layers_non_empty():
 
 
 def test_plan_should_give_every_module_its_own_unit_layer_file():
-    """Given the ten library modules, when test_<module>.py is looked up in the table, then each is labelled
-    unit, also test_abc.py, which calls optimize() as well.
+    """Given the eleven library modules, when test_<module>.py is looked up in the table, then each is
+    labelled unit, also test_abc.py, which calls optimize() as well.
 
     Oracle: P-T3-20 acceptance (every unit has its own unit-layer file besides integration or system
     coverage).
@@ -865,7 +868,7 @@ def test_plan_should_state_that_the_process_is_iterative():
 
 
 def test_plan_should_give_each_unit_exactly_one_strategy_with_its_coverage_target():
-    """Given the strategy table, when its rows are read, then each of the ten units has exactly one row:
+    """Given the strategy table, when its rows are read, then each of the eleven units has exactly one row:
     code-based with branch coverage, except abc, model-based with every FSM transition as target.
 
     Oracle: P-T7-41 (source code available: code-based with code coverage; model-based with model coverage
@@ -884,6 +887,7 @@ def test_plan_should_give_each_unit_exactly_one_strategy_with_its_coverage_targe
         "plots": code_based,
         "study": code_based,
         "facade": code_based,
+        "stop": code_based,
     }
 
     rows = _strategy_rows()
@@ -1344,12 +1348,12 @@ def test_unit_name_pattern_should_reject_names_just_outside_the_rule(name):
     assert match is None
 
 
-def test_package_discovery_should_find_exactly_the_ten_library_modules():
+def test_package_discovery_should_find_exactly_the_eleven_library_modules():
     """Given the installed metahpo package, when pkgutil walks it, then the leaf modules are exactly the
-    ten units, so a module added later must be added to the plan.
+    eleven units, so a module added later must be added to the plan.
 
     Oracle: P-T7-24 acceptance (discovered leaf modules equal space, operators, base, abc, pso, bbpso,
-    study, facade, report, plots).
+    study, facade, report, plots, stop).
     """
     package_path = metahpo.__path__
 
@@ -1502,7 +1506,7 @@ def test_existing_test_file_should_keep_all_its_test_functions(name, expected):
 
 
 def test_selection_map_should_use_only_library_modules_and_init_as_keys():
-    """Given the selection map, when its keys are read, then they are the ten modules plus __init__.
+    """Given the selection map, when its keys are read, then they are the eleven modules plus __init__.
 
     Oracle: P-T6-30 acceptance (every module in the map exists) and P-T7-24 (__init__ maps to
     test_api_contract.py).
@@ -1619,7 +1623,7 @@ def test_selection_map_should_select_every_test_file_for_the_modules_it_uses():
         pytest.param("import metahpo as mh\nmh.optimize", {"facade"}, id="package-alias"),
         pytest.param(
             "from metahpo import *",
-            {"abc", "pso", "bbpso", "base", "space", "study", "facade", "report"},
+            {"abc", "pso", "bbpso", "base", "space", "study", "facade", "report", "stop"},
             id="star-import-binds-all",
         ),
         pytest.param("import metahpo", set(), id="bare-package-not-followed"),
@@ -1636,9 +1640,9 @@ def test_used_module_mapping_should_cover_every_allowed_import_form(source, expe
     otherwise a file using it outside the operators row would not be selected when operators changes. The
     README's own form 'import metahpo as mh' with mh.optimize must map to facade for the same reason, and
     'from metahpo import *' binds every name of metahpo.__all__, whose defining modules are abc
-    (ABCOptimizer), base (Candidate, Optimizer), space (Categorical, Float, Int, Space), study (Study, Trial)
-    and facade (optimize). A bare 'import metahpo' maps to nothing because the package __init__ is not
-    followed (see the Selection section).
+    (ABCOptimizer), base (Candidate, Optimizer), space (Categorical, Float, Int, Space), study (Study, Trial),
+    stop (Stopper, Patience, MaxTime, TargetScore) and facade (optimize). A bare 'import metahpo' maps to
+    nothing because the package __init__ is not followed (see the Selection section).
     """
     modules = _src_modules()
 

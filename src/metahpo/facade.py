@@ -36,6 +36,7 @@ from metahpo.report import (
     resolve_verbose,
 )
 from metahpo.space import Space
+from metahpo.stop import Stopper, _rules
 from metahpo.study import Study, Trial
 
 Objective = Callable[[dict[str, Any]], float]
@@ -58,6 +59,7 @@ def optimize(
     verbose: int = 1,
     log_every: int = 1,
     callbacks: Sequence[Callback] | None = None,
+    stop: Stopper | Sequence[Stopper] | None = None,
     runs: Literal[1] = 1,
 ) -> Study: ...
 
@@ -75,6 +77,7 @@ def optimize(
     verbose: int = 1,
     log_every: int = 1,
     callbacks: Sequence[Callback] | None = None,
+    stop: Stopper | Sequence[Stopper] | None = None,
     runs: int = 1,
 ) -> Study | list[Study]: ...
 
@@ -91,6 +94,7 @@ def optimize(
     verbose: int = 1,
     log_every: int = 1,
     callbacks: Sequence[Callback] | None = None,
+    stop: Stopper | Sequence[Stopper] | None = None,
     runs: int = 1,
 ) -> Study | list[Study]:
     """Search `space` for the parameters that minimise or maximise `function(params) -> score`.
@@ -98,9 +102,9 @@ def optimize(
     `function` receives a dict of parameter values and returns a score (accuracy, F1, loss, ...); what it
     does inside, including its own training budget, is entirely up to the user. `max_evals` counts the
     calls of `function`: with `cache=True` a repeated parameter set reuses the earlier score and does not
-    use up the budget. The search stops early only when the space is exhausted: every parameter set of a
-    space without Float has been evaluated, or `_MAX_REPEATS` candidates in a row were repeats. The default
-    optimizer is ABCOptimizer.
+    use up the budget. Without stopping rules (`stop`, below), the search stops early only when the space is
+    exhausted: every parameter set of a space without Float has been evaluated, or `_MAX_REPEATS` candidates
+    in a row were repeats. The default optimizer is ABCOptimizer.
 
     `function` receives a copy of the candidate's params, so changing the dict does not reach the optimizer.
     When the budget cuts a batch short, the candidates that are not evaluated are withdrawn with
@@ -123,12 +127,22 @@ def optimize(
     `optimizer=lambda seed: PSOOptimizer(space, direction='max', seed=seed)`. A KeyboardInterrupt stops the
     remaining runs as well. All runs are written to the same results folder (run_001, run_002, ...).
 
+    Stopping rules (see metahpo.stop): `stop` is None, one Stopper or a sequence of them, for example
+    `stop=[Patience(60), MaxTime(hours=8), TargetScore(0.95)]`. After every trial, cached repeats included,
+    every rule is asked once, in order; when one says stop, the evaluated part of the current batch is told to
+    the optimizer, the rest is withdrawn, and the run ends with the reason of the first rule that said stop
+    as its stop_reason ('patience', 'time' or 'target' for the built-in rules), also when the same trial used
+    up the budget. Every run gets its own copy (copy.deepcopy) of the rules, so a rule ends its own run only
+    and the objects passed in are never changed. Anything but a Stopper raises TypeError, and a rule whose
+    `reason` is empty or one of the reasons above that the search gives itself raises ValueError.
+
     A run that stopped, for any reason, continues from its results folder with resume().
     """
     if max_evals < 1:
         raise ValueError("max_evals must be at least 1")
     if isinstance(runs, bool) or not isinstance(runs, int) or runs < 1:
         raise ValueError("runs must be an integer of at least 1")
+    rules = _rules(stop)
     seeds = _run_seeds(seed, runs)
     make = _optimizer_factory(optimizer, space, direction, runs)
     folder = resolve_output(output)
@@ -142,7 +156,7 @@ def optimize(
                 raise ValueError("the optimizer must use the same space and direction as optimize()")
             yield _Start(number, run_seed, opt)
 
-    studies = _search(function, starts(), direction, max_evals, cache, runs, seeds, listeners)
+    studies = _search(function, starts(), direction, max_evals, cache, runs, seeds, listeners, rules)
     return studies[0] if runs == 1 else studies
 
 
@@ -298,8 +312,10 @@ def _search(
     runs: int,
     seeds: list[Any],
     listeners: list[Callback],
+    rules: Sequence[Stopper] = (),
 ) -> list[Study]:
-    """The runs of optimize() and resume(), one after the other; a KeyboardInterrupt ends the rest."""
+    """The runs of optimize() and resume(), one after the other, each with its own copy of the stopping
+    rules; a KeyboardInterrupt ends the rest."""
     studies: list[Study] = []
     for start in starts:
         study = Study(direction)
@@ -322,7 +338,8 @@ def _search(
             state.started = state._replayed_until = start.started
             state.replaying = state.restored > 0
             state.pauses = [*start.pauses, (state.restored, time.time() - start.started - start.elapsed)]
-        run = _Run(function, opt.space, opt, cache, max_evals, state, listeners, start.log)
+        own_rules = copy.deepcopy(list(rules))
+        run = _Run(function, opt.space, opt, cache, max_evals, state, listeners, start.log, own_rules)
         for listener in listeners:
             listener.on_run_start(state)
         try:
@@ -481,7 +498,8 @@ def _optimizer_factory(
 class _Run:
     """The search loop of optimize() and resume() with its bookkeeping, split out so interrupts can tidy up.
 
-    `log` holds the trials a resume answers from the results folder instead of calling the function.
+    `log` holds the trials a resume answers from the results folder instead of calling the function. `rules`
+    are this run's own stopping rules, asked after every trial by _ask_rules().
     """
 
     def __init__(
@@ -494,6 +512,7 @@ class _Run:
         state: RunState,
         listeners: list[Callback],
         log: _Log,
+        rules: Sequence[Stopper] = (),
     ) -> None:
         self.function = function
         self.space = space
@@ -503,6 +522,8 @@ class _Run:
         self.state = state
         self.listeners = listeners
         self.log = log
+        self.rules = list(rules)
+        self.stopping = ""
         self.seen: dict[tuple[Any, ...], float] = {}
         self.repeats = 0
         self.batch: list[Candidate] = []
@@ -522,6 +543,9 @@ class _Run:
             self.scores = []
             for cand in self.batch:
                 self._evaluate(cand)
+                if self.stopping:
+                    self.abandon(self.stopping)
+                    return
             self.opt.tell(self.batch, self.scores)
             self.batch, self.scores = [], []
             self._check_generation()
@@ -562,6 +586,14 @@ class _Run:
         self.generation_trials.append(trial)
         for listener in self.listeners:
             listener.on_trial(state, trial, new_best)
+        self._ask_rules()
+
+    def _ask_rules(self) -> None:
+        """Asks every rule once about the trial just recorded, in order, and keeps the reason of the first
+        rule that says stop in `stopping`; loop() then ends the run."""
+        stops = [rule.reason for rule in self.rules if rule.should_stop(self.state)]
+        if stops:
+            self.stopping = stops[0]
 
     def _check_generation(self) -> None:
         now = self.opt.generation
