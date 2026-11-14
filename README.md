@@ -79,7 +79,7 @@ gen   29 | evals    300/300 | best 0.92 (trial 288) | gen best 0.919993 mean 0.9
 
 ```text
 hpo_results/2026-11-09_18-26-15_abc/    one folder per optimize() call: start time and optimizer
-├── config.json                         search space, optimizer settings, budget and seed
+├── config.json                         search space, optimizer settings, budget, seed and stopping rules
 ├── summary.json                        best result, stop reason, calls and duration
 ├── report.md                           readable summary with the plots
 └── run_001/
@@ -121,6 +121,40 @@ studies = mh.optimize(train, space, direction="max", max_evals=300, runs=5, seed
 - All runs go into one results folder (`run_001`, `run_002`, ...) with a summary and plots that
   compare the runs.
 
+## Stopping early
+
+Stopping rules end a search before `max_evals` is used up. The first rule that says stop ends the run.
+
+```python
+study = mh.optimize(
+    train,
+    space,
+    direction="max",
+    max_evals=500,
+    stop=[mh.Patience(60), mh.MaxTime(hours=8), mh.TargetScore(0.95)],
+)
+```
+
+| Rule | Stops when | Stop reason |
+|---|---|---|
+| `Patience(evals, min_delta=0.0)` | `evals` calls in a row brought no improvement of more than `min_delta` | `patience` |
+| `MaxTime(seconds, minutes, hours)` | the run has searched that long | `time` |
+| `TargetScore(score)` | the best score reaches `score` | `target` |
+
+- Rules are checked after every evaluation and never interrupt a running one.
+- Cached repeats do not count as calls for `Patience`, as for `max_evals`.
+- Every run works on its own copy of the rules.
+- The rule that ended a run is in `study.stop_reason` and in `summary.json`.
+- A rule of your own subclasses `mh.Stopper`:
+
+```python
+class TooManyFailures(mh.Stopper):
+    reason = "failures"
+
+    def should_stop(self, state):
+        return sum(t.failed for t in state.study.trials) >= 20
+```
+
 ## Resuming a run
 
 A run that stopped (Ctrl+C, a crash, a power cut) continues from its results folder and gives exactly the
@@ -147,6 +181,8 @@ gen   29 | evals    300/300 | best 0.92 (trial 288) | gen best 0.919993 mean 0.9
   trial; only `train` is passed again.
 - The trial that was running when the run stopped is evaluated again; finished trials are not.
 - `max_evals=` extends a run to a larger budget.
+- The stopping rules of the run apply again; `stop=` replaces them, for example
+  `stop=mh.MaxTime(hours=16)` for a run that `MaxTime(hours=8)` ended. Search time counts over all sessions.
 - `optimizer=` is needed for an optimizer of your own and `space=` for Categorical choices that JSON
   cannot store, such as classes or functions.
 - With several runs, the finished runs are restored, the unfinished run continues and the runs that never

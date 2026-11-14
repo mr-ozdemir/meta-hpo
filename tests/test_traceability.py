@@ -790,6 +790,30 @@ REQUIREMENTS = {
             "test_api_contract::test_stopper_should_expose_reason_should_stop_and_settings",
         ],
     },
+    "R-STOP-RESUME": {
+        "source": [
+            "CHANGELOG.md | `config.json` records the stopping rules of a search; `resume()` continues with "
+            "them, so a run a rule ended stays finished, or with the rules given as `resume(stop=...)`.",
+        ],
+        "tests": [
+            "test_report::test_config_json_should_record_the_stopping_rules_in_order_with_their_settings",
+            "test_report::test_console_header_should_name_the_stopping_rules_only_when_the_run_has_some",
+            "test_report::test_report_md_should_name_the_stopping_rules_only_when_the_run_has_some",
+            "test_report::test_run_state_should_hold_each_runs_own_copies_of_the_rules",
+            "test_facade_resume_stop::test_resume_should_return_a_folder_a_rule_ended_without_a_call_and_with_its_reason",
+            "test_facade_resume_stop::test_resume_should_continue_a_run_interrupted_before_its_rule_fired_like_an_uninterrupted_run",
+            "test_facade_resume_stop::test_resume_should_end_a_run_right_after_the_restore_when_a_given_rule_would_have_stopped_it_earlier",
+            "test_facade_resume_stop::test_resume_should_replace_the_recorded_rules_by_a_more_generous_rule_given_as_stop",
+            "test_facade_resume_stop::test_resume_should_run_to_the_budget_with_an_empty_stop",
+            "test_facade_resume_stop::test_resume_should_ask_for_stop_when_the_folder_records_a_rule_of_ones_own",
+            "test_facade_resume_stop::test_resume_should_reject_a_bad_stop_and_leave_the_folder_unchanged",
+            "test_facade_resume_stop::test_resume_should_restore_finished_runs_and_continue_the_interrupted_one_with_their_rules",
+            "test_facade_resume_stop::test_resume_should_treat_a_folder_without_a_stop_entry_as_one_without_rules",
+            "test_facade_resume_stop::test_resume_should_keep_a_run_that_max_time_ended_finished_and_give_it_more_time_with_a_longer_limit",
+            "test_facade_resume_stop::test_resume_should_count_the_logged_search_time_at_the_restored_trials_not_the_wall_clock",
+            "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
+        ],
+    },
 }
 
 
@@ -1368,7 +1392,7 @@ def test_traceability_every_readme_and_changelog_item_should_be_quoted_by_a_requ
 
 def test_traceability_spec_parser_should_find_every_item_of_the_documents():
     """Given README.md and CHANGELOG.md as written, when the spec items are extracted, then 3 Behaviour
-    bullets, 3 Search space rows, 1 unit-cube sentence and 22 'Added' bullets (2 under Unreleased, 3 under
+    bullets, 3 Search space rows, 1 unit-cube sentence and 23 'Added' bullets (3 under Unreleased, 3 under
     0.6.0, 2 under 0.5.1, 3 under 0.5.0, 3 under 0.4.0, 4 under 0.3.0, 5 under 0.1.0) are found.
 
     Oracle: README.md and CHANGELOG.md read by hand. Without this count a parser that finds nothing would
@@ -1378,7 +1402,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 22}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 23}
 
 
 @pytest.mark.parametrize(

@@ -34,12 +34,15 @@ Large searches (max_evals >= COMPRESS_FROM) write trials.csv and population.csv 
 
 What a resume needs (see metahpo.resume). config.json records the space, the direction, the budget, the
 runs and their seeds, the cache flag and the optimizer with every constructor setting
-(Optimizer.settings()). A Categorical whose choices are all strings, integers, finite floats, booleans or
-None stores them as JSON values; any other Categorical stores the repr() of each choice and is marked
-`"repr": true`, and resume() then needs the space passed in. `resumes` lists every resume with its time,
-library version, budget and the number of trials it restored; `library` keeps the version that started the
-folder. run_NNN/state.json holds the start time of the run (`started`, seconds since the epoch), the state
-of the optimizer's random generator before the first candidate was asked (`generator`), and `pauses`.
+(Optimizer.settings()); `stop` lists the stopping rules of the runs in order, each with its class name and
+`settings` (Stopper.settings()), and is empty for a search without rules (a folder written by an older
+version has no `stop`, which counts as no rules). A Categorical whose choices are all strings, integers,
+finite floats, booleans or None stores them as JSON values; any other Categorical stores the repr() of each
+choice and is marked `"repr": true`, and resume() then needs the space passed in. `resumes` lists every
+resume with its time, library version, budget, stopping rules and the number of trials it restored;
+`library` keeps the version that started the folder. run_NNN/state.json holds the start time of the run
+(`started`, seconds since the epoch), the state of the optimizer's random generator before the first
+candidate was asked (`generator`), and `pauses`.
 config.json and state.json are synced to disk (os.fsync) when a run starts, so they survive a power cut
 together with the synced trials; resume() treats a state.json that is empty or not valid JSON as missing.
 
@@ -97,6 +100,11 @@ def _paused_at(pauses: Sequence[tuple[int, float]], number: int) -> float:
     return paused
 
 
+def _wall_clock() -> float:
+    """The wall-clock time in seconds since the epoch, read from the time module at every call."""
+    return time.time()
+
+
 @dataclass
 class RunState:
     """What a callback sees: the configuration, the live study and the running best.
@@ -110,6 +118,9 @@ class RunState:
     scores, start times and durations come from trials.jsonl and the objective is not called; it turns False
     at the first trial that is evaluated. `pauses` lists (first trial number, seconds stopped in total) for
     every resume of the run, see elapsed().
+
+    `rules` holds the run's own copies of the stopping rules (metahpo.stop.Stopper objects) that optimize()
+    or resume() asks after every trial; it is empty for a run without rules.
     """
 
     space: Space
@@ -119,7 +130,7 @@ class RunState:
     seed: int | None
     study: Study
     run: int = 1
-    started: float = field(default_factory=time.time)
+    started: float = field(default_factory=_wall_clock)
     calls: int = 0
     best: Trial | None = None
     runs: int = 1
@@ -128,6 +139,7 @@ class RunState:
     restored: int = 0
     replaying: bool = False
     pauses: list[tuple[int, float]] = field(default_factory=list)
+    rules: list[Any] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._replayed_until = self.started
@@ -138,7 +150,7 @@ class RunState:
 
     def now(self) -> float:
         """The current wall-clock time; while restored trials are replayed, the end of the last of them."""
-        return self._replayed_until if self.replaying else time.time()
+        return self._replayed_until if self.replaying else _wall_clock()
 
     def elapsed(self, at: float | None = None, number: int | None = None) -> float:
         """Search seconds at wall-clock time `at` (default now()) of trial `number` (default: the trial being
@@ -263,9 +275,10 @@ class ConsoleReporter(Callback):
 
     def on_run_start(self, state: RunState) -> None:
         seed = "random" if state.seed is None else state.seed
+        rules = f" | stop={_rules_label(state.rules)}" if state.rules else ""
         self._print(
             f"[meta-hpo] run {_run_label(state)} | {state.optimizer_name} | direction={state.direction} | "
-            f"max_evals={state.max_evals} | seed={seed} | {state.space.dim} parameters"
+            f"max_evals={state.max_evals} | seed={seed} | {state.space.dim} parameters{rules}"
         )
         self._resumed_due = state.restored > 0
 
@@ -334,6 +347,19 @@ class ConsoleReporter(Callback):
         self._run_bests.append((state.run, best.score if best is not None else math.nan))
         if state.run == state.runs or state.study.stop_reason == "interrupted":
             self._print(_runs_line(self._run_bests, state.direction))
+
+
+def _describe_rules(rules: Sequence[Any]) -> list[dict[str, Any]]:
+    """The stopping rules as config.json records them: the class name and settings() of each, in order."""
+    return [{"name": type(rule).__name__, "settings": rule.settings()} for rule in rules]
+
+
+def _rules_label(rules: Sequence[Any]) -> str:
+    """The stopping rules for the console and report.md, for example 'Patience(evals=60, min_delta=0.0)'."""
+    return ", ".join(
+        f"{d['name']}({', '.join(f'{k}={v!r}' for k, v in d['settings'].items())})"
+        for d in _describe_rules(rules)
+    )
 
 
 def _run_label(state: RunState) -> str:
@@ -721,6 +747,7 @@ class ResultWriter(Callback):
             "seed": seeds[0],
             "seeds": seeds,
             "cache": state.cache,
+            "stop": _describe_rules(state.rules),
             "space": _describe_space(state.space),
             "started": _iso(state.started),
             "folder": str(self.folder),
@@ -1174,6 +1201,7 @@ def _write_report(
         f"(cached {summary['cached_trials']}, failed {summary['failed_trials']}); generations "
         f"{summary['generations']}",
         f"- Direction: {summary['direction']}; seed: {summary['seed']}",
+        *([f"- Stopping rules: {_rules_label(state.rules)}"] if state.rules else []),
         "",
     ]
     if "runs" in summary:

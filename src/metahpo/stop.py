@@ -47,7 +47,8 @@ class Stopper:
 
     def settings(self) -> dict[str, Any]:
         """The constructor parameters, each read from the attribute of the same name (a parameter without
-        such an attribute is left out), read the same way as Optimizer.settings()."""
+        such an attribute is left out), read the same way as Optimizer.settings(). config.json records them
+        with the class name, and resume() builds Patience, MaxTime and TargetScore again from them."""
         return _init_settings(self)
 
 

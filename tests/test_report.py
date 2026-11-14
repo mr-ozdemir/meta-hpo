@@ -20,7 +20,8 @@ Subset: The three optimizers on a four-parameter mixed space with small budgets;
 log_every 1 and 2; objectives that stop with each stop reason (budget, exhausted, interrupted, error); an
 all-NaN objective; a budget above COMPRESS_FROM after lowering it; non-default settings of every optimizer
 and a custom optimizer; choices of every JSON type, of Python types and NaN; scores NaN, inf and -inf;
-trials 0.5 s and 2 s apart on a fake clock.
+trials 0.5 s and 2 s apart on a fake clock; no stopping rule, one rule, and the three built-in rules in a
+given order, with one and two runs.
 """
 
 import csv
@@ -40,9 +41,12 @@ from metahpo import (
     ConsoleReporter,
     Float,
     Int,
+    MaxTime,
+    Patience,
     PSOOptimizer,
     ResultWriter,
     Space,
+    TargetScore,
     optimize,
 )
 
@@ -1246,3 +1250,110 @@ def test_config_and_state_json_should_be_synced_to_disk_when_a_run_starts_and_be
 
     assert disk.events[:5] == ["fsync", "config.json", "fsync", "state.json", "best.json"]
     assert disk.events.count("fsync") == 3
+
+
+RULES = [
+    pytest.param([], [], id="no-rules"),
+    pytest.param(
+        [TargetScore(0.99), Patience(5, 0.25), MaxTime(minutes=2)],
+        [
+            {"name": "TargetScore", "settings": {"score": 0.99}},
+            {"name": "Patience", "settings": {"evals": 5, "min_delta": 0.25}},
+            {"name": "MaxTime", "settings": {"seconds": 0.0, "minutes": 2.0, "hours": 0.0}},
+        ],
+        id="three-rules-in-order",
+    ),
+]
+
+
+@pytest.mark.parametrize(("rules", "expected"), RULES)
+def test_config_json_should_record_the_stopping_rules_in_order_with_their_settings(tmp_path, rules, expected):
+    """Given a run without rules or with three rules in a given order, when config.json is read, then `stop`
+    lists every rule in that order with its class name and settings, and is empty without rules.
+
+    Oracle: report module docstring (`stop` lists the stopping rules of the runs in order, each with its class
+    name and `settings` (Stopper.settings()), and is empty for a search without rules).
+    """
+    _, folder = _run(tmp_path, stop=rules)
+
+    config = _json(folder / "config.json")
+
+    assert config["stop"] == expected
+
+
+@pytest.mark.parametrize(
+    ("rules", "ending"),
+    [
+        pytest.param([], " | seed=0 | 4 parameters", id="no-rules"),
+        pytest.param(
+            [Patience(50), TargetScore(0.99)],
+            " | 4 parameters | stop=Patience(evals=50, min_delta=0.0), TargetScore(score=0.99)",
+            id="two-rules",
+        ),
+    ],
+)
+def test_console_header_should_name_the_stopping_rules_only_when_the_run_has_some(
+    capsys, monkeypatch, rules, ending
+):
+    """Given a run without rules or with Patience(50) and TargetScore(0.99), when the console header is read,
+    then it ends with the rules and their settings, and without rules it ends with the parameter count as
+    before.
+
+    Oracle: ConsoleReporter (the header names the stopping rules only when a run has some) and the README
+    Results section, whose header line ends with '| seed=1 | 4 parameters'.
+    """
+    monkeypatch.delenv("METAHPO_VERBOSE", raising=False)
+
+    optimize(_score, _space(), direction="max", max_evals=10, seed=ANY_SEED, output=None, stop=rules)
+
+    header = capsys.readouterr().out.splitlines()[0]
+    assert header.startswith("[meta-hpo] run 1 | ABCOptimizer | direction=max | max_evals=10 | seed=0")
+    assert header.endswith(ending)
+
+
+@pytest.mark.parametrize(
+    ("rules", "lines"),
+    [
+        pytest.param([], [], id="no-rules"),
+        pytest.param([Patience(50)], ["- Stopping rules: Patience(evals=50, min_delta=0.0)"], id="patience"),
+    ],
+)
+def test_report_md_should_name_the_stopping_rules_only_when_the_run_has_some(tmp_path, rules, lines):
+    """Given a run without rules or with Patience(50), when report.md is read, then it has a 'Stopping rules'
+    line with the rule and its settings only when the run has rules.
+
+    Oracle: the report module docstring (report.md is the readable summary of the configuration) and
+    config.json `stop`, which the line repeats.
+    """
+    _, folder = _run(tmp_path, stop=rules)
+
+    report = (folder / "report.md").read_text(encoding="utf-8").splitlines()
+
+    assert [line for line in report if line.startswith("- Stopping rules")] == lines
+
+
+class _Rules(Callback):
+    """Records the stopping rules each run starts with."""
+
+    def __init__(self):
+        self.rules = []
+
+    def on_run_start(self, state):
+        self.rules.append(state.rules)
+
+
+def test_run_state_should_hold_each_runs_own_copies_of_the_rules(tmp_path):
+    """Given runs=2 with one Patience rule, when a callback reads state.rules at the start of each run, then
+    each run holds a Patience with the given settings that is neither the given object nor the other run's.
+
+    Oracle: RunState docstring (`rules` holds the run's own copies of the stopping rules) and the optimize
+    docstring (every run gets its own copy (copy.deepcopy) of the rules).
+    """
+    given = Patience(50, 0.25)
+    recorder = _Rules()
+
+    _run(tmp_path, runs=2, stop=[given], callbacks=[recorder])
+
+    first, second = recorder.rules
+    assert [r.settings() for r in first + second] == [given.settings()] * 2
+    assert (first[0] is given, second[0] is given, first[0] is second[0]) == (False, False, False)
