@@ -122,7 +122,7 @@ branches found unreached; specification gaps; generated spaces and non-finite sc
 hand-written cache=False example behind the grammar property; direction 'max' at study, optimizer and
 trajectory level; repeated runs with one seed per run and optimizer functions; resuming a stopped, killed,
 finished or extended search from its results folder; stopping rules ending a run inside a batch, in order,
-with fresh copies per run
+with fresh copies per run; resuming with the recorded or replaced stopping rules
     test_facade.py | unit | optimize() argument checks, budget and cache bookkeeping
     test_facade_budget.py | unit | exact trial and call counts of the evaluation budget
     test_facade_doubles.py | integration | scripted optimizer, objective stubs, spies and mocks
@@ -137,13 +137,15 @@ with fresh copies per run
     test_facade_runs.py | unit | repeated runs, seeds per run and optimizer functions
     test_facade_resume.py | integration | resume() of interrupted, killed, finished and extended runs
     test_facade_stop.py | integration | optimize(stop=...) ending runs early through the stopping rules
+    test_facade_resume_stop.py | integration | resume() with the recorded stopping rules or with stop=
 
 Plan: results reporting
 Scenario groups: console lines per generation and per trial; environment overrides of output and verbose;
 results folder layout and file contents; live best.json and incremental files; generation and population
 statistics; parameter analysis; stop reasons, interrupt and error handling; compression of large runs;
 several runs in one folder with a summary over the runs; what a resume needs (state.json, every optimizer
-setting, JSON choices, exact scores in trials.jsonl and its throttled sync to disk)
+setting, JSON choices, exact scores in trials.jsonl and its throttled sync to disk); the stopping rules in
+config.json, the console header and report.md
     test_report.py | unit | ConsoleReporter, ResultWriter and the run events through optimize()
 
 Plan: result plots

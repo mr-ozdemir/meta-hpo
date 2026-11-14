@@ -23,6 +23,7 @@ from metahpo.report import (
     ConsoleReporter,
     ResultWriter,
     RunState,
+    _describe_rules,
     _iso,
     _Logged,
     _paused_at,
@@ -36,7 +37,7 @@ from metahpo.report import (
     resolve_verbose,
 )
 from metahpo.space import Space
-from metahpo.stop import Stopper, _rules
+from metahpo.stop import MaxTime, Patience, Stopper, TargetScore, _rules
 from metahpo.study import Study, Trial
 
 Objective = Callable[[dict[str, Any]], float]
@@ -134,7 +135,8 @@ def optimize(
     as its stop_reason ('patience', 'time' or 'target' for the built-in rules), also when the same trial used
     up the budget. Every run gets its own copy (copy.deepcopy) of the rules, so a rule ends its own run only
     and the objects passed in are never changed. Anything but a Stopper raises TypeError, and a rule whose
-    `reason` is empty or one of the reasons above that the search gives itself raises ValueError.
+    `reason` is empty or one of the reasons above that the search gives itself raises ValueError. config.json
+    records the rules, and resume() applies them again.
 
     A run that stopped, for any reason, continues from its results folder with resume().
     """
@@ -167,6 +169,7 @@ def resume(
     optimizer: Optimizer | OptimizerFactory | None = None,
     space: Space | None = None,
     max_evals: int | None = None,
+    stop: Stopper | Sequence[Stopper] | None = None,
     verbose: int | None = None,
     log_every: int = 1,
     callbacks: Sequence[Callback] | None = None,
@@ -207,6 +210,18 @@ def resume(
     A state.json that is empty or not valid JSON, as a power cut at the start of a run can leave it, counts as
     missing: the run is repeated from its seed, and without a seed it needs `optimizer`.
 
+    Stopping rules: by default the rules config.json records (`stop`) apply again. The built-in rules are
+    built again from their settings; a folder written with a rule of another class needs `stop=`, else
+    ValueError. `stop=` (one Stopper, a sequence of them, or an empty sequence for no rules) replaces the
+    recorded rules for every run of the folder, with the argument checks of optimize(), and config.json then
+    records the new rules. The rules of a run are asked after every trial, the restored trials included, so
+    their state is rebuilt, but their answer counts only once no logged trial is left: a run a rule had ended
+    comes back without a call and with the same stop_reason, a run with a rule that would have stopped it
+    earlier ends right after its logged trials, and a run whose rules (recorded or given) let it go on
+    continues as an uninterrupted run with those rules would have. MaxTime counts the search time over every
+    session of a run (the time it was stopped is left out), so `stop=MaxTime(hours=16)` gives a run that
+    MaxTime(hours=8) ended eight more hours. A folder written before stopping rules existed has none.
+
     `verbose`, `log_every` and `callbacks` work as in optimize() (verbose None is the default level 1,
     which METAHPO_VERBOSE replaces). The console prints one 'resumed' line for the restored trials of a run
     instead of their usual lines; callbacks receive the events of the restored trials too, with
@@ -221,6 +236,7 @@ def resume(
     seeds = [*config["seeds"], *[None] * (runs - len(config["seeds"]))]
     logs = [_read_run(root / f"run_{number:03d}") for number in range(1, runs + 1)]
     budget = _resume_budget(max_evals, config["max_evals"], logs)
+    rules = _resume_rules(stop, config.get("stop", []))
     make = _rebuild(optimizer, space, config, direction, runs)
     starts = [
         _resume_start(number, seed, log, make, config, cache, budget, optimizer is not None, root)
@@ -233,11 +249,12 @@ def resume(
         "time": _iso(time.time()),
         "version": _version(),
         "max_evals": budget,
+        "stop": _describe_rules(rules),
         "trials": sum(len(log.trials) for log in logs if log is not None),
     }
     writer = ResultWriter._continuing(root, config, entry)
     listeners = _listeners(1 if verbose is None else verbose, log_every, writer, callbacks)
-    studies = _search(function, starts, direction, budget, cache, runs, seeds, listeners)
+    studies = _search(function, starts, direction, budget, cache, runs, seeds, listeners, rules)
     return studies[0] if runs == 1 else studies
 
 
@@ -288,6 +305,11 @@ class _Log:
         self.next += 1
         return logged
 
+    @property
+    def done(self) -> bool:
+        """True once every logged trial was answered, and for a run without logged trials."""
+        return self.next == len(self.trials)
+
 
 @dataclass
 class _Start:
@@ -333,13 +355,13 @@ def _search(
             seeds=seeds,
             cache=cache,
             restored=len(start.log.trials),
+            rules=copy.deepcopy(list(rules)),
         )
         if start.started is not None:
             state.started = state._replayed_until = start.started
             state.replaying = state.restored > 0
             state.pauses = [*start.pauses, (state.restored, time.time() - start.started - start.elapsed)]
-        own_rules = copy.deepcopy(list(rules))
-        run = _Run(function, opt.space, opt, cache, max_evals, state, listeners, start.log, own_rules)
+        run = _Run(function, opt.space, opt, cache, max_evals, state, listeners, start.log, state.rules)
         for listener in listeners:
             listener.on_run_start(state)
         try:
@@ -373,6 +395,28 @@ def _resume_budget(max_evals: int | None, recorded: int, logs: list[_RunLog | No
                 f"max_evals={log.needed}"
             )
     return int(budget)
+
+
+_BUILT_IN_RULES: dict[str, Callable[..., Stopper]] = {
+    cls.__name__: cls for cls in (Patience, MaxTime, TargetScore)
+}
+
+
+def _resume_rules(stop: Stopper | Sequence[Stopper] | None, recorded: list[dict[str, Any]]) -> list[Stopper]:
+    """The stopping rules of a resume: `stop` checked as in optimize(), or else the rules config.json records,
+    built again from their settings; ValueError for a recorded rule that is not built into the library."""
+    if stop is not None:
+        return _rules(stop)
+    rules = []
+    for record in recorded:
+        build = _BUILT_IN_RULES.get(record["name"])
+        if build is None:
+            raise ValueError(
+                f"the folder was written with the stopping rule {record['name']}, which resume() cannot "
+                "build again; pass stop=, the rules to go on with (stop=[] for none)"
+            )
+        rules.append(build(**record["settings"]))
+    return rules
 
 
 def _rebuild(
@@ -543,7 +587,7 @@ class _Run:
             self.scores = []
             for cand in self.batch:
                 self._evaluate(cand)
-                if self.stopping:
+                if self.stopping and self.log.done:
                     self.abandon(self.stopping)
                     return
             self.opt.tell(self.batch, self.scores)
@@ -590,9 +634,11 @@ class _Run:
 
     def _ask_rules(self) -> None:
         """Asks every rule once about the trial just recorded, in order, and keeps the reason of the first
-        rule that says stop in `stopping`; loop() then ends the run."""
+        rule that says stop in `stopping`, the earliest one when several trials said stop. loop() ends the run
+        once no logged trial is left, so the trials a resume restores rebuild the rules' state but are never
+        discarded."""
         stops = [rule.reason for rule in self.rules if rule.should_stop(self.state)]
-        if stops:
+        if stops and not self.stopping:
             self.stopping = stops[0]
 
     def _check_generation(self) -> None:

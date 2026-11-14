@@ -4,10 +4,10 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 
 ## Özet
 
-- Test dosyası: 67 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 4729, hepsi geçiyor; tüm paket yaklaşık 90 saniyede koşuyor.
+- Test dosyası: 68 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
+- Toplanan test: 4783, hepsi geçiyor; tüm paket yaklaşık 85 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (2227 satırdan 2223'ü), dal kapsamı 634/634. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
+- Satır kapsamı %99 (2249 satırdan 2245'i), dal kapsamı 640/640. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 84, 88, 92, 95).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -453,7 +453,7 @@ Gereksinim: `resume(function, folder)`: durmuş bir aramanın (Ctrl+C, hedef fon
 
 ### stop
 
-Gereksinim: `optimize(stop=...)` (issue #71, 1. aşama): aramayı bütçeden önce bitiren durdurma kuralları; `Patience(evals, min_delta)` iyileşme olmadan geçen `evals` çağrıdan sonra (`patience`), `MaxTime(seconds, minutes, hours)` arama süresi dolunca (`time`), `TargetScore(score)` en iyi skor hedefe ulaşınca (`target`); kendi kuralı için `Stopper` taban sınıfı (`reason`, `should_stop(state)`, `settings()`); her kuralın her denemeden sonra sırayla bir kez sorulması, durduran ilk kuralın nedeni, toplu adayın değerlendirilen kısmının söylenip kalanının geri çekilmesi, her koşuda kuralların kendi kopyası. İzlenebilirlik matrisinde R-STOP ve R-STOPPER kimlikleriyle CHANGELOG `[Unreleased]` maddelerine bağlıdır. Sonuç klasörüne kuralların yazılması ve `resume()` ile durdurma kuralları 2. aşamadadır.
+Gereksinim: `optimize(stop=...)` (issue #71): aramayı bütçeden önce bitiren durdurma kuralları; `Patience(evals, min_delta)` iyileşme olmadan geçen `evals` çağrıdan sonra (`patience`), `MaxTime(seconds, minutes, hours)` arama süresi dolunca (`time`), `TargetScore(score)` en iyi skor hedefe ulaşınca (`target`); kendi kuralı için `Stopper` taban sınıfı (`reason`, `should_stop(state)`, `settings()`); her kuralın her denemeden sonra sırayla bir kez sorulması, durduran ilk kuralın nedeni, toplu adayın değerlendirilen kısmının söylenip kalanının geri çekilmesi, her koşuda kuralların kendi kopyası; kuralların config.json içine kaydedilmesi, konsol başlığı ve report.md'de adlarının yazılması, `resume()`'un kayıtlı kurallarla ya da `stop=` ile verilen kurallarla sürmesi (geri yüklenen denemeler kuralların durumunu yeniden kurar, kuralın cevabı ancak kayıtlı deneme kalmayınca sayılır, MaxTime tüm oturumların arama süresini sayar). İzlenebilirlik matrisinde R-STOP, R-STOPPER ve R-STOP-RESUME kimlikleriyle CHANGELOG `[Unreleased]` maddelerine bağlıdır.
 
 | Konu | Testler |
 |---|---|
@@ -464,6 +464,9 @@ Gereksinim: `optimize(stop=...)` (issue #71, 1. aşama): aramayı bütçeden ön
 | Toplu aday ve sıra | **test_facade_stop.py**: PSO ilk toplu adayının ortasında durunca değerlendirilen üç adayın söylenip kalan ikisinin geri çekildiği ikiz optimizer ile aynı sonraki toplu aday, duruştan sonra hedef fonksiyonun çağrılmaması, iki sırada ve farklı denemelerde ilk kuralın nedeni, durduran kuraldan sonraki kuralın da her denemede bir kez sorulması, kuralın denemeyi kayıtlı, `calls` ve `best` güncel, callback'ler bilgilendirilmiş halde görmesi (cache tekrarı dahil), kendi `Stopper` alt sınıfının nedeni |
 | Koşular ve doğrulama | **test_facade_stop.py**: `runs=3`'te her koşunun kendi kural kopyasıyla durması ve verilen nesnelerin değişmemesi, Stopper olmayan `stop` (sayı, metin, liste ve demet içinde yabancı değer, küme, sınıf, fonksiyon) için TypeError, boş, boşluklu, metin olmayan ve ayrılmış nedenler (`budget`, `exhausted`, `repeats`, `interrupted`, `error`) için hedef fonksiyon çağrılmadan ve sonuç klasörü açılmadan ValueError, nedeni olmayan taban sınıfın reddi |
 | Sonuç klasörü, konsol, süre | **test_facade_stop.py**: summary.json ve best.json içinde `patience` ve finished, trials.csv'de yedi deneme, generations.csv'nin son neslinin 7 çağrıda bitmesi, konsolun son nesil satırı ve `finished (patience)` satırı; `RunState.now` deneme başına bir dakika ilerleyen sahte saatle değiştirilerek MaxTime'ın sınıra ulaşan ilk denemeden sonra bitirmesi (uyumadan) |
+| Klasör kaydı | **test_report.py**: config.json içinde `stop` kaydının kural sırası, sınıf adı ve ayarlarıyla yazılması, kural yokken boş liste; konsol başlığının kuralları yalnız kural varken adlandırması, kural yokken bugünkü satırın değişmemesi; report.md'de 'Stopping rules' satırının yalnız kural varken yazılması; `RunState.rules` içinde her koşunun kendi kural kopyaları; **test_facade_resume.py**: 0.5.1 klasörü benzetiminde `stop` kaydının da silinmesi |
+| resume() ve kurallar | **test_facade_resume_stop.py**: kuralın bitirdiği klasörün (Patience, TargetScore, iki kural) çağrısız ve aynı nedenle dönmesi ve kayıttan yeniden kurulan kuralların resumes kaydına yazılması, kural tetiklenmeden Ctrl+C ile kesilen koşunun (ilk toplu adayın içinde ve sonra) aynı kurallı kesintisiz koşuya eşitliği (Study, trials.jsonl, summary), daha önce durduracak verilen kuralla koşunun geri yüklemeden hemen sonra bitmesi ve kayıtlı denemelerin atılmaması, daha cömert `stop=Patience(40)` ile sürme ve config.json'un yeni kuralı kaydetmesi, `stop=[]` ile bütçeye kadar sürme, kendi kuralının `stop=` istemesi ve klasörün bayt bayt değişmemesi, hatalı `stop=` değerlerinde klasörün değişmemesi, üç koşulu klasörde bitmiş koşunun geri yüklenmesi ve kesilen koşunun sürmesi, `stop` kaydı olmayan eski klasör |
+| Oturumlar arası süre | **test_facade_resume_stop.py**: sahte saatle (her değerlendirme on dakika, oturumlar arası on saat) MaxTime(hours=1) ile bitmiş koşunun bitmiş kalması ve `stop=MaxTime(hours=2)` ile tam altı değerlendirme daha sürmesi; geri yüklenen denemelerde `state.elapsed()` değerinin duvar saati değil kayıtlı arama süresi (600, 1200, 1800 s) olması; **test_api_contract.py**: `resume` imzasında `stop` |
 
 ## Stil kontrol listesi
 
