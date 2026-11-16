@@ -103,8 +103,10 @@ def optimize(
     `function` receives a dict of parameter values and returns a score (accuracy, F1, loss, ...); what it
     does inside, including its own training budget, is entirely up to the user. `max_evals` counts the
     calls of `function`: with `cache=True` a repeated parameter set reuses the earlier score and does not
-    use up the budget. Without stopping rules (`stop`, below), the search stops early only when the space is
-    exhausted: every parameter set of a space without Float has been evaluated, or `_MAX_REPEATS` candidates
+    use up the budget. With `cache=False` it is evaluated again and counts, so the search then runs to
+    `max_evals` unless a stopping rule ends it. Without stopping rules (`stop`, below), the search stops
+    early only when the space is exhausted: every parameter set of a space without Float has been
+    evaluated, or `_MAX_REPEATS` candidates
     in a row were repeats. The default optimizer is ABCOptimizer.
 
     `function` receives a copy of the candidate's params, so changing the dict does not reach the optimizer.
