@@ -10,7 +10,10 @@ ship with the library and are switched on by default:
   Trials, the best result, generations and population snapshots are appended while the search runs and
   flushed after every write, so the best result is on disk even if the process is killed. Summaries,
   analyses and plots are written when the run ends, also after KeyboardInterrupt or an error in the
-  objective.
+  objective or in a callback. The folder becomes an absolute path when the search starts, so an objective
+  that changes the working directory does not move it; searches that start in the same second get the
+  suffixes _2, _3, ... JSON files that another process holds open are retried for about a second (see
+  _write_json); best.json is skipped while the run goes on if it stays held.
 
 The environment variables METAHPO_OUTPUT and METAHPO_VERBOSE replace the defaults of `output` and `verbose`
 (METAHPO_OUTPUT=none switches the folder off), which is useful in test suites and CI.
@@ -93,6 +96,15 @@ DEFAULT_OUTPUT = "hpo_results"
 COMPRESS_FROM = 50_000
 FSYNC_EVERY = 1.0
 """Seconds that pass at least between two syncs of trials.jsonl to disk."""
+REPLACE_TRIES = 20
+"""Attempts to replace a JSON file that another process holds open (Windows refuses with PermissionError)."""
+REPLACE_WAIT = 0.05
+"""Seconds between two attempts, so a JSON file is given up after about one second."""
+PROGRESS_TRIES = 3
+"""Attempts for best.json while the run goes on: it is written again at the next update, so the search
+waits for it at most about PROGRESS_WAIT * (PROGRESS_TRIES - 1) seconds."""
+PROGRESS_WAIT = 0.01
+"""Seconds between two attempts to replace best.json while the run goes on."""
 
 
 def _paused_at(pauses: Sequence[tuple[int, float]], number: int) -> float:
@@ -214,6 +226,16 @@ def resolve_verbose(verbose: int) -> int:
 def _monotonic() -> float:
     """The clock that spaces the syncs of trials.jsonl."""
     return time.monotonic()
+
+
+def _wait(seconds: float) -> None:
+    """Sleeps between two attempts to replace a JSON file."""
+    time.sleep(seconds)
+
+
+def _os_replace(source: Path, target: Path) -> None:
+    """os.replace, the step of an atomic write that another process holding the target can refuse."""
+    os.replace(source, target)
 
 
 def _clock(seconds: float) -> str:
@@ -472,11 +494,23 @@ def _jsonable(value: Any) -> Any:
     return _choice_text(value)
 
 
-def _write_json(path: Path, data: Any, sync: bool = False) -> None:
+def _write_json(
+    path: Path,
+    data: Any,
+    sync: bool = False,
+    required: bool = True,
+    errors: list[BaseException] | None = None,
+) -> None:
     """Writes JSON atomically: a temporary file replaced in one step, so a reader never sees half a file.
 
     With `sync` the temporary file is synced to disk (os.fsync) before it replaces the file, so the file
-    survives a power cut; the files that are rewritten often are not synced.
+    survives a power cut; the files that are rewritten often are not synced. While another process holds
+    the file open, Windows refuses the replace with PermissionError: it is tried REPLACE_TRIES times,
+    REPLACE_WAIT seconds apart (PROGRESS_TRIES times, PROGRESS_WAIT seconds apart, for a file that is not
+    `required`). When it still fails, the temporary file is removed; a file that is not `required`
+    (best.json while the run goes on, written again at the next update and when the run ends) is left as it
+    was, and the error of any other file is raised, or appended to `errors` when a list is given so that the
+    caller writes its other files first.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
@@ -484,7 +518,21 @@ def _write_json(path: Path, data: Any, sync: bool = False) -> None:
         if sync:
             fh.flush()
             os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    tries, pause = (REPLACE_TRIES, REPLACE_WAIT) if required else (PROGRESS_TRIES, PROGRESS_WAIT)
+    for attempt in range(1, tries + 1):
+        try:
+            _os_replace(tmp, path)
+            return
+        except PermissionError as exc:
+            refused = exc
+            if attempt < tries:
+                _wait(pause)
+    tmp.unlink(missing_ok=True)
+    if not required:
+        return
+    if errors is None:
+        raise refused
+    errors.append(refused)
 
 
 def _read_state(path: Path) -> dict[str, Any] | None:
@@ -742,14 +790,23 @@ class ResultWriter(Callback):
         return writer
 
     def _make_folder(self, state: RunState) -> Path:
+        """Creates the time-stamped folder of a search below `root`, which becomes an absolute path here, when
+        the search starts, so an objective that changes the working directory later does not move it. The
+        name is claimed with one mkdir, which fails when it exists; a taken name gets the suffix _2, _3, ...,
+        so searches that start in the same second, in threads or processes, each get their own folder."""
+        self.root = self.root.absolute()
         stamp = dt.datetime.fromtimestamp(state.started).strftime("%Y-%m-%d_%H-%M-%S")
         base = self.root / f"{stamp}_{state.optimizer_name.replace('Optimizer', '').lower()}"
-        folder, n = base, 1
-        while folder.exists():
-            n += 1
-            folder = base.with_name(f"{base.name}_{n}")
-        folder.mkdir(parents=True)
-        return folder
+        self.root.mkdir(parents=True, exist_ok=True)
+        n = 1
+        while True:
+            folder = base if n == 1 else base.with_name(f"{base.name}_{n}")
+            try:
+                folder.mkdir()
+            except FileExistsError:
+                n += 1
+                continue
+            return folder
 
     def on_run_start(self, state: RunState) -> None:
         if self.folder is None:
@@ -856,17 +913,21 @@ class ResultWriter(Callback):
             "resumes": self._resumes,
         }
         config.update(self._kept)
-        _write_json(self.folder / "config.json", config, sync=True)
-        _write_json(
-            self.run_dir / "state.json",
-            {
-                "started": state.started,
-                "generator": state.optimizer.rng.bit_generator.state,
-                "pauses": state.pauses,
-            },
-            sync=True,
-        )
-        _write_json(self.run_dir / "best.json", {"status": "running", "best": None})
+        try:
+            _write_json(self.folder / "config.json", config, sync=True)
+            _write_json(
+                self.run_dir / "state.json",
+                {
+                    "started": state.started,
+                    "generator": state.optimizer.rng.bit_generator.state,
+                    "pauses": state.pauses,
+                },
+                sync=True,
+            )
+        except BaseException:
+            self.close()
+            raise
+        _write_json(self.run_dir / "best.json", {"status": "running", "best": None}, required=False)
 
     def on_trial(self, state: RunState, trial: Trial, new_best: bool) -> None:
         assert self.run_dir is not None and self._jsonl is not None
@@ -934,7 +995,7 @@ class ResultWriter(Callback):
                     *params,
                 ]
             )
-            _write_json(self.run_dir / "best.json", {"status": "running", "best": entry})
+            _write_json(self.run_dir / "best.json", {"status": "running", "best": entry}, required=False)
 
     def _log(
         self,
@@ -1061,14 +1122,19 @@ class ResultWriter(Callback):
             self._jsonl.close()
 
     def on_run_end(self, state: RunState) -> None:
+        """Closes the files of the run and writes best.json, the parameter analysis, the plots, summary.json
+        and report.md. A JSON file that cannot be replaced (see _write_json) does not stop the others; its
+        error is raised once every file was written."""
         assert self.folder is not None and self.run_dir is not None
         self.close()
         study = state.study
         ended = state.now()
         summary = _run_summary(state, ended)
+        errors: list[BaseException] = []
         _write_json(
             self.run_dir / "best.json",
             {"status": "finished", "stop_reason": study.stop_reason, "best": summary["best"]},
+            errors=errors,
         )
         _write_parameter_analysis(state, self.run_dir)
         plot_files: list[str] = []
@@ -1087,11 +1153,12 @@ class ResultWriter(Callback):
         summary["notes"] = self._notes
         summary["folder"] = str(self.folder)
         if state.runs == 1:
-            _write_json(self.folder / "summary.json", summary)
+            _write_json(self.folder / "summary.json", summary, errors=errors)
             _write_report(self.folder, self.run_dir, state, summary, self._generation_rows)
+            _raise_first(errors)
             return
         summary["run"] = state.run
-        _write_json(self.run_dir / "summary.json", summary)
+        _write_json(self.run_dir / "summary.json", summary, errors=errors)
         score = summary["best"]["score"] if summary["best"] is not None else math.nan
         self._runs.append(
             {
@@ -1102,9 +1169,10 @@ class ResultWriter(Callback):
                 "score": score,
             }
         )
-        self._write_runs(state)
+        self._write_runs(state, errors)
+        _raise_first(errors)
 
-    def _write_runs(self, state: RunState) -> None:
+    def _write_runs(self, state: RunState, errors: list[BaseException]) -> None:
         """summary.json, report.md and the run comparison plots of all runs so far."""
         assert self.folder is not None
         entries = [(r["summary"]["run"], r["score"]) for r in self._runs]
@@ -1141,8 +1209,14 @@ class ResultWriter(Callback):
             "run_plots": run_plots,
             "notes": [*shown["summary"]["notes"], *notes],
         }
-        _write_json(self.folder / "summary.json", summary)
+        _write_json(self.folder / "summary.json", summary, errors=errors)
         _write_report(self.folder, shown["run_dir"], state, summary, shown["generations"])
+
+
+def _raise_first(errors: list[BaseException]) -> None:
+    """Raises the first of the errors collected while the end-of-run files were written, if any."""
+    if errors:
+        raise errors[0]
 
 
 def _version() -> str:

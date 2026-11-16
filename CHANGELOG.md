@@ -8,6 +8,21 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- The results folder is resolved to an absolute path when the search starts (an `output` argument,
+  `METAHPO_OUTPUT`, the default folder and `resume(folder)` alike), so an objective that changes the
+  working directory no longer breaks the run with `FileNotFoundError`; config.json and summary.json record
+  the absolute path.
+- On Windows a monitor or editor that holds a JSON file of the results folder open no longer kills the
+  search: the replace is retried for about a second, `best.json` is skipped while the run goes on and
+  written at the next update and the end, and only `config.json`, `state.json` and the end-of-run files
+  raise if they stay held, after every other result was written; no temporary file is left behind.
+- An exception or a KeyboardInterrupt raised by a callback ends the run like one of the objective: the
+  library's listeners still finish it (stop reason `error` or `interrupted`, results written, files
+  closed, the folder resumable), and an error in a callback's own `on_run_end` no longer hides the first
+  error or stops the results writer.
+- Searches that start in the same second with the same `output`, in threads or processes, each get their
+  own folder (`..._abc_2`, `_3`, ...) instead of failing with `FileExistsError`.
+
 - `Int` and `Float` bounds given as numpy scalars or 0-d arrays are stored as the Python numbers they hold:
   `Int(np.uint8(0), np.uint8(255))` no longer overflows into an empty, "exhausted" run, and `float32`
   bounds give the same search as the same Python floats.

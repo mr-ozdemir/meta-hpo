@@ -23,7 +23,12 @@ and a custom optimizer; choices of every JSON type, of Python types and NaN; sco
 trials 0.5 s and 2 s apart on a fake clock; no stopping rule, one rule, and the three built-in rules in a
 given order, with one and two runs; bounds given as numpy scalars; Categoricals of numpy arrays and of
 0, False, 1, True and 1.0; numpy integer and float settings of every optimizer and stopping rule; a
-custom optimizer with numpy scalars and arrays in its candidate meta and its population.
+custom optimizer with numpy scalars and arrays in its candidate meta and its population; an objective
+that changes the working directory with a relative output, METAHPO_OUTPUT and the default folder; a
+replace of best.json, config.json, state.json and summary.json refused for a while or for good (a
+simulated reader that holds the file); callbacks that raise RuntimeError or KeyboardInterrupt in
+on_run_start, on_trial, on_generation and on_run_end; a folder name taken by another search after the
+check for it.
 """
 
 import csv
@@ -1630,3 +1635,417 @@ def test_config_json_should_record_the_module_of_the_optimizer_class(tmp_path, m
     record = _json(folder / "config.json")["optimizer"]
 
     assert (record["name"], record["module"]) == (type(optimizer).__name__, module)
+
+
+def _moving(where, function=_score, at=3):
+    """`function` as an objective that changes the working directory to `where` on call `at`, as a trainer
+    that moves into its data folder does."""
+    calls = [0]
+
+    def objective(params):
+        calls[0] += 1
+        if calls[0] == at:
+            where[0].chdir(where[1])
+        return function(params)
+
+    return objective
+
+
+@pytest.mark.parametrize(
+    ("output", "env", "below"),
+    [
+        pytest.param("rel_out", None, "rel_out", id="relative-output"),
+        pytest.param(metahpo.report.DEFAULT_OUTPUT, "env_out", "env_out", id="metahpo-output-path"),
+        pytest.param(
+            metahpo.report.DEFAULT_OUTPUT, metahpo.report.DEFAULT_OUTPUT, "hpo_results", id="default"
+        ),
+    ],
+)
+def test_results_folder_should_stay_where_the_search_started_when_the_objective_changes_directory(
+    tmp_path, monkeypatch, output, env, below
+):
+    """Given the working directory tmp_path, a relative results folder (an output argument, METAHPO_OUTPUT
+    or the default 'hpo_results') and an objective that moves into tmp_path/elsewhere on its 3rd call, when
+    optimize() runs 20 evaluations, then the run finishes, every file is written below tmp_path/<folder>,
+    nothing below elsewhere, and config.json records the folder as an absolute path.
+
+    Oracle: report module docstring (a time-stamped folder below `output`, default 'hpo_results' in the
+    working directory) and the ResultWriter._make_folder docstring (the folder becomes an absolute path when
+    the search starts). Decisive: the writer kept the relative path, so the next file it opened after the
+    chdir raised FileNotFoundError and four files stayed open.
+    """
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("METAHPO_OUTPUT", env or "none")
+    objective = _moving((monkeypatch, tmp_path / "elsewhere"))
+
+    study = optimize(objective, _space(), "max", 20, seed=ANY_SEED, verbose=0, output=output)
+
+    folder = _folder(tmp_path / below)
+    config = _json(folder / "config.json")
+    assert (study.stop_reason, (folder / "summary.json").is_file()) == ("budget", True)
+    assert list((tmp_path / "elsewhere").iterdir()) == []
+    assert config["folder"] == str(folder.absolute())
+
+
+class _Refusing:
+    """A stand-in for metahpo.report._os_replace that refuses, with PermissionError, the replace of the file
+    named `name` while `refuse(text)` is true for the new content, or the first `times` attempts when given;
+    other files are replaced as usual."""
+
+    def __init__(self, name, refuse=None, times=None):
+        self.name = name
+        self.refuse = refuse
+        self.times = times
+        self.refused = 0
+
+    def __call__(self, source, target):
+        text = source.read_text(encoding="utf-8")
+        hit = target.name == self.name and (
+            self.refuse(text) if self.refuse is not None else self.refused < self.times
+        )
+        self.refused += hit
+        hit and _raise_permission(target)
+        source.replace(target)
+
+
+def _raise_permission(target):
+    raise PermissionError(13, "another process holds the file", str(target))
+
+
+def _refused_run(tmp_path, monkeypatch, refusing):
+    """A run with plots off whose JSON replaces go through `refusing`; returns the recorded waits."""
+    waits = []
+    monkeypatch.setattr(metahpo.report, "_os_replace", refusing)
+    monkeypatch.setattr(metahpo.report, "_wait", waits.append)
+    return waits
+
+
+def _temporary_files(root):
+    return [p for p in root.rglob("*.tmp")]
+
+
+def test_best_json_should_be_skipped_while_another_process_holds_it_and_written_when_the_run_ends(
+    tmp_path, monkeypatch
+):
+    """Given a reader that holds best.json for every 'running' update, so its replace is always refused,
+    when a run of 30 evaluations goes on, then the search is not stopped, every refused update is tried
+    PROGRESS_TRIES times PROGRESS_WAIT seconds apart and then left out, the final best.json is written with
+    status 'finished', and no temporary file is left.
+
+    Oracle: _write_json docstring (a file that is not required, best.json while the run goes on, is left as
+    it was after PROGRESS_TRIES attempts and written again at the next update and when the run ends; the
+    temporary file is removed). Decisive: os.replace raised PermissionError and ended the search.
+    """
+    refusing = _Refusing("best.json", refuse=lambda text: '"running"' in text)
+    waits = _refused_run(tmp_path, monkeypatch, refusing)
+
+    study, folder = _run(tmp_path, max_evals=30)
+
+    best = _json(folder / "run_001" / "best.json")
+    tries = metahpo.report.PROGRESS_TRIES
+    assert (study.stop_reason, best["status"], best["best"]["trial"]) == (
+        "budget",
+        "finished",
+        study.best_trial.number,
+    )
+    assert refusing.refused > 0 and refusing.refused % tries == 0
+    assert waits == [metahpo.report.PROGRESS_WAIT] * (refusing.refused // tries * (tries - 1))
+    assert _temporary_files(tmp_path) == []
+
+
+@pytest.mark.parametrize("name", ["config.json", "state.json", "best.json", "summary.json"])
+def test_a_json_file_should_be_written_when_a_reader_releases_it_within_the_retries(
+    tmp_path, monkeypatch, name
+):
+    """Given a reader that holds config.json, state.json, best.json or summary.json for the first 3 attempts
+    of its replace, when the run of 12 evaluations ends, then the file is written and the search waited
+    between the refused attempts.
+
+    Oracle: _write_json docstring (a refused replace is tried REPLACE_TRIES times, REPLACE_WAIT seconds apart,
+    or PROGRESS_TRIES times for best.json while the run goes on).
+    """
+    refusing = _Refusing(name, times=3)
+    waits = _refused_run(tmp_path, monkeypatch, refusing)
+
+    study, folder = _run(tmp_path, max_evals=12)
+
+    written = [p.name for p in folder.rglob(name)]
+    assert (study.stop_reason, written, refusing.refused) == ("budget", [name], 3)
+    assert len(waits) >= 2 and _temporary_files(tmp_path) == []
+
+
+@pytest.mark.parametrize("name", ["config.json", "state.json"])
+def test_a_file_resume_depends_on_should_stop_the_search_before_any_call_when_it_stays_held(
+    tmp_path, monkeypatch, name
+):
+    """Given a reader that holds config.json or state.json for good, when optimize() starts, then
+    PermissionError is raised after REPLACE_TRIES attempts, the objective is never called, no temporary file
+    is left and no file stays open.
+
+    Oracle: _write_json docstring (the error of a required file is raised after the attempts; the temporary
+    file is removed) and the report module docstring (config.json and state.json are what a resume needs).
+    """
+    refusing = _Refusing(name, refuse=lambda text: True)
+    waits = _refused_run(tmp_path, monkeypatch, refusing)
+    calls = []
+
+    with pytest.raises(PermissionError):
+        _run(tmp_path, max_evals=12, function=lambda p: calls.append(p) or 0.0)
+
+    assert (calls, refusing.refused, len(waits)) == (
+        [],
+        metahpo.report.REPLACE_TRIES,
+        metahpo.report.REPLACE_TRIES - 1,
+    )
+    assert _temporary_files(tmp_path) == []
+
+
+def test_a_held_summary_json_should_raise_after_every_other_result_of_the_run_was_written(
+    tmp_path, monkeypatch
+):
+    """Given a reader that holds summary.json for good, when a run of 12 evaluations ends, then
+    PermissionError is raised, while best.json (finished), parameters.csv, categories.csv and report.md are
+    written and no temporary file is left.
+
+    Oracle: ResultWriter.on_run_end docstring (a JSON file that cannot be replaced does not stop the others;
+    its error is raised once every file was written).
+    """
+    refusing = _Refusing("summary.json", refuse=lambda text: True)
+    _refused_run(tmp_path, monkeypatch, refusing)
+
+    with pytest.raises(PermissionError):
+        _run(tmp_path, max_evals=12)
+
+    folder = _folder(tmp_path)
+    written = [
+        (folder / n).is_file() for n in ("report.md", "run_001/parameters.csv", "run_001/categories.csv")
+    ]
+    assert (written, _json(folder / "run_001" / "best.json")["status"]) == ([True, True, True], "finished")
+    assert (folder / "summary.json").exists() is False and _temporary_files(tmp_path) == []
+
+
+class _Raising(Callback):
+    """A callback that raises `error` in `event` at trial `at` (on_trial), generation `at` (on_generation)
+    or at once (on_run_start, on_run_end)."""
+
+    def __init__(self, event, error, at=7):
+        self.event = event
+        self.error = error
+        self.at = at
+
+    def on_run_start(self, state):
+        self._raise_for("on_run_start", 0)
+
+    def on_trial(self, state, trial, new_best):
+        self._raise_for("on_trial", trial.number)
+
+    def on_generation(self, state, generation, trials, population):
+        self._raise_for("on_generation", generation)
+
+    def on_run_end(self, state):
+        self._raise_for("on_run_end", self.at)
+
+    def _raise_for(self, event, number):
+        (event, number >= self.at) == (self.event, True) and self._throw()
+
+    def _throw(self):
+        raise self.error
+
+
+class _Ends(Callback):
+    """Records the runs whose end it received."""
+
+    def __init__(self):
+        self.ended = []
+
+    def on_run_end(self, state):
+        self.ended.append(state.study.stop_reason)
+
+
+def _callback_run(tmp_path, callbacks, max_evals=40):
+    """optimize() maximising _score with plots off and the given callbacks after the writer."""
+    return optimize(
+        _score,
+        _space(),
+        "max",
+        max_evals,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False), *callbacks],
+    )
+
+
+@pytest.mark.parametrize(
+    ("event", "at", "ended"),
+    [
+        pytest.param("on_run_start", 0, [], id="on-run-start"),
+        pytest.param("on_trial", 7, ["error"], id="on-trial"),
+        pytest.param("on_generation", 1, ["error"], id="on-generation"),
+    ],
+)
+def test_a_raising_callback_should_end_the_run_like_an_error_of_the_objective_and_leave_a_resumable_folder(
+    tmp_path, event, at, ended
+):
+    """Given a callback that raises a RuntimeError in on_run_start, on_trial at trial 7 or on_generation at
+    generation 1, followed by a callback that records the end of the run, when optimize() runs, then the
+    same exception object is raised, best.json and summary.json record the stop reason 'error', the
+    recording callback received the end of the run (unless on_run_start failed before it was started), and
+    resume() of the folder gives the uninterrupted run.
+
+    Oracle: optimize docstring (an exception raised by `function` is re-raised after the results so far are
+    written) applied to callbacks by the _Run.finish docstring (every listener receives the end of the run,
+    the original exception counts), the _Run.start docstring (a listener after the one whose on_run_start
+    raised is not started) and the resume docstring (a run that stopped for an error continues).
+    Decisive: the library's writer never received on_run_end when the callback raised again for the last
+    generation, so the summary files were missing.
+    """
+    error = RuntimeError("bug in my callback")
+    ends = _Ends()
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Raising(event, error, at), ends])
+
+    folder = _folder(tmp_path)
+    reasons = (
+        _json(folder / "run_001" / "best.json")["stop_reason"],
+        _json(folder / "summary.json")["stop_reason"],
+    )
+    resumed = metahpo.resume(_score, folder, verbose=0)
+    reference = optimize(_score, _space(), "max", 40, seed=ANY_SEED, verbose=0, output=None)
+    assert raised.value is error
+    assert reasons == ("error", "error")
+    assert ends.ended == ended
+    assert [t.x.tolist() for t in resumed.trials] == [t.x.tolist() for t in reference.trials]
+
+
+def test_a_keyboard_interrupt_in_a_callback_should_end_the_run_as_interrupted_with_its_results(tmp_path):
+    """Given a callback that raises KeyboardInterrupt in every on_generation from generation 1 on, also in the
+    one for the last unfinished generation, when optimize() runs, then it returns the study with stop_reason
+    'interrupted' and best.json and summary.json record it.
+
+    Oracle: optimize docstring (a KeyboardInterrupt stops the search and returns the study so far with
+    stop_reason 'interrupted'; the results are written). Decisive: the interrupt raised again while the
+    last generation was sent, so the writer never finished and the interrupt escaped optimize().
+    """
+    study = _callback_run(tmp_path, [_Raising("on_generation", KeyboardInterrupt(), at=1)])
+
+    folder = _folder(tmp_path)
+    assert (study.stop_reason, _json(folder / "summary.json")["stop_reason"]) == (
+        "interrupted",
+        "interrupted",
+    )
+    assert _json(folder / "run_001" / "best.json")["status"] == "finished"
+
+
+def test_an_on_run_end_that_raises_should_not_hide_the_first_error_or_stop_the_writer(tmp_path):
+    """Given a callback that raises 'first' in on_trial at trial 7 and 'second' in its own on_run_end, and a
+    callback after it that records the end of the run, when optimize() runs, then 'first' is raised, the
+    writer finished (summary.json records 'error') and the recording callback received the end.
+
+    Oracle: _Run.finish docstring (every listener receives the end of the run also when some raise; after
+    an error the original exception is the one that counts). Decisive: the error of on_run_end replaced the
+    original one.
+    """
+    first, second = RuntimeError("first"), RuntimeError("second")
+
+    class _Both(Callback):
+        def on_trial(self, state, trial, new_best):
+            trial.number == 7 and _Raising("x", first)._throw()
+
+        def on_run_end(self, state):
+            raise second
+
+    ends = _Ends()
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Both(), ends])
+
+    assert (raised.value, ends.ended) == (first, ["error"])
+    assert _json(_folder(tmp_path) / "summary.json")["stop_reason"] == "error"
+
+
+def test_an_on_run_end_that_raises_in_a_finished_run_should_raise_after_the_writer_finished(tmp_path):
+    """Given a callback whose on_run_end raises when a run of 20 evaluations ends by its budget, when
+    optimize() runs, then that exception is raised and summary.json records the stop reason 'budget'.
+
+    Oracle: _Run.finish docstring (the first exception of a listener is raised once every listener received
+    the end of the run).
+    """
+    error = RuntimeError("bug at the end")
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Raising("on_run_end", error, at=0)], max_evals=20)
+
+    assert raised.value is error
+    assert _json(_folder(tmp_path) / "summary.json")["stop_reason"] == "budget"
+
+
+def test_a_writer_should_claim_the_next_free_name_when_another_search_takes_its_name_after_a_check(
+    tmp_path, monkeypatch
+):
+    """Given a folder name of this second already created by another search, and an exists() check that
+    still answers False, as it does for a search that checked a moment before the other one created the
+    folder, when a writer claims its folder, then it takes the name with the suffix _2 and raises nothing.
+
+    Oracle: ResultWriter._make_folder docstring (the name is claimed with one mkdir, which fails when it
+    exists; a taken name gets the suffix _2, _3, ...). Decisive: checking for the name and creating it were
+    two steps, so searches that started in the same second in threads or processes raised FileExistsError.
+    """
+    space = _space()
+    first = _start(ResultWriter(tmp_path, plots=False), space, 1_800_000_000.0)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(tmp_path), "exists", lambda self, **kwargs: False)
+        second = _start(ResultWriter(tmp_path, plots=False), space, 1_800_000_000.0)
+
+    assert second.name == first.name + "_2"
+
+
+class _Sleeps:
+    """A stand-in for the time module of metahpo.report that records the seconds asked to sleep."""
+
+    def __init__(self):
+        self.slept = []
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+
+
+def test_wait_between_two_replace_attempts_should_sleep_the_given_seconds(monkeypatch):
+    """Given the time module of metahpo.report replaced by a recorder, when _wait(REPLACE_WAIT) runs, then it
+    sleeps REPLACE_WAIT seconds once.
+
+    Oracle: the _wait docstring (sleeps between two attempts to replace a JSON file) and REPLACE_WAIT.
+    """
+    recorder = _Sleeps()
+    monkeypatch.setattr(metahpo.report, "time", recorder)
+
+    metahpo.report._wait(metahpo.report.REPLACE_WAIT)
+
+    assert recorder.slept == [metahpo.report.REPLACE_WAIT]
+
+
+def test_a_keyboard_interrupt_in_on_run_end_of_a_finished_run_should_return_the_runs_so_far(tmp_path):
+    """Given runs=2 and a callback whose on_run_end raises KeyboardInterrupt when the first run ended by its
+    budget, when optimize() runs, then it returns the first study with stop_reason 'budget' and does not
+    start the second run.
+
+    Oracle: optimize docstring (a KeyboardInterrupt stops the remaining runs as well and the studies so far
+    are returned) and the _Run.finish docstring (every listener receives the end of the run first).
+    """
+    studies = optimize(
+        _score,
+        _space(),
+        "max",
+        12,
+        seed=ANY_SEED,
+        verbose=0,
+        runs=2,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False), _Raising("on_run_end", KeyboardInterrupt(), at=0)],
+    )
+
+    assert [s.stop_reason for s in studies] == ["budget"]
+    assert (_folder(tmp_path) / "run_002").exists() is False
