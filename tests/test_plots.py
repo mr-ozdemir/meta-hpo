@@ -8,12 +8,15 @@ The note tests replace make_plots with a stub that raises.
 Unspecified, therefore not asserted: the look of the plots and their pixel sizes.
 
 Input space: Every run that can be plotted, which is unbounded.
-Subset: One small run per optimizer on a mixed space, an all-NaN run, and stubs that raise ImportError and
+Subset: One small run per optimizer on a mixed space, an all-NaN run, Categoricals of numpy arrays and of
+two objects with the same repr, and stubs that raise ImportError and
 RuntimeError.
 """
 
+import json
 import math
 
+import numpy as np
 import pytest
 
 import metahpo
@@ -262,3 +265,43 @@ def test_report_should_note_a_failure_of_the_run_plots(tmp_path, monkeypatch):
 
     assert "Run plots failed: RuntimeError: disk full" in (folder / "report.md").read_text(encoding="utf-8")
     assert (folder / "summary.json").is_file()
+
+
+class _Same:
+    """A callable choice whose repr is the same for every instance."""
+
+    def __repr__(self):
+        return "_Same()"
+
+    def __call__(self, x):
+        return x
+
+
+@pytest.mark.parametrize(
+    ("choices", "function"),
+    [
+        pytest.param(
+            lambda: [np.array([1.0, 2.0]), np.array([3.0, 4.0])],
+            lambda p: float(p["c"].sum()) * p["lr"],
+            id="numpy-arrays",
+        ),
+        pytest.param(lambda: [_Same(), _Same()], lambda p: p["c"](p["lr"]), id="same-repr"),
+    ],
+)
+def test_make_plots_should_draw_the_categorical_plots_for_arrays_and_choices_with_the_same_repr(
+    tmp_path, choices, function
+):
+    """Given a Categorical of two numpy arrays, or of two objects with the same repr, beside a log Float and
+    an Int, when the run ends, then every plot file is written and report.md notes no plot failure.
+
+    Oracle: plots module docstring (make_plots draws every plot of a run) and the Categorical docstring (any
+    object can be a choice). Decisive: the parameter plots looked a choice up with list.index, which
+    compares with == (ambiguous for arrays), and by its repr, which put both same-repr choices at the
+    first position.
+    """
+    space = Space({"c": Categorical(choices()), "lr": Float(1e-4, 1e-1, log=True), "units": Int(16, 256)})
+
+    names, folder = _plots(tmp_path, ABCOptimizer(space, direction="max", seed=ANY_SEED), function)
+
+    assert names == EXPECTED
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["notes"] == []

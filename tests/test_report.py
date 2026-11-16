@@ -21,7 +21,8 @@ log_every 1 and 2; objectives that stop with each stop reason (budget, exhausted
 all-NaN objective; a budget above COMPRESS_FROM after lowering it; non-default settings of every optimizer
 and a custom optimizer; choices of every JSON type, of Python types and NaN; scores NaN, inf and -inf;
 trials 0.5 s and 2 s apart on a fake clock; no stopping rule, one rule, and the three built-in rules in a
-given order, with one and two runs.
+given order, with one and two runs; bounds given as numpy scalars; Categoricals of numpy arrays and of
+0, False, 1, True and 1.0.
 """
 
 import csv
@@ -1363,3 +1364,69 @@ def test_run_state_should_hold_each_runs_own_copies_of_the_rules(tmp_path):
     first, second = recorder.rules
     assert [r.settings() for r in first + second] == [given.settings()] * 2
     assert (first[0] is given, second[0] is given, first[0] is second[0]) == (False, False, False)
+
+
+def test_config_json_should_record_numpy_bounds_as_plain_numbers(tmp_path):
+    """Given a space with Int(np.int64(1), np.uint8(9)) and Float(np.float16(0), np.float32(1)), when
+    config.json is read, then the space records the bounds as the plain JSON numbers 1, 9, 0.0 and 1.0.
+
+    Oracle: report module docstring (config.json records the space) and the Int and Float docstrings
+    (bounds are stored as Python ints and floats).
+    """
+    space = Space({"a": Int(np.int64(1), np.uint8(9)), "f": Float(np.float16(0), np.float32(1))})
+    optimize(lambda p: p["a"] + p["f"], space, max_evals=5, seed=ANY_SEED, verbose=0, output=tmp_path)
+
+    text = (_folder(tmp_path) / "config.json").read_text(encoding="utf-8")
+
+    assert [(p["low"], p["high"]) for p in json.loads(text)["space"]] == [(1, 9), (0.0, 1.0)]
+    assert "np." not in text
+
+
+def _odd_choices_run(tmp_path, choices):
+    """optimize() minimising lr on a space of the Categorical `choices` beside a Float, written below
+    tmp_path with plots off; returns the study and the results folder."""
+    space = Space({"c": Categorical(choices), "lr": Float(0.1, 1.0)})
+    study = optimize(
+        lambda p: p["lr"],
+        space,
+        max_evals=40,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False)],
+    )
+    return study, space.parameters[0].choices, _folder(tmp_path)
+
+
+def _trials_per_choice(study, choices):
+    """For every choice, the number of real, finite trials whose params hold that very object."""
+    real = [t for t in study.trials if not t.cached and not t.failed]
+    return [str(sum(t.params["c"] is choice for t in real)) for choice in choices]
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        pytest.param([np.array([1.0, 1.0]), np.array([1.0, 5.0]), np.array([1.0, 10.0])], id="numpy-arrays"),
+        pytest.param([0, False, 1, True, 1.0], id="equal-across-types"),
+    ],
+)
+def test_categories_csv_should_count_each_choice_by_its_own_trials_for_arrays_and_values_equal_across_types(
+    tmp_path, choices
+):
+    """Given a Categorical of three numpy arrays, or of 0, False, 1, True and 1.0, when the run writes
+    categories.csv and parameters.csv, then every choice has one row whose trial count is the number of
+    trials that received that very choice, and distinct_values counts the choices used.
+
+    Oracle: the Categorical docstring (any object can be a choice; choices equal across types stay
+    different choices) and the report module docstring (categories.csv has one row per category).
+    Decisive: matching trials to choices with == raised 'The truth value of an array ... is ambiguous' for
+    arrays and counted 1, True and 1.0 together (25 trials each in a run of 40).
+    """
+    study, kept, folder = _odd_choices_run(tmp_path, choices)
+
+    rows = _rows(folder / "run_001" / "categories.csv")
+    parameters = _rows(folder / "run_001" / "parameters.csv")
+
+    assert [row["trials"] for row in rows] == _trials_per_choice(study, kept)
+    assert parameters[0]["distinct_values"] == str(sum(n != "0" for n in _trials_per_choice(study, kept)))

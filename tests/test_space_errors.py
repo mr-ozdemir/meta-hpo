@@ -72,8 +72,12 @@ only; Space keeps no state between calls.
 
 Input space: Every row of d unit-cube coordinates in [0, 1] for every parameter kind and bound, which is
 unbounded.
-Subset: One invalid argument per constructor error, and the share centres of every Int and Categorical output.
+Subset: One invalid argument per constructor error, and the share centres of every Int and Categorical output;
+bounds of 10**400 for Int and Float, linear and log; numpy integer, float and 0-d array bounds; equal
+numpy arrays and arrays that differ in shape, dtype or elements as choices.
 """
+
+import warnings
 
 import numpy as np
 import pytest
@@ -277,6 +281,7 @@ class _IncomparableChoice:
         pytest.param([(1, 2), (1, 2)], id="equal-tuples"),
         pytest.param([[1], [1]], id="equal-unhashable-lists"),
         pytest.param([{"k": 1}, {"k": 1}], id="equal-unhashable-dicts"),
+        pytest.param([np.array([1, 2]), np.array([3]), np.array([1, 2])], id="equal-numpy-arrays"),
     ],
 )
 def test_categorical_should_raise_value_error_when_two_choices_have_the_same_type_and_compare_equal(choices):
@@ -302,6 +307,9 @@ def test_categorical_should_raise_value_error_when_two_choices_have_the_same_typ
         pytest.param([[1], _ListChoice([1])], id="equal-unhashable-values-of-different-types"),
         pytest.param([_IncomparableChoice(), _IncomparableChoice()], id="comparison-raises"),
         pytest.param([None, "None", 0], id="none-and-lookalikes"),
+        pytest.param([np.array([1, 2]), np.array([1, 2, 3])], id="numpy-arrays-of-other-shapes"),
+        pytest.param([np.array([1, 2]), np.array([1.0, 2.0])], id="numpy-arrays-of-other-dtypes"),
+        pytest.param([np.array([1, 2]), np.array([2, 1])], id="numpy-arrays-of-other-elements"),
     ],
 )
 def test_categorical_should_keep_every_choice_when_choices_differ_in_type_or_cannot_be_compared(choices):
@@ -317,3 +325,88 @@ def test_categorical_should_keep_every_choice_when_choices_differ_in_type_or_can
 
     assert len(parameter.choices) == len(choices)
     assert all(kept is given for kept, given in zip(parameter.choices, choices, strict=True))
+
+
+@pytest.mark.parametrize(
+    ("factory", "match"),
+    [
+        pytest.param(lambda: Int(0, 10**400), "magnitude", id="int-high-beyond-float"),
+        pytest.param(lambda: Int(1, 10**400, log=True), "magnitude", id="int-log-high-beyond-float"),
+        pytest.param(lambda: Int(-(10**400), 0), "magnitude", id="int-low-beyond-float"),
+        pytest.param(lambda: Float(0, 10**400), "finite", id="float-high-beyond-float"),
+        pytest.param(lambda: Float(1, 10**400, log=True), "finite", id="float-log-high-beyond-float"),
+        pytest.param(lambda: Float(-(10**400), 0), "finite", id="float-low-beyond-float"),
+    ],
+)
+def test_parameter_should_raise_value_error_for_an_integer_bound_too_large_for_a_float(factory, match):
+    """Given an Int or Float bound of 10**400, a Python int that no float can hold, linear or log-scaled,
+    when the parameter is built, then ValueError names the bound rule, not OverflowError.
+
+    Oracle: the messages of space.py ('Int bounds must be integers with magnitude at most 2**53', 'Float
+    needs finite bounds with a finite width') and the library's error convention (bad input raises
+    ValueError or TypeError before any training). Decisive: converting 10**400 to float raises
+    OverflowError, which escaped the bound checks.
+    """
+    with pytest.raises(ValueError, match=match) as excinfo:
+        factory()
+
+    assert excinfo.type is ValueError
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected"),
+    [
+        pytest.param(lambda: Int(np.uint8(0), np.uint8(255)), (int, int, 0, 255), id="int-uint8"),
+        pytest.param(lambda: Int(np.int8(-128), np.int8(127)), (int, int, -128, 127), id="int-int8"),
+        pytest.param(lambda: Int(np.int64(1), np.int64(9), log=True), (int, int, 1, 9), id="int-log-int64"),
+        pytest.param(lambda: Int(np.array(1), np.array(5)), (int, int, 1, 5), id="int-zero-d-arrays"),
+        pytest.param(lambda: Int(2.0, 7.0), (int, int, 2, 7), id="int-whole-floats"),
+        pytest.param(
+            lambda: Float(np.float32(0.1), np.float32(0.9)),
+            (float, float, 0.10000000149011612, 0.8999999761581421),
+            id="float-float32",
+        ),
+        pytest.param(
+            lambda: Float(np.float16(0.5), np.float16(2.0), log=True),
+            (float, float, 0.5, 2.0),
+            id="float-log-float16",
+        ),
+        pytest.param(lambda: Float(np.int64(1), np.int64(10)), (float, float, 1.0, 10.0), id="float-int64"),
+        pytest.param(
+            lambda: Float(np.array(0.25), np.array(0.75)),
+            (float, float, 0.25, 0.75),
+            id="float-zero-d-arrays",
+        ),
+        pytest.param(lambda: Float(0, 1), (float, float, 0.0, 1.0), id="float-python-ints"),
+    ],
+)
+def test_parameter_should_store_numpy_bounds_as_the_python_numbers_they_hold(factory, expected):
+    """Given Int and Float bounds that are numpy scalars of several dtypes, 0-d arrays, whole floats for an
+    Int or ints for a Float, when the parameter is built, then it stores the bounds as Python ints (Int)
+    or Python floats (Float) with the values they hold.
+
+    Oracle: the Int and Float docstrings (the bounds are stored as Python ints or floats, so the search is
+    the same as with those numbers). Decisive: a uint8 or int8 bound kept as a numpy scalar overflows in
+    high - low + 1, and a float32 bound makes one-coordinate decoding compute in float32.
+    """
+    parameter = factory()
+
+    assert (type(parameter.low), type(parameter.high), parameter.low, parameter.high) == expected
+
+
+def test_space_should_size_and_decode_an_int_with_uint8_bounds_without_overflow():
+    """Given Int(np.uint8(0), np.uint8(255)) with every warning turned into an error, when its Space is
+    sized and decoded at u = 0, 0.5 and 1 and decode_one reads u = 1, then the size is 256 and the values
+    are 0, 128 and 255.
+
+    Oracle: the Int docstring (integers low..high inclusive, an equal share each, bounds stored as Python
+    ints) and Space.size (the number of distinct parameter sets). Decisive: in uint8, 255 - 0 + 1 wraps to
+    0, so the space looked exhausted before the first trial, with an overflow warning.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        space = Space({"a": Int(np.uint8(0), np.uint8(255))})
+        values = space.to_dicts(np.array([[0.0], [0.5], [1.0]]))
+        top = space.parameters[0].decode_one(1.0)
+
+    assert (space.size, values, top) == (256, [{"a": 0}, {"a": 128}, {"a": 255}], 255.0)

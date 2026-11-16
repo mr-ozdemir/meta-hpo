@@ -36,7 +36,8 @@ cut_first), finished, extended and interrupted after the swarm was asked again. 
 lambdas, bound methods, partials and plain objects built again from new objects, its config.json with the
 memory addresses 0.7.0 kept, and spaces whose choices really differ. A state.json without each of its keys,
 and with content of the wrong kind; a config.json without each key resume() reads, with values of the wrong
-kind, and with a space, settings or seed that do not build; a log line whose trial number overflows.
+kind, and with a space, settings or seed that do not build; a log line whose trial number overflows. A
+Categorical of numpy arrays resumed with the space passed.
 """
 
 import csv
@@ -45,6 +46,7 @@ import gzip
 import json
 import math
 
+import numpy as np
 import pytest
 
 import metahpo
@@ -1333,3 +1335,32 @@ def test_resume_should_refuse_a_log_line_whose_trial_number_does_not_fit_an_inte
         resume(_score, folder, verbose=0)
 
     assert "1e400" in _log(folder).read_text(encoding="utf-8")
+
+
+def _array_space():
+    """A Categorical of three numpy arrays, such as class weights, beside a Float."""
+    weights = [np.array([1.0, 1.0]), np.array([1.0, 5.0]), np.array([1.0, 10.0])]
+    return Space({"w": Categorical(weights), "x": Float(0.0, 1.0)})
+
+
+def _weighted(params):
+    return float(params["w"].sum()) * params["x"]
+
+
+def test_resume_should_continue_a_folder_whose_categorical_holds_numpy_arrays_with_the_passed_space(
+    tmp_path, no_plots
+):
+    """Given a folder whose Categorical holds three numpy arrays, interrupted on its 7th call, when
+    resume() gets the space built again, then the study equals the uninterrupted run.
+
+    Oracle: resume docstring (space is needed when a Categorical has choices that JSON cannot hold) and the
+    Categorical docstring (any object can be a choice). Decisive: writing categories.csv compared the
+    arrays with ==, so the interrupted run already raised ValueError.
+    """
+    optimize(_interrupting(6, _weighted), _array_space(), "max", 20, seed=ANY_SEED, output=tmp_path)
+    folder = _folder(tmp_path)
+
+    study = resume(_weighted, folder, space=_array_space(), verbose=0)
+
+    reference = optimize(_weighted, _array_space(), "max", 20, seed=ANY_SEED, output=None)
+    assert _positions(study) == _positions(reference)

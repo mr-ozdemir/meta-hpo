@@ -243,6 +243,10 @@ Settings, algorithm details and references: [docs/optimizers.md](https://github.
 
 Optimizers search the unit cube `[0, 1]^d`; the space maps each point to typed parameters.
 
+Bounds may be Python or numpy numbers. A choice can be any object (a string, a number, a function, a numpy
+array); your function receives the choice itself, not a copy, so it must not change a mutable choice in
+place.
+
 ## Behaviour
 
 - A score of NaN or infinity counts as the worst possible value for the chosen direction.

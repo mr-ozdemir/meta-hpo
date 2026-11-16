@@ -85,7 +85,7 @@ from typing import IO, Any, cast
 import numpy as np
 
 from metahpo.optimizers.base import Optimizer
-from metahpo.space import Categorical, Float, Int, Space, _choice_text, _without_addresses
+from metahpo.space import Categorical, Float, Int, Space, _choice_index, _choice_text, _without_addresses
 from metahpo.study import Study, Trial
 
 DEFAULT_OUTPUT = "hpo_results"
@@ -1191,7 +1191,10 @@ def _corr(a: np.ndarray[Any, np.dtype[np.float64]], b: np.ndarray[Any, np.dtype[
 
 
 def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
-    """parameters.csv (one row per parameter) and categories.csv (one row per category of a Categorical)."""
+    """parameters.csv (one row per parameter) and categories.csv (one row per category of a Categorical).
+
+    The choice of a trial is found from its x (_choice_index), never by comparing values, so any object can
+    be a choice and choices that compare equal across types are counted apart."""
     real = [t for t in state.study.trials if not t.cached and not t.failed]
     scores = np.array([t.score for t in real], dtype=np.float64)
     best = state.best
@@ -1217,10 +1220,11 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
         run_dir / "categories.csv",
         ["parameter", "choice", "trials", "mean_score", "best_score", "worst_score"],
     )
-    for name, p in zip(state.space.names, state.space.parameters, strict=True):
+    for j, (name, p) in enumerate(zip(state.space.names, state.space.parameters, strict=True)):
         values = [t.params[name] for t in real]
         best_value = best.params[name] if best is not None else ""
         if isinstance(p, Categorical):
+            picked = np.array([_choice_index(p, float(t.x[j])) for t in real], dtype=np.int64)
             params_file.row(
                 [
                     name,
@@ -1229,7 +1233,7 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
                     "",
                     "",
                     best_value,
-                    len({repr(v) for v in values}),
+                    len(set(picked.tolist())),
                     "",
                     "",
                     "",
@@ -1238,8 +1242,8 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
                     "",
                 ]
             )
-            for choice in p.choices:
-                chosen = np.array([s for v, s in zip(values, scores, strict=True) if v == choice])
+            for i, choice in enumerate(p.choices):
+                chosen = scores[picked == i]
                 st = _stats(chosen.tolist(), state.direction)
                 cats_file.row(
                     [name, choice, len(chosen), _cell(st["mean"]), _cell(st["best"]), _cell(st["worst"])]

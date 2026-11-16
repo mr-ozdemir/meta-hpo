@@ -6,6 +6,20 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `Int` and `Float` bounds given as numpy scalars or 0-d arrays are stored as the Python numbers they hold:
+  `Int(np.uint8(0), np.uint8(255))` no longer overflows into an empty, "exhausted" run, and `float32`
+  bounds give the same search as the same Python floats.
+- `Int(0, 10**400)` and `Float` bounds too large for a float raise `ValueError` instead of `OverflowError`.
+- One-coordinate decoding agrees with batch decoding for `Int` ranges wider than 2**53, and a unit value
+  below 0 gives the first choice of a `Categorical` instead of one from the end.
+- A `Categorical` of numpy arrays, or of choices equal across types such as `1`, `True` and `1.0`, works
+  in the results files and plots, which find a trial's choice from its position, not by `==`; two equal
+  arrays are rejected as duplicate choices.
+- The `Categorical` docstring and the README say that a choice is handed to the objective as it is and
+  must not be changed in place.
+
 ## [0.7.1] - 2026-11-16
 
 ### Fixed
