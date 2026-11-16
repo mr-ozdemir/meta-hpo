@@ -1257,9 +1257,13 @@ RULES = [
     pytest.param(
         [TargetScore(0.99), Patience(5, 0.25), MaxTime(minutes=2)],
         [
-            {"name": "TargetScore", "settings": {"score": 0.99}},
-            {"name": "Patience", "settings": {"evals": 5, "min_delta": 0.25}},
-            {"name": "MaxTime", "settings": {"seconds": 0.0, "minutes": 2.0, "hours": 0.0}},
+            {"name": "TargetScore", "module": "metahpo.stop", "settings": {"score": 0.99}},
+            {"name": "Patience", "module": "metahpo.stop", "settings": {"evals": 5, "min_delta": 0.25}},
+            {
+                "name": "MaxTime",
+                "module": "metahpo.stop",
+                "settings": {"seconds": 0.0, "minutes": 2.0, "hours": 0.0},
+            },
         ],
         id="three-rules-in-order",
     ),
@@ -1269,10 +1273,12 @@ RULES = [
 @pytest.mark.parametrize(("rules", "expected"), RULES)
 def test_config_json_should_record_the_stopping_rules_in_order_with_their_settings(tmp_path, rules, expected):
     """Given a run without rules or with three rules in a given order, when config.json is read, then `stop`
-    lists every rule in that order with its class name and settings, and is empty without rules.
+    lists every rule in that order with its class name, the module of its class and its settings, and is
+    empty without rules.
 
     Oracle: report module docstring (`stop` lists the stopping rules of the runs in order, each with its class
-    name and `settings` (Stopper.settings()), and is empty for a search without rules).
+    name and `settings` (Stopper.settings()), and is empty for a search without rules; each rule also records
+    the `module` of its class).
     """
     _, folder = _run(tmp_path, stop=rules)
 

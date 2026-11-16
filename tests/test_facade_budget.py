@@ -13,12 +13,24 @@ the default budget (API smoke test), and which trials are cache hits (facade-int
 Input space: Every objective, space, direction, budget, optimizer, seed and cache flag of optimize(), which is
 unbounded.
 Subset: Small budgets compared with the number of trials and of calls of the user's function, a mixed space
-whose optimizer hands out repeats, and an exhausted discrete space with and without the cache.
+whose optimizer hands out repeats, and an exhausted discrete space with and without the cache; budgets 30
+and 50 of the three optimizers, with and without the cache and Patience, on a space where a budget that cuts
+a PSO flight keeps a cached repeat before the cut.
 """
 
 import pytest
 
-from metahpo import ABCOptimizer, Categorical, Float, Int, Space, optimize
+from metahpo import (
+    ABCOptimizer,
+    BBPSOOptimizer,
+    Categorical,
+    Float,
+    Int,
+    Patience,
+    PSOOptimizer,
+    Space,
+    optimize,
+)
 
 ANY_SEED = 0
 MIXED_BUDGET = 60
@@ -65,6 +77,41 @@ def _spy_mixed_objective():
 
 def _distinct(calls):
     return len({tuple(sorted(params.items())) for params in calls})
+
+
+CUT_SEEDS = (1, 3, 4)
+"""Seeds whose PSO run with max_evals 30 on the cut space keeps a cached repeat before the cut of its second
+flight, so 0.7.0 asked the swarm again and its 31st trial was not the 31st trial of a longer run."""
+
+CUT_OPTIMIZERS = [
+    pytest.param(lambda space, seed: ABCOptimizer(space, "max", seed=seed), id="abc"),
+    pytest.param(lambda space, seed: PSOOptimizer(space, "max", seed=seed), id="pso"),
+    pytest.param(lambda space, seed: BBPSOOptimizer(space, "max", seed=seed), id="bbpso"),
+]
+
+
+def _cut_space():
+    """Int(1, 4) x Categorical(['gini', 'entropy']) x Float(0, 1): particles that sit on a wall of the Float
+    hand out repeats, which the cache answers without a call."""
+    return Space({"depth": Int(1, 4), "crit": Categorical(["gini", "entropy"]), "f": Float(0.0, 1.0)})
+
+
+def _rounded(params):
+    """A score rounded to two decimals, so many parameter sets tie."""
+    return round(params["depth"] * 0.1 + (params["crit"] == "gini") * 0.05 + params["f"] * 0.01, 2)
+
+
+def _cut_run(make, seed, max_evals, cache, stop):
+    """optimize() maximising _rounded on the cut space with the optimizer `make` builds."""
+    space = _cut_space()
+    return optimize(
+        _rounded, space, "max", max_evals, optimizer=make(space, seed), cache=cache, output=None, stop=stop
+    )
+
+
+def _identity(study):
+    """Every trial's number, unit-cube position, cached flag and exact score."""
+    return [(t.number, t.x.tolist(), t.cached, repr(t.score)) for t in study.trials]
 
 
 @pytest.mark.parametrize(
@@ -151,3 +198,30 @@ def test_optimize_should_call_the_function_max_evals_times_when_cache_is_false_o
     assert (len(study.trials), study.n_calls, len(calls)) == (EXHAUSTED_BUDGET,) * 3
     assert _distinct(calls) == DISCRETE_SIZE
     assert not any(t.cached for t in study.trials)
+
+
+@pytest.mark.parametrize("seed", CUT_SEEDS)
+@pytest.mark.parametrize(
+    "stop", [pytest.param(None, id="no-rule"), pytest.param(Patience(12), id="patience")]
+)
+@pytest.mark.parametrize("cache", [pytest.param(True, id="cache"), pytest.param(False, id="no-cache")])
+@pytest.mark.parametrize("make", CUT_OPTIMIZERS)
+def test_optimize_should_try_the_first_trials_of_a_larger_budget_when_its_budget_cuts_a_batch(
+    make, cache, stop, seed
+):
+    """Given each optimizer with and without the cache and with no rule or Patience(12), on the cut space
+    with the seeds 1, 3 and 4, when optimize() runs with max_evals 30 and with 50, then the trials of the
+    smaller budget are the first trials of the larger one: number, position, cached flag and score.
+
+    Oracle: optimize docstring (max_evals counts the calls of function; the candidates of a batch the budget
+    cuts short that are not evaluated are withdrawn) and resume docstring (a new max_evals gives the result
+    of a run started with that budget, which needs the trials of the smaller budget to come first).
+    Decisive: PSO's swarm of 20 makes the budget of 30 cut the second flight, and for these seeds the part
+    before the cut holds a cached repeat; a loop that cuts the batch to the remaining calls first and asks
+    the swarm again for the call left over gives a 31st trial that the run with 50 never tries.
+    """
+    small = _cut_run(make, seed, 30, cache, stop)
+
+    large = _cut_run(make, seed, 50, cache, stop)
+
+    assert _identity(small) == _identity(large)[: len(small.trials)]

@@ -13,8 +13,8 @@ Expected trials come from hand-written score lists whose stop trial is counted b
 uninterrupted run with the same seed: its score list gives the trial where the rule stops, and the stopped
 run must equal its prefix. The default results folder and console are switched off through METAHPO_OUTPUT
 and METAHPO_VERBOSE in conftest; the results folder test writes into tmp_path with plots off. MaxTime reads
-the search time from RunState.elapsed(), whose clock RunState.now() is replaced with one that moves a minute
-per trial, so no test sleeps.
+the search time at the end of a trial, so the time module of metahpo.facade is replaced with one in which
+every evaluation lasts a minute, and no test sleeps.
 
 The rules a run uses are deep copies, so the recording rules here keep a builtin list.append or a module
 function, which copy.deepcopy keeps as they are, to report back to the test.
@@ -228,9 +228,24 @@ class _Reason(Stopper):
         return False
 
 
-def _minute_per_trial(state):
-    """A clock for RunState.now that reads the run's start plus one minute per recorded trial."""
-    return state.started + 60.0 * len(state.study.trials)
+class _MinutePerTrial:
+    """A stand-in for the time module of metahpo.facade in which every evaluation lasts one minute.
+
+    perf_counter() moves 60 s at every call, and optimize() reads it once before and once after an
+    evaluation, so every trial lasts 60 s; time() is the wall clock moved on by the minutes of the trials
+    so far, so trial n (counted from 1) ends 60 * n seconds plus the few real milliseconds the run takes
+    after the run started.
+    """
+
+    def __init__(self):
+        self.ticks = 0
+
+    def perf_counter(self):
+        self.ticks += 1
+        return 60.0 * self.ticks
+
+    def time(self):
+        return metahpo.report._wall_clock() + 60.0 * (self.ticks // 2)
 
 
 @pytest.mark.parametrize(
@@ -660,16 +675,17 @@ def test_results_folder_should_record_the_rule_reason_and_end_the_run_as_usual(t
     ],
 )
 def test_max_time_should_end_the_run_after_the_first_trial_that_reaches_the_limit(monkeypatch, rule, trials):
-    """Given a clock that moves one minute per recorded trial and a MaxTime limit of 5 minutes, 4.5 minutes,
-    0.1 hours or one second, when optimize() runs, then the run ends with stop_reason 'time' after the first
-    trial whose search time is at least the limit, and every evaluation it started was finished.
+    """Given evaluations that each last one minute and a MaxTime limit of 5 minutes, 4.5 minutes, 0.1 hours
+    or one second, when optimize() runs, then the run ends with stop_reason 'time' after the first trial
+    whose search time at its end is at least the limit, and every evaluation it started was finished.
 
-    Oracle: MaxTime docstring (state.elapsed() at least seconds + 60 * minutes + 3600 * hours; checked after
-    every trial, never interrupting a running evaluation) and RunState.elapsed (the time since `started`).
+    Oracle: MaxTime docstring (state.elapsed() at the trial's start_time + duration at least seconds + 60 *
+    minutes + 3600 * hours; checked after every trial, never interrupting a running evaluation) and
+    RunState.elapsed (the time since `started`).
     Hand count: 300 s at trial 5, 270 s first reached at trial 5 (240 s at trial 4), 360 s at trial 6, 60 s
     at trial 1.
     """
-    monkeypatch.setattr(metahpo.RunState, "now", _minute_per_trial)
+    monkeypatch.setattr(metahpo.facade, "time", _MinutePerTrial())
     calls = [0]
 
     study = optimize(_counting(calls), _space(), max_evals=BUDGET, seed=ANY_SEED, stop=[rule])

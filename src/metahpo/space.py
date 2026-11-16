@@ -9,6 +9,7 @@ optimizers never see it.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,6 +38,20 @@ def _decode_int(u: FloatArray, low: Any, high: Any, log: bool) -> FloatArray:
 
 def _decode_categorical(u: FloatArray, n: Any) -> FloatArray:
     return np.asarray(np.minimum(np.floor(u * n), np.asarray(n) - 1), dtype=np.float64)
+
+
+_ADDRESS = re.compile(r" at 0x[0-9A-Fa-f]+")
+
+
+def _without_addresses(text: str) -> str:
+    """`text` without the memory addresses (' at 0x...') that the default repr() of functions, lambdas,
+    methods and plain objects holds, so the text of such a choice is the same in every process."""
+    return _ADDRESS.sub("", text)
+
+
+def _choice_text(choice: Any) -> str:
+    """The repr() of a Categorical choice without memory addresses, as the results files show a choice."""
+    return _without_addresses(repr(choice))
 
 
 def _same_choice(a: Any, b: Any) -> bool:
