@@ -28,6 +28,16 @@ and the project uses [Semantic Versioning](https://semver.org/).
   `False` and `True`, `seed` any iterable of seeds but a string (a numpy array, a range), `log_every=0` is
   rejected also without console output, and a negative seed of a later run before the first run starts.
   A folder that recorded an integer setting as a whole float (`limit=10.0`) still resumes.
+- BBPSO no longer stops with `ZeroDivisionError` when all scores are tiny (around 1e-165 and below): the
+  inverse quadratic interpolation step works on the scores scaled by a power of 2, and searches with scores
+  of ordinary scale are unchanged.
+- numpy values in the `meta` of a candidate (from an optimizer of your own) and numpy arrays among the
+  parameters are written as the plain numbers and lists they hold in `trials.jsonl`, the CSV files and the
+  summaries, instead of failing with `TypeError` or writing `array(...)` text; `config.json` records a
+  `Categorical` as before.
+- `config.json` records the module of the optimizer class, and `resume()` builds `ABCOptimizer`,
+  `PSOOptimizer` or `BBPSOOptimizer` again only when the folder was written by the library's class; an
+  optimizer of your own with one of these names now asks for `optimizer=` instead of being replaced.
 
 ## [0.7.1] - 2026-11-16
 

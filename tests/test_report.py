@@ -22,7 +22,8 @@ all-NaN objective; a budget above COMPRESS_FROM after lowering it; non-default s
 and a custom optimizer; choices of every JSON type, of Python types and NaN; scores NaN, inf and -inf;
 trials 0.5 s and 2 s apart on a fake clock; no stopping rule, one rule, and the three built-in rules in a
 given order, with one and two runs; bounds given as numpy scalars; Categoricals of numpy arrays and of
-0, False, 1, True and 1.0; numpy integer and float settings of every optimizer and stopping rule.
+0, False, 1, True and 1.0; numpy integer and float settings of every optimizer and stopping rule; a
+custom optimizer with numpy scalars and arrays in its candidate meta and its population.
 """
 
 import csv
@@ -1519,3 +1520,113 @@ def test_config_json_should_record_numpy_settings_of_a_custom_optimizer_as_plain
 
     assert json.loads(text)["optimizer"]["settings"] == {"step": 0.5, "label": 3}
     assert "np." not in text
+
+
+class _NumpyMeta(_RandomSearch):
+    """A custom random search whose candidates carry numpy scalars and an array in their meta and whose
+    population holds numpy scores, a numpy integer column and an array column."""
+
+    def ask(self):
+        meta = {
+            "generation": np.int64(0),
+            "phase": "draw",
+            "individual": np.int32(2),
+            "weight": np.float32(0.5),
+            "flag": np.bool_(True),
+            "shape": np.array([1, 2]),
+        }
+        return [metahpo.Candidate(c.id, c.x, c.params, c.key, meta) for c in self._fresh(1)]
+
+    def population(self):
+        return {
+            "x": np.zeros((2, self.space.dim)),
+            "score": [np.float32(1.0), 2.0],
+            "age": [np.int64(1), np.int64(2)],
+            "tag": [np.array([1, 2]), np.array([3, 4])],
+        }
+
+
+def _numpy_meta_run(tmp_path):
+    """A run of _NumpyMeta on a Float beside a Categorical of numpy arrays, written below tmp_path."""
+    weights = [np.array([1.0, 5.0]), np.array([2.0, 3.0])]
+    space = Space({"a": Float(0.0, 1.0), "w": Categorical(weights)})
+    optimizer = _NumpyMeta(space, "max", seed=ANY_SEED)
+    optimize(lambda p: p["a"], space, "max", 3, optimizer=optimizer, verbose=0, output=tmp_path)
+    return _folder(tmp_path)
+
+
+def test_results_files_should_write_numpy_values_of_the_meta_as_the_plain_numbers_and_lists_they_hold(
+    tmp_path,
+):
+    """Given a custom optimizer whose candidate meta holds np.int64, np.int32, np.float32, np.bool_ and a
+    numpy array, whose population holds numpy values and whose space has a Categorical of numpy arrays, when
+    the run writes its folder, then trials.jsonl and trials.csv hold the meta as plain JSON numbers, a
+    boolean and a list, population.csv the extra columns as numbers and list text, and no results file
+    but config.json (which records the Categorical as repr text, see the next test) holds numpy text.
+
+    Oracle: report module docstring (trials.jsonl holds each trial's meta and params; every file is
+    derived from the trials) and the stage brief (numpy scalars as the plain numbers they hold, arrays as
+    lists wherever a value goes to JSON or CSV). Decisive: json.dumps of the meta for trials.csv raised
+    'Object of type float32 is not JSON serializable', and arrays were written as 'array([1., 5.])' text.
+    """
+    folder = _numpy_meta_run(tmp_path)
+
+    record = json.loads((folder / "run_001" / "trials.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    row = _rows(folder / "run_001" / "trials.csv")[0]
+    population = _rows(folder / "run_001" / "population.csv")[0]
+    files = [p for p in folder.rglob("*") if p.suffix in (".json", ".jsonl", ".csv", ".md")]
+    texts = [p.read_text(encoding="utf-8") for p in files if p.name != "config.json"]
+
+    assert (record["generation"], record["individual"]) == (0, 2)
+    assert record["detail"] == {"weight": 0.5, "flag": True, "shape": [1, 2]}
+    assert json.loads(row["detail"]) == {"weight": 0.5, "flag": True, "shape": [1, 2]}
+    assert (population["age"], population["tag"]) == ("1", "[1, 2]")
+    assert [("np." in t or "array(" in t) for t in texts] == [False] * len(texts)
+
+
+def test_config_json_should_still_record_a_categorical_of_numpy_arrays_as_marked_repr_text(tmp_path):
+    """Given the same run, when config.json is read, then its Categorical of numpy arrays is still recorded
+    as repr() text marked "repr": true, while trials.jsonl writes the chosen array as a list.
+
+    Oracle: report module docstring (any Categorical whose choices are not all JSON values stores the
+    repr() of each choice and is marked "repr": true) and the stage brief (writing arrays as lists must not
+    change how a choice is recorded in config.json).
+    """
+    folder = _numpy_meta_run(tmp_path)
+
+    config = _json(folder / "config.json")
+    record = json.loads((folder / "run_001" / "trials.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert config["space"][1] == {
+        "name": "w",
+        "type": "Categorical",
+        "choices": ["array([1., 5.])", "array([2., 3.])"],
+        "repr": True,
+    }
+    assert record["params"]["w"] in ([1.0, 5.0], [2.0, 3.0])
+
+
+@pytest.mark.parametrize(
+    ("make", "module"),
+    [
+        pytest.param(lambda s: ABCOptimizer(s, "max", seed=ANY_SEED), "metahpo.optimizers.abc", id="abc"),
+        pytest.param(lambda s: PSOOptimizer(s, "max", seed=ANY_SEED), "metahpo.optimizers.pso", id="pso"),
+        pytest.param(
+            lambda s: BBPSOOptimizer(s, "max", seed=ANY_SEED), "metahpo.optimizers.bbpso", id="bbpso"
+        ),
+        pytest.param(lambda s: _RandomSearch(s, "max", ANY_SEED), __name__, id="custom"),
+    ],
+)
+def test_config_json_should_record_the_module_of_the_optimizer_class(tmp_path, make, module):
+    """Given each library optimizer and a custom one, when config.json is read, then the optimizer record
+    holds the module of its class next to its name.
+
+    Oracle: report module docstring (config.json records the optimizer with every constructor setting and
+    the module of its class, so resume() builds again only the library's own optimizers).
+    """
+    optimizer = make(_space())
+    _, folder = _run(tmp_path, optimizer, max_evals=4)
+
+    record = _json(folder / "config.json")["optimizer"]
+
+    assert (record["name"], record["module"]) == (type(optimizer).__name__, module)

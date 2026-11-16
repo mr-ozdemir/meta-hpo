@@ -478,7 +478,7 @@ def _rebuild(
         return _optimizer_factory(optimizer, cast(Space, space), direction, runs)
     name = config["optimizer"]["name"]
     cls = _BUILT_IN.get(name)
-    if cls is None:
+    if cls is None or config["optimizer"].get("module", cls.__module__) != cls.__module__:
         raise ValueError(
             f"the folder was written by {name}, which resume() cannot build again; pass optimizer=, an "
             "optimizer object or a function seed -> optimizer as in optimize()"

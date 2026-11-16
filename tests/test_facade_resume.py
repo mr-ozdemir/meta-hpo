@@ -39,7 +39,8 @@ and with content of the wrong kind; a config.json without each key resume() read
 kind, and with a space, settings or seed that do not build; a log line whose trial number overflows. A
 Categorical of numpy arrays resumed with the space passed. log_every and verbose that are no integers,
 False as verbose, and a numpy integer max_evals. The integer settings of ABC and PSO recorded as
-whole floats, as 0.6.0 and 0.7.0 stored them.
+whole floats, as 0.6.0 and 0.7.0 stored them. Custom optimizers whose class is called ABCOptimizer,
+PSOOptimizer or BBPSOOptimizer, and library optimizers in folders without the optimizer's module.
 """
 
 import csv
@@ -1246,6 +1247,10 @@ DAMAGED_CONFIGS = [
         _set("stop", [{"name": "Patience", "settings": {}, "module": 3}]), id="stop-module-a-number"
     ),
     pytest.param(_set("resumes", {}), id="resumes-not-a-list"),
+    pytest.param(
+        lambda config: {**config, "optimizer": {**config["optimizer"], "module": 3}},
+        id="optimizer-module-a-number",
+    ),
 ]
 
 
@@ -1461,6 +1466,66 @@ def test_resume_should_take_an_integer_setting_recorded_as_a_whole_float_as_that
     """
     _, folder = _start(tmp_path, make, _interrupting(9))
     _whole_floats(folder, names)
+
+    study = resume(_score, folder, verbose=0)
+
+    assert _trajectory(study) == _trajectory(_reference(make))
+
+
+NAMED_LIKE_LIBRARY_OPTIMIZERS = [
+    pytest.param(type("ABCOptimizer", (_RandomSearch,), {}), id="abc"),
+    pytest.param(type("PSOOptimizer", (_RandomSearch,), {}), id="pso"),
+    pytest.param(type("BBPSOOptimizer", (_RandomSearch,), {}), id="bbpso"),
+]
+
+
+@pytest.mark.parametrize("cls", NAMED_LIKE_LIBRARY_OPTIMIZERS)
+def test_resume_should_ask_for_the_optimizer_when_a_custom_class_carries_the_name_of_a_library_optimizer(
+    tmp_path, no_plots, cls
+):
+    """Given a folder written by a custom random search whose class is called ABCOptimizer, PSOOptimizer or
+    BBPSOOptimizer, interrupted on its 4th call, when resume() runs without optimizer=, then ValueError asks
+    for optimizer= and the folder stays byte for byte as it was; with the custom optimizer passed the study
+    equals the uninterrupted run.
+
+    Oracle: resume docstring (optimizer is needed for a folder written by an optimizer other than the
+    library's ABC, PSO and BBPSO; a folder of another optimizer without it raises ValueError) and the report
+    module docstring (config.json records the module of the optimizer class). Decisive: the class name
+    alone matched, so the library class was built in its place and continued the search silently, because
+    its first draws equal those of the random search.
+    """
+    space = _space()
+    optimize(_interrupting(3), space, "max", 12, optimizer=cls(space, "max", ANY_SEED), output=tmp_path)
+    folder = _folder(tmp_path)
+    before = {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+    with pytest.raises(ValueError, match="optimizer="):
+        resume(_score, folder, verbose=0)
+    unchanged = {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()} == before
+    again = _space()
+    study = resume(_score, folder, optimizer=cls(again, "max", ANY_SEED), verbose=0)
+
+    twin = _space()
+    reference = optimize(_score, twin, "max", 12, optimizer=cls(twin, "max", ANY_SEED), output=None)
+    assert unchanged
+    assert _trajectory(study) == _trajectory(reference)
+
+
+@pytest.mark.parametrize("make", MAKERS)
+def test_resume_should_rebuild_a_library_optimizer_of_a_folder_that_records_no_module(
+    tmp_path, no_plots, make
+):
+    """Given each library optimizer interrupted on its 10th call whose config.json records no module for the
+    optimizer, as folders of 0.6.0, 0.7.0 and 0.7.1 do, when resume() runs without optimizer=, then the
+    study equals the uninterrupted run.
+
+    Oracle: resume docstring (folders of older versions continue; the library optimizers are built again
+    from config.json).
+    """
+    _, folder = _start(tmp_path, make, _interrupting(9))
+    config = _json(folder / "config.json")
+    config["optimizer"].pop("module")
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
 
     study = resume(_score, folder, verbose=0)
 

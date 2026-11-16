@@ -115,11 +115,30 @@ def secant_point(a: FloatArray, b: FloatArray, h_a: float, h_b: float) -> FloatA
 
 
 def iqi_point(a: FloatArray, b: FloatArray, c: FloatArray, h_a: float, h_b: float, h_c: float) -> FloatArray:
-    """Inverse quadratic interpolation at level 0 through (a, h_a), (b, h_b) and (c, h_c) (equation 11)."""
-    w_a = h_b * h_c / ((h_a - h_b) * (h_a - h_c))
-    w_b = h_a * h_c / ((h_b - h_a) * (h_b - h_c))
-    w_c = h_a * h_b / ((h_c - h_a) * (h_c - h_b))
+    """Inverse quadratic interpolation at level 0 through (a, h_a), (b, h_b) and (c, h_c) (equation 11).
+
+    The weights do not change when the three h values are scaled by the same factor. When a product of two
+    differences underflows to 0 (h values near 1e-160 and below) or a weight is not finite (h values near
+    1e300), they are computed again from the h values divided by the power of 2 just above the largest |h|,
+    which is exact, so no score scale divides by zero and the weights equal those of the same h values at
+    ordinary scale; for h values of ordinary scale the first computation stands unchanged.
+    """
+    weights = _iqi_weights(h_a, h_b, h_c)
+    if weights is None or not all(math.isfinite(w) for w in weights):
+        scale = math.ldexp(1.0, math.frexp(max(abs(h_a), abs(h_b), abs(h_c)))[1])
+        weights = _iqi_weights(h_a / scale, h_b / scale, h_c / scale)
+    if weights is None:
+        raise ZeroDivisionError("inverse quadratic interpolation needs three different h values")
+    w_a, w_b, w_c = weights
     return np.asarray(w_a * a + w_b * b + w_c * c, dtype=np.float64)
+
+
+def _iqi_weights(h_a: float, h_b: float, h_c: float) -> tuple[float, float, float] | None:
+    """The three Lagrange weights of iqi_point, or None when a product of two differences is 0."""
+    d_a, d_b, d_c = (h_a - h_b) * (h_a - h_c), (h_b - h_a) * (h_b - h_c), (h_c - h_a) * (h_c - h_b)
+    if not (d_a and d_b and d_c):
+        return None
+    return h_b * h_c / d_a, h_a * h_c / d_b, h_a * h_b / d_c
 
 
 def steffensen_step(a: FloatArray, h: float, h_probe: float) -> FloatArray:

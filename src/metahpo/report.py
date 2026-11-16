@@ -34,7 +34,8 @@ Large searches (max_evals >= COMPRESS_FROM) write trials.csv and population.csv 
 
 What a resume needs (see metahpo.resume). config.json records the space, the direction, the budget, the
 runs and their seeds, the cache flag and the optimizer with every constructor setting
-(Optimizer.settings()); `stop` lists the stopping rules of the runs in order, each with its class name and
+(Optimizer.settings()) and the module of its class, so resume() builds again only the library's own
+optimizers; `stop` lists the stopping rules of the runs in order, each with its class name and
 `settings` (Stopper.settings()), and is empty for a search without rules (a folder written by an older
 version has no `stop`, which counts as no rules); each rule also records the `module` of its class, so
 resume() builds again only the library's own rules. A Categorical whose choices are all strings, integers,
@@ -453,9 +454,14 @@ def _rebuild_space(described: list[dict[str, Any]]) -> Space | None:
 
 
 def _jsonable(value: Any) -> Any:
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating, float)):
+    """A value as JSON holds it: numpy scalars as the Python values they hold, numpy arrays as lists, a
+    non-finite float as null, dicts, lists and tuples item by item, and anything else as its text without
+    memory addresses."""
+    if isinstance(value, np.generic):
+        return _jsonable(value.item())
+    if isinstance(value, np.ndarray):
+        return _jsonable(value.tolist())
+    if isinstance(value, float):
         return None if not math.isfinite(float(value)) else float(value)
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
@@ -516,8 +522,13 @@ class _CsvFile:
 
 
 def _shown(value: Any) -> Any:
-    """A value as the CSV files and report.md show it: strings and numbers as they are, anything else as its
-    text without memory addresses (see metahpo.space._without_addresses)."""
+    """A value as the CSV files and report.md show it: strings and numbers as they are, numpy scalars as the
+    Python values they hold, numpy arrays as lists, anything else as its text without memory addresses (see
+    metahpo.space._without_addresses)."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
     return value if isinstance(value, (str, int, float)) else _without_addresses(str(value))
 
 
@@ -676,7 +687,10 @@ def _config_problem(config: Any) -> str:
         "max_evals": lambda v: _whole(v, 1),
         "seeds": lambda v: isinstance(v, list) and len(v) <= config["runs"],
         "optimizer": lambda v: (
-            isinstance(v, dict) and isinstance(v.get("name"), str) and isinstance(v.get("settings"), dict)
+            isinstance(v, dict)
+            and isinstance(v.get("name"), str)
+            and isinstance(v.get("settings"), dict)
+            and isinstance(v.get("module", ""), str)
         ),
         "space": lambda v: isinstance(v, list) and all(_parameter_record(p) for p in v),
         "cache": lambda v: isinstance(v, bool),
@@ -824,7 +838,11 @@ class ResultWriter(Callback):
             "python": sys.version.split()[0],
             "numpy": np.__version__,
             "platform": platform.platform(),
-            "optimizer": {"name": state.optimizer_name, "settings": state.optimizer.settings()},
+            "optimizer": {
+                "name": state.optimizer_name,
+                "module": type(state.optimizer).__module__,
+                "settings": state.optimizer.settings(),
+            },
             "direction": state.direction,
             "max_evals": state.max_evals,
             "runs": state.runs,
@@ -859,7 +877,7 @@ class ResultWriter(Callback):
             meta.pop("phase", ""),
             meta.pop("individual", ""),
         )
-        detail = json.dumps(meta) if meta else ""
+        detail = json.dumps(_jsonable(meta)) if meta else ""
         end = trial.start_time + trial.duration if math.isfinite(trial.start_time) else math.nan
         elapsed = state.elapsed(end, trial.number) if math.isfinite(end) else state.elapsed()
         best_score = state.best.score if state.best is not None else math.nan
