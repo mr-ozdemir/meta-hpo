@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from metahpo.space import Categorical
+from metahpo.space import Categorical, _choice_text
 
 
 def _style(ax: Any) -> None:
@@ -158,7 +158,7 @@ def make_plots(
                 )
                 jitter = np.random.default_rng(0).uniform(-0.15, 0.15, len(where))
                 ax.scatter(where + jitter, ok_scores, s=4, color="k", alpha=0.4)
-                ax.set_xticks(range(len(order)), order)
+                ax.set_xticks(range(len(order)), [_choice_text(c) for c in p.choices])
             else:
                 ax.scatter(values, ok_scores, s=10, alpha=0.5, c=np.arange(len(ok)), cmap="viridis")
                 if getattr(p, "log", False):
@@ -175,7 +175,7 @@ def make_plots(
             values = [t.params[name] for t in ok]
             if isinstance(p, Categorical):
                 values = [list(p.choices).index(v) for v in values]
-                ax.set_yticks(range(len(p.choices)), [repr(c) for c in p.choices])
+                ax.set_yticks(range(len(p.choices)), [_choice_text(c) for c in p.choices])
             sc = ax.scatter(numbers, values, s=8, c=ok_scores, cmap="viridis")
             if getattr(p, "log", False):
                 ax.set_yscale("log")

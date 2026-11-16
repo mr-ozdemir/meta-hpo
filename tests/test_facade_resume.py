@@ -29,10 +29,18 @@ batch and later; one run without a seed; a finished folder; a budget extension t
 runs stopped in the second; a custom optimizer; a Categorical of functions; folders edited to fail the
 check (other settings, a removed line, a broken line, a trial after the end); a second stop; a 0.5.1 folder
 with and without a seed; a state.json left empty or cut short, with and without a seed; a budget that
-crosses COMPRESS_FROM; scores NaN, inf and -inf.
+crosses COMPRESS_FROM; scores NaN, inf and -inf. On a space where particles on a wall repeat parameter sets:
+PSO budgets that cut a flight after a cached repeat, extended, and the same folders as 0.7.0 and older wrote
+them (written with the loop those versions had, which resume() keeps to replay them: _Run.loop with
+cut_first), finished, extended and interrupted after the swarm was asked again. A Categorical of closures,
+lambdas, bound methods, partials and plain objects built again from new objects, its config.json with the
+memory addresses 0.7.0 kept, and spaces whose choices really differ. A state.json without each of its keys,
+and with content of the wrong kind; a config.json without each key resume() reads, with values of the wrong
+kind, and with a space, settings or seed that do not build; a log line whose trial number overflows.
 """
 
 import csv
+import functools
 import gzip
 import json
 import math
@@ -851,3 +859,477 @@ def test_resume_should_refuse_a_run_without_a_seed_whose_state_json_is_unreadabl
 
     assert "0.5" not in str(raised.value)
     assert _log(folder).read_bytes() == before
+
+
+def _cut_space():
+    """Int(1, 4) x Categorical(['gini', 'entropy']) x Float(0, 1): particles that sit on a wall of the Float
+    hand out repeats, so a budget that cuts a PSO flight often keeps a cached repeat before the cut."""
+    return Space({"depth": Int(1, 4), "crit": Categorical(["gini", "entropy"]), "f": Float(0.0, 1.0)})
+
+
+def _rounded(params):
+    """A score rounded to two decimals, so many parameter sets tie."""
+    return round(params["depth"] * 0.1 + (params["crit"] == "gini") * 0.05 + params["f"] * 0.01, 2)
+
+
+def _cut_start(root, swarm, seed, max_evals, function=_rounded):
+    """optimize() maximising `function` on the cut space with a PSOOptimizer, written below root; returns the
+    study and the results folder."""
+    space = _cut_space()
+    opt = PSOOptimizer(space, "max", swarm_size=swarm, seed=seed)
+    study = optimize(function, space, "max", max_evals, optimizer=opt, verbose=0, output=root)
+    return study, _folder(root)
+
+
+def _old_cut_start(monkeypatch, root, swarm, seed, max_evals, function=_rounded):
+    """_cut_start with the loop of meta-hpo 0.7.0 and older, which resume() keeps to replay their folders
+    (_Run.loop with cut_first): a batch is cut to the remaining calls first, and the swarm is asked again for
+    a call that a cached repeat left over. The folder is the one such a version wrote."""
+    with monkeypatch.context() as patch:
+        patch.setattr(metahpo.facade, "_Start", functools.partial(metahpo.facade._Start, cut_first=True))
+        return _cut_start(root, swarm, seed, max_evals, function)
+
+
+@pytest.mark.parametrize("seed", [1, 3, 4])
+def test_resume_should_extend_a_run_whose_budget_cut_a_flight_after_a_cached_repeat_like_a_longer_run(
+    tmp_path, no_plots, seed
+):
+    """Given a PSO run (swarm 20) on the cut space that finished at max_evals 30 inside its second flight,
+    after a cached repeat, when resume() is called with max_evals 50, then the study, its stop reason and
+    generations.csv equal those of a run started with 50.
+
+    Oracle: resume docstring (a new max_evals gives the result of a run started with that budget).
+    Decisive: these seeds made 0.7.0 ask the swarm again for the call the cached repeat left over, so the
+    log held a trial the longer run never tries and the resume raised RuntimeError.
+    """
+    _, folder = _cut_start(tmp_path / "stopped", 20, seed, 30)
+
+    study = resume(_rounded, folder, max_evals=50, verbose=0)
+
+    reference, whole = _cut_start(tmp_path / "whole", 20, seed, 50)
+    assert (_trajectory(study), study.stop_reason) == (_trajectory(reference), reference.stop_reason)
+    generations = [_timeless(_rows(f / "run_001" / "generations.csv")) for f in (folder, whole)]
+    assert generations[0] == generations[1]
+
+
+def test_resume_should_return_a_finished_folder_whose_last_flight_an_older_version_cut_without_a_call(
+    tmp_path, no_plots, monkeypatch
+):
+    """Given a folder as 0.7.0 wrote it for a PSO run (swarm 20, seed 1) that finished at max_evals 30 with
+    31 trials, the last one handed out when the swarm was asked again, when resume() is called with the same
+    budget, then it returns those trials and stop_reason 'budget' without a call.
+
+    Oracle: resume docstring (a folder whose runs all finished evaluates nothing). Decisive: the loop of
+    this version would hand out the rest of the cut flight instead of asking again, so a resume that
+    replayed the folder only with it would raise RuntimeError.
+    """
+    original, folder = _old_cut_start(monkeypatch, tmp_path, 20, 1, 30)
+
+    study = resume(_refusing, folder, verbose=0)
+
+    assert len(_log(folder).read_text(encoding="utf-8").splitlines()) == 31
+    assert (_trajectory(study), study.stop_reason) == (_trajectory(original), "budget")
+
+
+def test_resume_should_refuse_to_extend_a_folder_whose_last_flight_an_older_version_cut(
+    tmp_path, no_plots, monkeypatch
+):
+    """Given the same folder as 0.7.0 wrote it, when resume() is called with max_evals 50, then ValueError
+    names the recorded budget max_evals=30, and trials.jsonl and config.json are unchanged.
+
+    Oracle: resume docstring (max_evals gives the result of a run started with that budget, which the trial
+    0.7.0 handed out after asking the swarm again rules out; the folder stays as it is when it cannot be
+    continued).
+    """
+    _, folder = _old_cut_start(monkeypatch, tmp_path, 20, 1, 30)
+    before = (_log(folder).read_bytes(), (folder / "config.json").read_bytes())
+
+    with pytest.raises(ValueError, match="max_evals=30"):
+        resume(_rounded, folder, max_evals=50, verbose=0)
+
+    assert (_log(folder).read_bytes(), (folder / "config.json").read_bytes()) == before
+
+
+def test_resume_should_continue_a_folder_an_older_version_interrupted_after_it_asked_the_swarm_again(
+    tmp_path, no_plots, monkeypatch
+):
+    """Given a folder as 0.7.0 wrote it for a PSO run (swarm 7, seed 16, max_evals 25) interrupted on its
+    25th call, after the swarm was asked again for a call a cached repeat left over, when resume() continues
+    it with the same budget, then the study equals the uninterrupted run of 0.7.0, which differs from the
+    run of this version.
+
+    Oracle: resume docstring (a run continues exactly where it stopped). Decisive: the log holds a trial
+    handed out after asking again, so only the loop of 0.7.0 replays and continues it.
+    """
+    _, folder = _old_cut_start(monkeypatch, tmp_path / "stopped", 7, 16, 25, _interrupting(24, _rounded))
+
+    study = resume(_rounded, folder, verbose=0)
+
+    old, _ = _old_cut_start(monkeypatch, tmp_path / "old", 7, 16, 25)
+    new, _ = _cut_start(tmp_path / "new", 7, 16, 25)
+    assert _trajectory(study) == _trajectory(old)
+    assert _trajectory(old) != _trajectory(new)
+
+
+class _Doubler:
+    """A plain object with the default repr, which holds a memory address: a choice itself and, through its
+    bound method, a method choice."""
+
+    def __call__(self, x):
+        return 2.0 * x
+
+    def halve(self, x):
+        return 0.5 * x
+
+
+def _closures():
+    """Two new functions on every call, so their memory addresses differ from call to call as from process
+    to process."""
+
+    def relu(x):
+        return max(x, 0.0)
+
+    def shift(x, by):
+        return x + by
+
+    return relu, shift
+
+
+CHOICE_KINDS = [
+    pytest.param(lambda: [_closures()[0], abs], id="function"),
+    pytest.param(lambda: [lambda x: x, lambda x: -x], id="lambda"),
+    pytest.param(lambda: [_Doubler().halve, _Doubler().__call__], id="bound-method"),
+    pytest.param(
+        lambda: [functools.partial(_closures()[1], by=1.0), functools.partial(_closures()[1], by=-1.0)],
+        id="partial",
+    ),
+    pytest.param(lambda: [_Doubler(), _Doubler()], id="plain-object"),
+]
+
+
+def _choice_space(choices):
+    return Space({"act": Categorical(choices), "x": Float(-1.0, 1.0)})
+
+
+def _apply(params):
+    return params["act"](params["x"])
+
+
+def _positions(study):
+    """Every trial's number, exact score, cached flag and position, which identify a search whose params
+    hold objects that compare by identity."""
+    return [(t.number, repr(t.score), t.cached, t.x.tolist()) for t in study.trials]
+
+
+@pytest.mark.parametrize("choices", CHOICE_KINDS)
+def test_resume_should_continue_with_a_space_of_new_objects_of_the_same_kinds_as_a_new_process_builds(
+    tmp_path, no_plots, choices
+):
+    """Given a folder whose Categorical holds functions, lambdas, bound methods, partials or plain objects,
+    interrupted on its 7th call, when resume() gets a space built again from new objects, whose memory
+    addresses differ as they do in a new process, then the study equals the uninterrupted run and
+    config.json holds no memory address.
+
+    Oracle: resume docstring (space must be the space that config.json describes) and report module
+    docstring (the text of such a choice leaves out the memory address, so it is the same in every process).
+    """
+    optimize(_interrupting(6, _apply), _choice_space(choices()), "max", 20, seed=ANY_SEED, output=tmp_path)
+    folder = _folder(tmp_path)
+
+    study = resume(_apply, folder, space=_choice_space(choices()), verbose=0)
+
+    reference = optimize(_apply, _choice_space(choices()), "max", 20, seed=ANY_SEED, output=None)
+    assert _positions(study) == _positions(reference)
+    assert " at 0x" not in (folder / "config.json").read_text(encoding="utf-8")
+
+
+def _old_addresses(folder):
+    """Writes every choice text of config.json the way 0.7.0 kept it, with a memory address before the
+    closing bracket."""
+    config = _json(folder / "config.json")
+    config["space"][0]["choices"] = [
+        c[:-1] + " at 0x000001D2C3B4A5F6>" for c in config["space"][0]["choices"]
+    ]
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+
+def test_resume_should_accept_a_folder_whose_config_json_kept_the_memory_addresses_of_older_versions(
+    tmp_path, no_plots
+):
+    """Given a folder of a Categorical of a closure and abs interrupted on its 7th call, whose config.json
+    records the choices with memory addresses as 0.7.0 did, when resume() gets the space built again, then
+    the study equals the uninterrupted run.
+
+    Oracle: resume docstring (space must be the space that config.json describes) and report module
+    docstring (the text leaves out the memory address, which older versions kept).
+    """
+    choices = CHOICE_KINDS[0].values[0]
+    optimize(_interrupting(6, _apply), _choice_space(choices()), "max", 20, seed=ANY_SEED, output=tmp_path)
+    folder = _folder(tmp_path)
+    _old_addresses(folder)
+
+    study = resume(_apply, folder, space=_choice_space(choices()), verbose=0)
+
+    reference = optimize(_apply, _choice_space(choices()), "max", 20, seed=ANY_SEED, output=None)
+    assert _positions(study) == _positions(reference)
+
+
+def _tanh_closure():
+    def tanh(x):
+        return math.tanh(x)
+
+    return tanh
+
+
+@pytest.mark.parametrize(
+    "space",
+    [
+        pytest.param(lambda: _choice_space([_tanh_closure(), abs]), id="function-of-another-name"),
+        pytest.param(lambda: _choice_space([_closures()[0], abs, min]), id="three-choices"),
+        pytest.param(lambda: _choice_space([_closures()[0], "linear"]), id="other-json-value"),
+        pytest.param(
+            lambda: Space({"fn": Categorical([_closures()[0], abs]), "x": Float(-1.0, 1.0)}),
+            id="other-parameter-name",
+        ),
+    ],
+)
+def test_resume_should_still_reject_a_space_whose_choices_really_differ(tmp_path, no_plots, space):
+    """Given a folder whose Categorical holds a closure relu and abs (one with a memory address in its repr,
+    one without), when resume() gets a space with a function of another name, three choices, a string
+    instead of abs or another parameter name, then ValueError names the space and the folder records no
+    resume.
+
+    Oracle: resume docstring (a space that does not match the folder raises ValueError).
+    """
+    choices = CHOICE_KINDS[0].values[0]
+    optimize(_interrupting(6, _apply), _choice_space(choices()), "max", 20, seed=ANY_SEED, output=tmp_path)
+    folder = _folder(tmp_path)
+
+    with pytest.raises(ValueError, match="space"):
+        resume(_apply, folder, space=space(), verbose=0)
+
+    assert _json(folder / "config.json")["resumes"] == []
+
+
+def _edit_state(folder, change):
+    """Replaces run_001/state.json with change(its content)."""
+    path = folder / "run_001" / "state.json"
+    path.write_text(json.dumps(change(_json(path))), encoding="utf-8")
+
+
+def _without(*keys):
+    return lambda record: {k: v for k, v in record.items() if k not in keys}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(_without("generator"), id="no-generator-repeated-from-the-seed"),
+        pytest.param(_without("started"), id="no-start-from-the-first-trial"),
+        pytest.param(_without("pauses"), id="no-pauses-of-a-run-never-resumed"),
+        pytest.param(_without("generator", "started", "pauses"), id="empty-object"),
+    ],
+)
+def test_resume_should_rebuild_what_state_json_lacks_from_the_other_records(tmp_path, no_plots, change):
+    """Given a default run with seed 0 interrupted on its 10th call whose state.json lacks its generator
+    state, its start time, its pauses or all three, when resume() continues it, then the study equals the
+    uninterrupted run.
+
+    Oracle: resume docstring (without the generator state the run is repeated from its seed) and the
+    RunState docstring (pauses lists the resumes of the run, so a run that was never resumed has none); the
+    start time only moves the time columns, which the study does not hold.
+    """
+    optimize(_interrupting(9), _space(), "max", BUDGET, seed=ANY_SEED, verbose=0, output=tmp_path)
+    folder = _folder(tmp_path)
+    _edit_state(folder, change)
+
+    study = resume(_score, folder, verbose=0)
+
+    reference = optimize(_score, _space(), "max", BUDGET, seed=ANY_SEED, verbose=0, output=None)
+    assert _trajectory(study) == _trajectory(reference)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(lambda state: [state], id="a-list"),
+        pytest.param(
+            lambda state: {**state, "generator": {"bit_generator": "MT19937"}}, id="foreign-generator"
+        ),
+        pytest.param(lambda state: {**state, "started": "soon"}, id="start-not-a-number"),
+        pytest.param(lambda state: {**state, "started": 1e400}, id="start-infinite"),
+        pytest.param(lambda state: {**state, "pauses": [[1]]}, id="pause-without-seconds"),
+        pytest.param(lambda state: {**state, "pauses": [[-1, 0.0]]}, id="pause-at-a-negative-trial"),
+        pytest.param(lambda state: {**state, "pauses": 3}, id="pauses-not-a-list"),
+    ],
+)
+def test_resume_should_refuse_a_state_json_that_does_not_hold_the_state_of_a_run(tmp_path, no_plots, change):
+    """Given a run interrupted on its 10th call whose state.json holds a list, a generator state of another
+    kind, a start time that is not a finite number or pauses that are not (trial, seconds) pairs, when
+    resume() is called, then ValueError names state.json and trials.jsonl is unchanged.
+
+    Oracle: error conventions of the library (a broken results folder raises ValueError with a message that
+    names the file) and resume docstring (the folder stays as it is when it cannot be continued).
+    """
+    optimize(_interrupting(9), _space(), "max", BUDGET, seed=ANY_SEED, verbose=0, output=tmp_path)
+    folder = _folder(tmp_path)
+    _edit_state(folder, change)
+    before = _log(folder).read_bytes()
+
+    with pytest.raises(ValueError, match="state.json"):
+        resume(_score, folder, verbose=0)
+
+    assert _log(folder).read_bytes() == before
+
+
+def test_resume_should_refuse_a_resumed_run_whose_state_json_lost_its_pauses(tmp_path, no_plots):
+    """Given a run interrupted on its 8th call, resumed and interrupted again, whose state.json then lost its
+    pauses, when resume() is called, then ValueError names state.json, since the time the run was stopped
+    cannot be rebuilt.
+
+    Oracle: RunState docstring (pauses lists every resume of the run) and the error conventions (a broken
+    results folder raises ValueError naming the file).
+    """
+    optimize(_interrupting(7), _space(), "max", BUDGET, seed=ANY_SEED, verbose=0, output=tmp_path)
+    folder = _folder(tmp_path)
+    resume(_interrupting(5), folder, verbose=0)
+    _edit_state(folder, _without("pauses"))
+
+    with pytest.raises(ValueError, match="state.json"):
+        resume(_score, folder, verbose=0)
+
+    assert len(_json(folder / "config.json")["resumes"]) == 1
+
+
+def _set(key, value):
+    return lambda config: {**config, key: value}
+
+
+def _space_entry(**fields):
+    return lambda config: {
+        **config,
+        "space": [config["space"][0], {**config["space"][1], **fields}, *config["space"][2:]],
+    }
+
+
+DAMAGED_CONFIGS = [
+    pytest.param(lambda config: [config], id="a-list"),
+    pytest.param(_without("runs"), id="no-runs"),
+    pytest.param(_set("runs", "two"), id="runs-a-string"),
+    pytest.param(_set("runs", True), id="runs-a-boolean"),
+    pytest.param(_set("direction", "up"), id="unknown-direction"),
+    pytest.param(_without("max_evals"), id="no-max-evals"),
+    pytest.param(_set("max_evals", 0), id="max-evals-zero"),
+    pytest.param(_without("seeds"), id="no-seeds"),
+    pytest.param(_set("seeds", [0, 1]), id="more-seeds-than-runs"),
+    pytest.param(_without("optimizer"), id="no-optimizer"),
+    pytest.param(_set("optimizer", {"name": "ABCOptimizer"}), id="optimizer-without-settings"),
+    pytest.param(_without("space"), id="no-space"),
+    pytest.param(_set("space", [{}]), id="space-entry-empty"),
+    pytest.param(_space_entry(type="Normal"), id="unknown-parameter-type"),
+    pytest.param(_space_entry(low="small"), id="bound-a-string"),
+    pytest.param(_space_entry(log="yes"), id="log-not-a-boolean"),
+    pytest.param(
+        _set("space", [{"name": "act", "type": "Categorical", "choices": "relu"}]), id="choices-a-string"
+    ),
+    pytest.param(
+        _set("space", [{"name": "act", "type": "Categorical", "choices": [1], "repr": True}]),
+        id="text-choice-a-number",
+    ),
+    pytest.param(_set("cache", "yes"), id="cache-not-a-boolean"),
+    pytest.param(_set("stop", [{}]), id="stop-entry-empty"),
+    pytest.param(
+        _set("stop", [{"name": "Patience", "settings": {}, "module": 3}]), id="stop-module-a-number"
+    ),
+    pytest.param(_set("resumes", {}), id="resumes-not-a-list"),
+]
+
+
+@pytest.mark.parametrize("change", DAMAGED_CONFIGS)
+def test_resume_should_refuse_a_config_json_that_lacks_what_resume_reads_and_name_it(
+    tmp_path, no_plots, change
+):
+    """Given a run interrupted on its 10th call whose config.json lacks a key resume() reads or holds a value
+    of the wrong kind there, when resume() is called, then ValueError names config.json and trials.jsonl is
+    unchanged.
+
+    Oracle: error conventions of the library (a broken results folder raises ValueError naming the file)
+    and the report module docstring (what config.json records for a resume).
+    """
+    optimize(_interrupting(9), _space(), "max", BUDGET, seed=ANY_SEED, verbose=0, output=tmp_path)
+    folder = _folder(tmp_path)
+    path = folder / "config.json"
+    path.write_text(json.dumps(change(_json(path))), encoding="utf-8")
+    before = _log(folder).read_bytes()
+
+    with pytest.raises(ValueError, match="config.json"):
+        resume(_score, folder, verbose=0)
+
+    assert _log(folder).read_bytes() == before
+
+
+@pytest.mark.parametrize("text", [pytest.param("", id="empty"), pytest.param('{"runs": 1', id="cut-short")])
+def test_resume_should_refuse_a_config_json_that_is_not_valid_json_and_name_it(tmp_path, no_plots, text):
+    """Given a run interrupted on its 10th call whose config.json is empty or cut short, when resume() is
+    called, then ValueError names config.json and says it is not valid JSON.
+
+    Oracle: error conventions of the library (a broken results folder raises ValueError naming the file).
+    """
+    optimize(_interrupting(9), _space(), "max", BUDGET, seed=ANY_SEED, verbose=0, output=tmp_path)
+    folder = _folder(tmp_path)
+    (folder / "config.json").write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="config.json") as raised:
+        resume(_score, folder, verbose=0)
+
+    assert "valid JSON" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(_space_entry(low=300), id="int-low-above-high"),
+        pytest.param(
+            lambda config: {**config, "optimizer": {**config["optimizer"], "settings": {"colonies": 8}}},
+            id="unknown-optimizer-setting",
+        ),
+        pytest.param(_set("seeds", [-1]), id="negative-seed"),
+    ],
+)
+def test_resume_should_name_config_json_when_its_space_settings_or_seed_do_not_build(
+    tmp_path, no_plots, change
+):
+    """Given a run interrupted on its 10th call whose config.json describes an Int with low above high,
+    records a setting ABCOptimizer does not take or a negative seed, when resume() is called, then
+    ValueError names config.json and trials.jsonl is unchanged.
+
+    Oracle: error conventions of the library (a broken results folder raises ValueError naming the file).
+    """
+    optimize(_interrupting(9), _space(), "max", BUDGET, seed=ANY_SEED, verbose=0, output=tmp_path)
+    folder = _folder(tmp_path)
+    path = folder / "config.json"
+    path.write_text(json.dumps(change(_json(path))), encoding="utf-8")
+    before = _log(folder).read_bytes()
+
+    with pytest.raises(ValueError, match="config.json"):
+        resume(_score, folder, verbose=0)
+
+    assert _log(folder).read_bytes() == before
+
+
+def test_resume_should_refuse_a_log_line_whose_trial_number_does_not_fit_an_integer(tmp_path, no_plots):
+    """Given a log whose 3rd line records the trial number 1e400, which JSON reads as infinity, when resume()
+    is called, then RuntimeError names line 3, as for any other line that is not a trial record.
+
+    Oracle: resume docstring (the folder cannot be continued and stays as it is) and report module docstring
+    (one JSON line per trial).
+    """
+    _, folder = _start(tmp_path, MAKERS[0].values[0], _interrupting(20))
+    lines = _log(folder).read_text(encoding="utf-8").splitlines(keepends=True)
+    lines[2] = lines[2].replace('"trial": 2,', '"trial": 1e400,')
+    _log(folder).write_text("".join(lines), encoding="utf-8", newline="")
+
+    with pytest.raises(RuntimeError, match="line 3 "):
+        resume(_score, folder, verbose=0)
+
+    assert "1e400" in _log(folder).read_text(encoding="utf-8")

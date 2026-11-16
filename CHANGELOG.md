@@ -6,6 +6,25 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-16
+
+### Fixed
+
+- A search whose budget ends inside a batch now tries the first trials of the same search with a larger
+  budget, so `resume(max_evals=...)` extends every run; a run whose budget ended inside a batch after a
+  cached repeat (mostly PSO flights) ends with other trials than in 0.7.0, and such a folder written by
+  0.7.0 or older resumes only with its own budget.
+- `resume()` accepts a space whose Categorical holds functions, lambdas, methods or other objects in a new
+  process: the results files show such a choice without its memory address, and folders of older versions
+  that recorded the address still resume.
+- `resume()` builds a stopping rule again only when it is the library's `Patience`, `MaxTime` or
+  `TargetScore`; a rule of your own with one of these names now asks for `stop=` instead of being replaced.
+- A run that `MaxTime` ended always resumes without a call: the rule decides from where the trial ended,
+  not from the clock after the results of the trial were written.
+- A damaged `config.json` or `state.json` makes `resume()` raise `ValueError` naming the file instead of a
+  bare `KeyError` or `JSONDecodeError`; a `state.json` without the generator state, start time or (for a run
+  never resumed) pauses is rebuilt from the other records.
+
 ## [0.7.0] - 2026-11-14
 
 ### Added

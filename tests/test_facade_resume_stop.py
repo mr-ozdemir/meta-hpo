@@ -25,7 +25,10 @@ Subset: The default ABC optimizer on a two-parameter sphere with a budget of 200
 MaxTime, alone and together, and a rule of one's own; folders ended by a rule, interrupted by Ctrl+C inside
 the first batch and later, and with three runs interrupted in the second; replacing rules by a stricter, a
 more generous and no rule; a folder without the `stop` entry; stop= values of the wrong type and with a
-reserved reason.
+reserved reason; rules of one's own whose class is called Patience, MaxTime or TargetScore, with the settings
+of the library class and with others, in folders with and without the module of each rule (0.7.0 recorded
+none); settings a library rule rejects; a run whose results take five minutes to write after each
+ten-minute evaluation under MaxTime.
 """
 
 import json
@@ -266,7 +269,11 @@ def test_resume_should_return_a_folder_a_rule_ended_without_a_call_and_with_its_
     config = _json(folder / "config.json")
     assert _trajectory(study) == _trajectory(original)
     assert study.stop_reason in ("patience", "target")
-    assert config["stop"] == recorded == [{"name": type(r).__name__, "settings": r.settings()} for r in rules]
+    assert (
+        config["stop"]
+        == recorded
+        == [{"name": type(r).__name__, "module": "metahpo.stop", "settings": r.settings()} for r in rules]
+    )
     assert config["resumes"][-1]["stop"] == recorded
 
 
@@ -343,7 +350,7 @@ def test_resume_should_replace_the_recorded_rules_by_a_more_generous_rule_given_
     study = resume(function, folder, verbose=0, stop=Patience(40))
 
     config = _json(folder / "config.json")
-    expected = [{"name": "Patience", "settings": {"evals": 40, "min_delta": 0.0}}]
+    expected = [{"name": "Patience", "module": "metahpo.stop", "settings": {"evals": 40, "min_delta": 0.0}}]
     assert _trajectory(study) == _trajectory(_reference([Patience(40)]))
     assert _records(folder) == _records(whole)
     assert (config["stop"], config["resumes"][-1]["stop"]) == (expected, expected)
@@ -501,3 +508,195 @@ def test_resume_should_count_the_logged_search_time_at_the_restored_trials_not_t
     assert recorder.restored == [600.0, 1200.0, 1800.0]
     assert (len(study.trials), study.stop_reason) == (6, "time")
     assert math.isclose(study.trials[-1].start_time - study.trials[0].start_time, TEN_HOURS + 5 * TEN_MINUTES)
+
+
+class _Counting(Stopper):
+    """A rule of one's own that stops after `evals` trials, with the constructor of the library's Patience."""
+
+    reason = "own"
+
+    def __init__(self, evals, min_delta=0.0):
+        self.evals = evals
+        self.min_delta = min_delta
+
+    def should_stop(self, state):
+        return len(state.study.trials) >= self.evals
+
+
+class _Timed(Stopper):
+    """A rule of one's own that stops after `seconds` trials, with the constructor of the library's
+    MaxTime."""
+
+    reason = "own"
+
+    def __init__(self, seconds=0.0, minutes=0.0, hours=0.0):
+        self.seconds = seconds
+        self.minutes = minutes
+        self.hours = hours
+
+    def should_stop(self, state):
+        return len(state.study.trials) >= self.seconds
+
+
+class _Scored(Stopper):
+    """A rule of one's own that stops after `score` trials, with the constructor of the library's
+    TargetScore."""
+
+    reason = "own"
+
+    def __init__(self, score):
+        self.score = score
+
+    def should_stop(self, state):
+        return len(state.study.trials) >= self.score
+
+
+class _Trials(Stopper):
+    """A rule of one's own that stops after `trials` trials."""
+
+    reason = "own"
+
+    def __init__(self, trials):
+        self.trials = trials
+
+    def should_stop(self, state):
+        return len(state.study.trials) >= self.trials
+
+
+NAMED_LIKE_LIBRARY_RULES = [
+    pytest.param(type("Patience", (_Counting,), {})(6), id="patience-with-the-library-settings"),
+    pytest.param(type("MaxTime", (_Timed,), {})(seconds=6), id="max-time-with-the-library-settings"),
+    pytest.param(type("TargetScore", (_Scored,), {})(6), id="target-score-with-the-library-settings"),
+    pytest.param(type("Patience", (_Trials,), {})(6), id="patience-with-other-settings"),
+]
+
+
+@pytest.mark.parametrize("rule", NAMED_LIKE_LIBRARY_RULES)
+def test_resume_should_ask_for_stop_when_a_rule_of_ones_own_carries_the_name_of_a_library_rule(
+    tmp_path, no_plots, rule
+):
+    """Given a folder ended after six trials by a rule of one's own whose class is called Patience, MaxTime
+    or TargetScore, with the settings of the library class of that name or with others, when resume() runs
+    without stop=, then ValueError names the class and stop=, and the folder stays byte for byte as it was.
+
+    Oracle: resume docstring (the built-in rules are built again from their settings; a folder written with
+    a rule of another class needs stop=, else ValueError) and report module docstring (each rule records the
+    module of its class, so resume() builds again only the library's own rules). Decisive: a resume that
+    matched the class name alone built the library rule, which raised TypeError for other settings and
+    silently replaced the rule otherwise.
+    """
+    original, folder = _start(tmp_path, _sphere, [rule])
+    before = _files(folder)
+
+    with pytest.raises(ValueError, match=f"{type(rule).__name__}.*stop="):
+        resume(_refusing, folder, verbose=0)
+
+    assert (len(original.trials), original.stop_reason) == (6, "own")
+    assert _files(folder) == before
+
+
+def _drop_rule_modules(folder):
+    """Removes `module` from every rule config.json records, as a folder of 0.7.0 has it."""
+    path = folder / "config.json"
+    config = _json(path)
+    config["stop"] = [{k: v for k, v in record.items() if k != "module"} for record in config["stop"]]
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+
+def test_resume_should_build_the_library_rules_of_a_0_7_0_folder_again_although_it_records_no_module(
+    tmp_path, no_plots
+):
+    """Given a folder ended by Patience(15) and TargetScore(0.05) whose config.json records the rules without
+    their module, as 0.7.0 wrote it, when resume() runs without stop=, then it returns the same trials and
+    stop_reason without a call.
+
+    Oracle: resume docstring (the built-in rules are built again from their settings; a run a rule had
+    ended comes back without a call and with the same stop_reason).
+    """
+    original, folder = _start(tmp_path, _sphere, [Patience(15), TargetScore(0.05)])
+    _drop_rule_modules(folder)
+
+    study = resume(_refusing, folder, verbose=0)
+
+    assert _trajectory(study) == _trajectory(original)
+
+
+def test_resume_should_ask_for_stop_when_a_0_7_0_folder_records_a_rule_named_patience_with_other_settings(
+    tmp_path, no_plots
+):
+    """Given a folder ended by a rule of one's own called Patience whose only setting is `trials`, its
+    config.json without the module of the rule as 0.7.0 wrote it, when resume() runs without stop=, then
+    ValueError names Patience and stop=.
+
+    Oracle: resume docstring (a folder written with a rule of another class needs stop=, else ValueError).
+    Decisive: the library's Patience takes evals and min_delta, so building it from {'trials': 6} raised
+    TypeError.
+    """
+    _, folder = _start(tmp_path, _sphere, [NAMED_LIKE_LIBRARY_RULES[3].values[0]])
+    _drop_rule_modules(folder)
+
+    with pytest.raises(ValueError, match="Patience.*stop="):
+        resume(_refusing, folder, verbose=0)
+
+    assert _json(folder / "config.json")["resumes"] == []
+
+
+def test_resume_should_name_config_json_when_it_records_settings_a_library_rule_rejects(tmp_path, no_plots):
+    """Given a folder ended by Patience(15) whose config.json was edited to evals 0, when resume() runs
+    without stop=, then ValueError names config.json and stop=, and the folder records no resume.
+
+    Oracle: error conventions of the library (a broken results folder raises ValueError naming the file)
+    and the Patience docstring (evals is an integer of at least 1).
+    """
+    _, folder = _start(tmp_path, _sphere, [Patience(15)])
+    path = folder / "config.json"
+    config = _json(path)
+    config["stop"][0]["settings"]["evals"] = 0
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="config.json.*stop="):
+        resume(_refusing, folder, verbose=0)
+
+    assert _json(path)["resumes"] == []
+
+
+class _SlowWriter(Callback):
+    """A callback that takes five minutes of the fake clock after every trial, like results written to a
+    slow disk."""
+
+    def __init__(self, clock):
+        self.clock = clock
+
+    def on_trial(self, state, trial, new_best):
+        self.clock.now += TEN_MINUTES / 2
+
+
+def test_resume_should_return_a_run_that_max_time_ended_while_its_trial_was_written_without_a_call(
+    tmp_path, no_plots, clock
+):
+    """Given ten-minute evaluations whose results take five more minutes to write and MaxTime(hours=1), when
+    optimize() runs and resume() is called on its folder without stop=, then the run ends after the fifth
+    trial, the first that ends at 60 minutes or later (the fourth ends at 55, the clock reads 60 only after
+    it was written), and the resume returns those five trials with stop_reason 'time' without a call.
+
+    Oracle: MaxTime docstring (the time is the search time at the end of the trial just recorded; the answer
+    depends only on what the results folder records, so a run that MaxTime ended comes back without a call)
+    and resume docstring (a run a rule had ended comes back without a call and with the same stop_reason).
+    Decisive: a rule that read the clock when it was asked stopped after the fourth trial, and its replay,
+    which only knows where the fourth trial ended, did not stop there and called the objective.
+    """
+    original = optimize(
+        _slow(clock),
+        _space(),
+        max_evals=BUDGET,
+        seed=ANY_SEED,
+        verbose=0,
+        output=tmp_path,
+        callbacks=[_SlowWriter(clock)],
+        stop=[MaxTime(hours=1)],
+    )
+
+    study = resume(_refusing, _folder(tmp_path), verbose=0)
+
+    assert (len(original.trials), original.stop_reason) == (5, "time")
+    assert _trajectory(study) == _trajectory(original)

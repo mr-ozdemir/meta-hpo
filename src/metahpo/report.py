@@ -36,9 +36,12 @@ What a resume needs (see metahpo.resume). config.json records the space, the dir
 runs and their seeds, the cache flag and the optimizer with every constructor setting
 (Optimizer.settings()); `stop` lists the stopping rules of the runs in order, each with its class name and
 `settings` (Stopper.settings()), and is empty for a search without rules (a folder written by an older
-version has no `stop`, which counts as no rules). A Categorical whose choices are all strings, integers,
+version has no `stop`, which counts as no rules); each rule also records the `module` of its class, so
+resume() builds again only the library's own rules. A Categorical whose choices are all strings, integers,
 finite floats, booleans or None stores them as JSON values; any other Categorical stores the repr() of each
-choice and is marked `"repr": true`, and resume() then needs the space passed in. `resumes` lists every
+choice and is marked `"repr": true`, and resume() then needs the space passed in. That text, and every other
+text the files show for such a value, leaves out the memory address (' at 0x...') of a function, lambda,
+method or plain object, so it is the same in every process. `resumes` lists every
 resume with its time, library version, budget, stopping rules and the number of trials it restored;
 `library` keeps the version that started the folder. run_NNN/state.json holds the start time of the run
 (`started`, seconds since the epoch), the state of the optimizer's random generator before the first
@@ -74,15 +77,15 @@ import platform
 import sys
 import time
 import warnings
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import numpy as np
 
 from metahpo.optimizers.base import Optimizer
-from metahpo.space import Categorical, Float, Int, Space
+from metahpo.space import Categorical, Float, Int, Space, _choice_text, _without_addresses
 from metahpo.study import Study, Trial
 
 DEFAULT_OUTPUT = "hpo_results"
@@ -350,14 +353,18 @@ class ConsoleReporter(Callback):
 
 
 def _describe_rules(rules: Sequence[Any]) -> list[dict[str, Any]]:
-    """The stopping rules as config.json records them: the class name and settings() of each, in order."""
-    return [{"name": type(rule).__name__, "settings": rule.settings()} for rule in rules]
+    """The stopping rules as config.json records them: the class name, the module of the class and
+    settings() of each, in order."""
+    return [
+        {"name": type(rule).__name__, "module": type(rule).__module__, "settings": rule.settings()}
+        for rule in rules
+    ]
 
 
 def _rules_label(rules: Sequence[Any]) -> str:
     """The stopping rules for the console and report.md, for example 'Patience(evals=60, min_delta=0.0)'."""
     return ", ".join(
-        f"{d['name']}({', '.join(f'{k}={v!r}' for k, v in d['settings'].items())})"
+        f"{d['name']}({', '.join(f'{k}={_choice_text(v)}' for k, v in d['settings'].items())})"
         for d in _describe_rules(rules)
     )
 
@@ -398,7 +405,7 @@ def _describe_space(space: Space) -> list[dict[str, Any]]:
     for name, p in zip(space.names, space.parameters, strict=True):
         if isinstance(p, Categorical):
             native = all(_json_native(c) for c in p.choices)
-            choices = list(p.choices) if native else [repr(c) for c in p.choices]
+            choices = list(p.choices) if native else [_choice_text(c) for c in p.choices]
             out.append({"name": name, "type": "Categorical", "choices": choices, "repr": not native})
         elif isinstance(p, Int):
             out.append({"name": name, "type": "Int", "low": p.low, "high": p.high, "log": p.log})
@@ -409,12 +416,17 @@ def _describe_space(space: Space) -> list[dict[str, Any]]:
 
 
 def _space_key(described: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
-    """A comparable form of a space description; choices are compared by their repr(), so a description
-    that stores them as repr() strings (as 0.5.x did, without the 'repr' mark) compares too."""
+    """A comparable form of a space description; choices are compared by their repr() without memory
+    addresses, so a description that stores them as repr() strings (as 0.5.x did, without the 'repr' mark)
+    or with the addresses that 0.7.0 and older kept compares too."""
     key: list[tuple[Any, ...]] = []
     for p in described:
         if p["type"] == "Categorical":
-            texts = p["choices"] if p.get("repr", True) else [repr(c) for c in p["choices"]]
+            texts = (
+                [_without_addresses(c) for c in p["choices"]]
+                if p.get("repr", True)
+                else [repr(c) for c in p["choices"]]
+            )
             key.append((p["name"], p["type"], texts))
         else:
             key.append((p["name"], p["type"], p["low"], p["high"], p["log"]))
@@ -453,7 +465,7 @@ def _jsonable(value: Any) -> Any:
         return [_jsonable(v) for v in value]
     if isinstance(value, (str, int, bool)) or value is None:
         return value
-    return repr(value)
+    return _choice_text(value)
 
 
 def _write_json(path: Path, data: Any, sync: bool = False) -> None:
@@ -497,12 +509,18 @@ class _CsvFile:
         self._fh.flush()
 
     def row(self, values: list[Any]) -> None:
-        self._writer.writerow(["" if v is None else v for v in values])
+        self._writer.writerow(["" if v is None else _shown(v) for v in values])
         self._fh.flush()
 
     def close(self) -> None:
         if not self._fh.closed:
             self._fh.close()
+
+
+def _shown(value: Any) -> Any:
+    """A value as the CSV files and report.md show it: strings and numbers as they are, anything else as its
+    text without memory addresses (see metahpo.space._without_addresses)."""
+    return value if isinstance(value, (str, int, float)) else _without_addresses(str(value))
 
 
 def _cell(value: Any) -> Any:
@@ -593,7 +611,7 @@ def _read_run(run_dir: Path) -> _RunLog | None:
     for number, line in enumerate(data[:valid].splitlines(), start=1):
         try:
             trials.append(_logged(json.loads(line)))
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError, OverflowError) as exc:
             raise RuntimeError(
                 f"line {number} of {path} is not a trial record, so the run cannot be resumed"
             ) from exc
@@ -601,12 +619,80 @@ def _read_run(run_dir: Path) -> _RunLog | None:
 
 
 def _read_config(folder: Path) -> dict[str, Any]:
-    """config.json of a results folder; ValueError when the folder has none."""
+    """config.json of a results folder; ValueError when the folder has none, or when it is not valid JSON
+    or lacks what resume() reads (see _config_problem), naming the file."""
     path = folder / "config.json"
     if not path.is_file():
         raise ValueError(f"{folder} is not a results folder of meta-hpo: it has no config.json")
-    config: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-    return config
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as exc:
+        raise ValueError(f"{path} is not valid JSON, so the folder cannot be resumed") from exc
+    problem = _config_problem(config)
+    if problem:
+        raise ValueError(f"{path} is damaged: {problem}, so the folder cannot be resumed")
+    return cast(dict[str, Any], config)
+
+
+def _whole(value: Any, low: int) -> bool:
+    """True for a JSON integer >= low (not a boolean)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= low
+
+
+def _rule_record(record: Any) -> bool:
+    """True for a stopping rule as _describe_rules records it (0.7.0 recorded no module)."""
+    return (
+        isinstance(record, dict)
+        and isinstance(record.get("name"), str)
+        and isinstance(record.get("settings"), dict)
+        and isinstance(record.get("module", ""), str)
+    )
+
+
+def _parameter_record(record: Any) -> bool:
+    """True for a parameter as _describe_space records it (0.5.x recorded no 'repr' mark)."""
+    if not isinstance(record, dict) or not isinstance(record.get("name"), str):
+        return False
+    if record.get("type") == "Categorical":
+        choices, marked = record.get("choices"), record.get("repr", True)
+        return (
+            isinstance(choices, list)
+            and isinstance(marked, bool)
+            and (not marked or all(isinstance(c, str) for c in choices))
+        )
+    bounds = [record.get("low"), record.get("high")]
+    return (
+        record.get("type") in ("Int", "Float")
+        and all(isinstance(b, (int, float)) and not isinstance(b, bool) for b in bounds)
+        and isinstance(record.get("log"), bool)
+    )
+
+
+def _config_problem(config: Any) -> str:
+    """What config.json lacks of what resume() reads, as a short text; empty when nothing is missing."""
+    if not isinstance(config, dict):
+        return "it holds no JSON object"
+    checks: dict[str, Callable[[Any], bool]] = {
+        "runs": lambda v: _whole(v, 1),
+        "direction": lambda v: v in ("min", "max"),
+        "max_evals": lambda v: _whole(v, 1),
+        "seeds": lambda v: isinstance(v, list) and len(v) <= config["runs"],
+        "optimizer": lambda v: (
+            isinstance(v, dict) and isinstance(v.get("name"), str) and isinstance(v.get("settings"), dict)
+        ),
+        "space": lambda v: isinstance(v, list) and all(_parameter_record(p) for p in v),
+        "cache": lambda v: isinstance(v, bool),
+        "stop": lambda v: isinstance(v, list) and all(_rule_record(r) for r in v),
+        "resumes": lambda v: isinstance(v, list),
+    }
+    optional = ("cache", "stop", "resumes")
+    for key, valid in checks.items():
+        if key in config:
+            if not valid(config[key]):
+                return f"'{key}' is not valid"
+        elif key not in optional:
+            return f"'{key}' is missing"
+    return ""
 
 
 class ResultWriter(Callback):
@@ -1235,7 +1321,7 @@ def _write_report(
             "",
             "| Parameter | Value |",
             "|---|---|",
-            *[f"| {k} | {v} |" for k, v in best["params"].items()],
+            *[f"| {k} | {_shown(v)} |" for k, v in best["params"].items()],
         ]
     lines += [
         "",
