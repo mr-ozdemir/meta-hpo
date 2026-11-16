@@ -12,7 +12,8 @@ Unspecified, therefore not asserted: the message texts beyond the words matched;
 Input space: Every space, seed and ask/tell or optimize call sequence, which is unbounded.
 Subset: A mixed space with every parameter kind and a 2-D Float box; one seeded run per protocol rule,
 the rejected inputs (foreign x, repeated candidate, told candidate, unknown candidate, bad score) and a
-manual ask/tell loop that slices batches like optimize() does.
+manual ask/tell loop that slices batches like optimize() does; a budget that ends inside a flight after a
+cached repeat.
 """
 
 import math
@@ -234,3 +235,30 @@ def test_pso_should_stay_usable_for_ask_and_tell_after_optimize_with_one_evaluat
 
     assert (len(first), opt.phase) == (19, "fly")
     assert len(_keys_of_rounds(opt, ROUNDS)) == ROUNDS * 20
+
+
+def _flights(study):
+    """The particles whose flight of the last iteration a run evaluated, from the trials after the initial
+    batch of 20."""
+    return {t.meta["individual"] for t in study.trials[20:]}
+
+
+def test_pso_should_hand_out_the_withdrawn_flights_after_optimize_ended_a_flight_after_a_cached_repeat():
+    """Given a PSOOptimizer (swarm 20, seed 1) passed to optimize() with max_evals 30 on a space where a
+    particle on a wall of the Float repeats a parameter set, so the second flight ends with 30 calls after
+    a cached repeat, when ask() is called afterwards, then it hands out one flight for every particle whose
+    flight was not evaluated, and the run made exactly 30 calls.
+
+    Oracle: optimize docstring (the candidates a budget cuts off are withdrawn with optimizer.cancel(), so a
+    passed optimizer can still be used with ask/tell afterwards) and PSOOptimizer.cancel (the next ask()
+    hands out new candidates for the same particles). Decisive: a facade that left the rest of the flight
+    pending would make ask() raise.
+    """
+    space = Space({"depth": Int(1, 4), "crit": Categorical(["gini", "entropy"]), "f": Float(0.0, 1.0)})
+    opt = PSOOptimizer(space, "max", seed=1)
+    study = optimize(lambda p: round(p["depth"] / 10 + p["f"] / 100, 2), space, "max", 30, optimizer=opt)
+
+    again = opt.ask()
+
+    assert (study.n_calls, any(t.cached for t in study.trials[20:])) == (30, True)
+    assert len(again) == 20 - len(_flights(study))

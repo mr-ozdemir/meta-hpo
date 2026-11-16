@@ -4,6 +4,8 @@ search that stopped."""
 from __future__ import annotations
 
 import copy
+import inspect
+import math
 import os
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -108,7 +110,9 @@ def optimize(
     in a row were repeats. The default optimizer is ABCOptimizer.
 
     `function` receives a copy of the candidate's params, so changing the dict does not reach the optimizer.
-    When the budget cuts a batch short, the candidates that are not evaluated are withdrawn with
+    A batch is evaluated in order until the budget is used up, so the trials of a search are the first
+    trials of the same search with a larger budget. When the budget cuts a batch short, the candidates that
+    are not evaluated are withdrawn with
     `optimizer.cancel()`, so a passed optimizer can still be used with ask/tell afterwards; an optimizer
     that does not implement cancel() keeps them pending.
 
@@ -191,7 +195,10 @@ def resume(
     restored without a call, the unfinished run is continued and runs that never started are run with the
     seeds config.json records. A folder whose runs all finished evaluates nothing. `max_evals` sets a new
     budget for every run; the search then gives the result of a run started with that budget. It must be
-    at least the number of calls a run already logged, else ValueError.
+    at least the number of calls a run already logged, else ValueError. Versions up to 0.7.0 cut a batch to
+    the remaining calls and asked the optimizer again when a cached repeat left a call over; a run they
+    logged that way continues as those versions would have continued it, and only with its recorded budget
+    (another max_evals raises ValueError).
 
     `optimizer` is needed only when the folder was written by an optimizer other than ABCOptimizer,
     PSOOptimizer and BBPSOOptimizer: an Optimizer object (one run) or a function seed -> optimizer, as in
@@ -208,7 +215,10 @@ def resume(
     without a seed raises ValueError unless `optimizer` is given, their Categorical choices need `space`, a
     non-finite score they logged as null comes back as NaN, and runs that never started run without a seed.
     A state.json that is empty or not valid JSON, as a power cut at the start of a run can leave it, counts as
-    missing: the run is repeated from its seed, and without a seed it needs `optimizer`.
+    missing: the run is repeated from its seed, and without a seed it needs `optimizer`. So does a state.json
+    without the generator state; a missing start time is taken from the first logged trial, and missing
+    pauses count as none when the folder was never resumed. A config.json or state.json whose content is
+    damaged otherwise raises ValueError naming the file, before anything in the folder changes.
 
     Stopping rules: by default the rules config.json records (`stop`) apply again. The built-in rules are
     built again from their settings; a folder written with a rule of another class needs `stop=`, else
@@ -236,8 +246,8 @@ def resume(
     seeds = [*config["seeds"], *[None] * (runs - len(config["seeds"]))]
     logs = [_read_run(root / f"run_{number:03d}") for number in range(1, runs + 1)]
     budget = _resume_budget(max_evals, config["max_evals"], logs)
-    rules = _resume_rules(stop, config.get("stop", []))
-    make = _rebuild(optimizer, space, config, direction, runs)
+    rules = _resume_rules(stop, config.get("stop", []), root / "config.json")
+    make = _rebuild(optimizer, space, config, direction, runs, root / "config.json")
     starts = [
         _resume_start(number, seed, log, make, config, cache, budget, optimizer is not None, root)
         for number, (seed, log) in enumerate(zip(seeds, logs, strict=True), start=1)
@@ -297,7 +307,7 @@ class _Log:
             return None
         logged = self.trials[self.next]
         if (logged.trial, logged.cached, logged.x) != (number, cached, [float(v) for v in cand.x]):
-            raise RuntimeError(
+            raise _Differs(
                 f"{self.where} cannot be continued: trial {number} differs from the logged trial, so the "
                 "folder was written by another meta-hpo version, optimizer, space or cache setting, or its "
                 "log was edited"
@@ -314,7 +324,8 @@ class _Log:
 @dataclass
 class _Start:
     """One run to search: its number, seed and optimizer; for a run that resume() continues also its log,
-    start time, earlier pauses and the search seconds at the end of its last logged trial."""
+    start time, earlier pauses, the search seconds at the end of its last logged trial and whether its log
+    needs the batch cut of 0.7.0 and older (`cut_first`, see _Run.loop)."""
 
     number: int
     seed: Any
@@ -323,6 +334,7 @@ class _Start:
     started: float | None = None
     pauses: list[tuple[int, float]] = field(default_factory=list)
     elapsed: float = 0.0
+    cut_first: bool = False
 
 
 def _search(
@@ -361,7 +373,18 @@ def _search(
             state.started = state._replayed_until = start.started
             state.replaying = state.restored > 0
             state.pauses = [*start.pauses, (state.restored, time.time() - start.started - start.elapsed)]
-        run = _Run(function, opt.space, opt, cache, max_evals, state, listeners, start.log, state.rules)
+        run = _Run(
+            function,
+            opt.space,
+            opt,
+            cache,
+            max_evals,
+            state,
+            listeners,
+            start.log,
+            state.rules,
+            start.cut_first,
+        )
         for listener in listeners:
             listener.on_run_start(state)
         try:
@@ -402,20 +425,35 @@ _BUILT_IN_RULES: dict[str, Callable[..., Stopper]] = {
 }
 
 
-def _resume_rules(stop: Stopper | Sequence[Stopper] | None, recorded: list[dict[str, Any]]) -> list[Stopper]:
+def _resume_rules(
+    stop: Stopper | Sequence[Stopper] | None, recorded: list[dict[str, Any]], path: Path
+) -> list[Stopper]:
     """The stopping rules of a resume: `stop` checked as in optimize(), or else the rules config.json records,
-    built again from their settings; ValueError for a recorded rule that is not built into the library."""
+    built again from their settings. Only a rule of a class built into the library is built again: its
+    record names the class, the module of the library class (a folder of 0.7.0 records no module) and the
+    settings of that class. ValueError for any other rule, and for settings the class rejects."""
     if stop is not None:
         return _rules(stop)
     rules = []
     for record in recorded:
-        build = _BUILT_IN_RULES.get(record["name"])
-        if build is None:
+        name, settings = record["name"], record["settings"]
+        build = _BUILT_IN_RULES.get(name)
+        if (
+            build is None
+            or record.get("module", build.__module__) != build.__module__
+            or set(settings) != set(inspect.signature(build).parameters)
+        ):
             raise ValueError(
-                f"the folder was written with the stopping rule {record['name']}, which resume() cannot "
-                "build again; pass stop=, the rules to go on with (stop=[] for none)"
+                f"the folder was written with the stopping rule {name}, which resume() cannot build again; "
+                "pass stop=, the rules to go on with (stop=[] for none)"
             )
-        rules.append(build(**record["settings"]))
+        try:
+            rules.append(build(**settings))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{path} records settings of the stopping rule {name} that it rejects ({exc}); pass stop=, "
+                "the rules to go on with (stop=[] for none)"
+            ) from exc
     return rules
 
 
@@ -425,9 +463,11 @@ def _rebuild(
     config: dict[str, Any],
     direction: Direction,
     runs: int,
+    path: Path,
 ) -> OptimizerFactory:
     """A function seed -> optimizer for resume(): the given optimizer, or the one config.json names, built
-    with its settings on the given space or on the space config.json describes."""
+    with its settings on the given space or on the space config.json describes; ValueError naming
+    config.json when its space, settings or seeds do not build."""
     if optimizer is not None:
         return _optimizer_factory(optimizer, cast(Space, space), direction, runs)
     name = config["optimizer"]["name"]
@@ -438,14 +478,30 @@ def _rebuild(
             "optimizer object or a function seed -> optimizer as in optimize()"
         )
     if space is None:
-        space = _rebuild_space(config["space"])
+        try:
+            space = _rebuild_space(config["space"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{path} describes a search space that cannot be built ({exc}), so the folder cannot be "
+                "resumed"
+            ) from exc
     if space is None:
         raise ValueError(
             "the search space has a Categorical whose choices config.json stores only as text; pass space="
         )
     settings = config["optimizer"]["settings"]
     built = space
-    return lambda seed: cls(built, direction=direction, seed=seed, **settings)
+
+    def build(seed: Any) -> Optimizer:
+        try:
+            return cls(built, direction=direction, seed=seed, **settings)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{path} records settings or a seed that {name} rejects ({exc}), so the folder cannot be "
+                "resumed"
+            ) from exc
+
+    return build
 
 
 def _resume_start(
@@ -467,46 +523,119 @@ def _resume_start(
     if log is None:
         return _Start(number, seed, opt)
     where = f"run {number} of {root}"
-    if log.state is not None:
-        opt.rng.bit_generator.state = log.state["generator"]
+    path = root / f"run_{number:03d}" / "state.json"
+    generator, started, pauses = _recorded_state(log, path, bool(config.get("resumes")))
+    if generator is not None:
+        try:
+            opt.rng.bit_generator.state = generator
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(
+                f"{path} holds a generator state that the optimizer's generator does not accept, so {where} "
+                "cannot be resumed"
+            ) from exc
     elif log.trials and seed is None and not given:
         raise ValueError(
-            f"the generator state of {where} is missing or unreadable (state.json) and the run has no seed, "
-            "so its search cannot be repeated; pass optimizer= built with the seed it used"
+            f"the generator state of {where} is missing or unreadable ({path}) and the run has no seed, so "
+            "its search cannot be repeated; pass optimizer= built with the seed it used"
         )
-    _check_replay(copy.deepcopy(opt), cache, budget, log.trials, where)
-    state = log.state or {}
-    started = float(state.get("started", log.trials[0].start if log.trials else time.time()))
-    pauses = [(int(n), float(s)) for n, s in state.get("pauses", [])]
+    cut_first = _replay_mode(opt, cache, budget, int(config["max_evals"]), log.trials, where)
     last = log.trials[-1] if log.trials else None
     elapsed = 0.0 if last is None else last.end - started - _paused_at(pauses, last.trial)
-    return _Start(number, seed, opt, _Log(log.trials, where), started, pauses, elapsed)
+    return _Start(number, seed, opt, _Log(log.trials, where), started, pauses, elapsed, cut_first)
+
+
+def _recorded_state(log: _RunLog, path: Path, resumed: bool) -> tuple[Any, float, list[tuple[int, float]]]:
+    """The generator state (None when state.json does not record one), the start time and the pauses that
+    state.json of a run records. A state.json that cannot be read counts as empty. A missing start time is
+    the start of the first logged trial; missing pauses are none when the folder was never resumed.
+    ValueError naming the file for content that is not the state of a run."""
+    state = {} if log.state is None else log.state
+    if not isinstance(state, dict):
+        raise ValueError(f"{path} does not hold the state of a run, so the run cannot be resumed")
+    try:
+        first = log.trials[0].start if log.trials else time.time()
+        started = _real(state["started"]) if "started" in state else first
+        if "pauses" not in state and resumed and log.state is not None:
+            raise ValueError("the pauses of a resumed run are missing")
+        pauses = [(_count(n), _real(s)) for n, s in state.get("pauses", [])]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{path} records no valid start time or pauses ('started', 'pauses'), so the run cannot be "
+            "resumed"
+        ) from exc
+    return state.get("generator"), started, pauses
+
+
+def _real(value: Any) -> float:
+    """A finite JSON number as float; ValueError for anything else."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError(f"{value!r} is not a finite number")
+    return float(value)
+
+
+def _count(value: Any) -> int:
+    """A JSON integer >= 0; ValueError for anything else."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{value!r} is not an integer >= 0")
+    return value
 
 
 class _ReplayEnd(Exception):
     """Ends the check of a log at the first trial that the log does not hold."""
 
 
+class _Differs(RuntimeError):
+    """A candidate differs from its logged trial, or the search ends before the log does."""
+
+
 def _stop(params: dict[str, Any]) -> float:
     raise _ReplayEnd
 
 
-def _check_replay(opt: Optimizer, cache: bool, max_evals: int, trials: list[_Logged], where: str) -> None:
-    """Replays the logged trials on `opt` without listeners; RuntimeError at the first candidate that differs
-    from its logged trial, or when the search ends before the log does."""
+def _replay_mode(
+    opt: Optimizer, cache: bool, budget: int, recorded: int, trials: list[_Logged], where: str
+) -> bool:
+    """How the log of a run replays: False with the loop of this version, True with the batch cut of 0.7.0
+    and older (see _Run.loop), which only a log written by those versions needs. RuntimeError naming the
+    first trial that differs when neither replays it; ValueError when only the cut of an older version
+    with the recorded budget does, since such a run can be continued only with that budget."""
+    error = _replay_error(opt, cache, budget, trials, where, False)
+    if error is None:
+        return False
+    if _replay_error(opt, cache, budget, trials, where, True) is None:
+        return True
+    if budget != recorded and _replay_error(opt, cache, recorded, trials, where, True) is None:
+        raise ValueError(
+            f"{where} was written by meta-hpo 0.7.0 or older, which cut its last batch to the budget and "
+            "asked the optimizer again, so the run cannot be continued with another budget; resume it with "
+            f"max_evals={recorded}"
+        )
+    raise error
+
+
+def _replay_error(
+    opt: Optimizer, cache: bool, max_evals: int, trials: list[_Logged], where: str, cut_first: bool
+) -> RuntimeError | None:
+    """Replays the logged trials on a copy of `opt` without listeners; the RuntimeError for the first
+    candidate that differs from its logged trial, or for a search that ends before the log does, else
+    None."""
+    opt = copy.deepcopy(opt)
     study = Study(opt.direction)
     state = RunState(opt.space, opt, opt.direction, max_evals, None, study, cache=cache)
     log = _Log(trials, where)
     try:
-        _Run(_stop, opt.space, opt, cache, max_evals, state, [], log).loop()
+        _Run(_stop, opt.space, opt, cache, max_evals, state, [], log, cut_first=cut_first).loop()
     except _ReplayEnd:
-        return
+        return None
+    except _Differs as exc:
+        return exc
     if log.next < len(trials):
-        raise RuntimeError(
+        return _Differs(
             f"{where} cannot be continued: the search ends after trial {log.next - 1} but the log holds "
             f"{len(trials)} trials, so the folder was written by another meta-hpo version, optimizer, space "
             "or cache setting, or its log was edited"
         )
+    return None
 
 
 def _run_seeds(seed: Seed, runs: int) -> list[Any]:
@@ -557,8 +686,10 @@ class _Run:
         listeners: list[Callback],
         log: _Log,
         rules: Sequence[Stopper] = (),
+        cut_first: bool = False,
     ) -> None:
         self.function = function
+        self.cut_first = cut_first
         self.space = space
         self.opt = opt
         self.cache = cache
@@ -576,20 +707,26 @@ class _Run:
         self.generation_trials: list[Trial] = []
 
     def loop(self) -> None:
+        """Asks, evaluates and tells batch after batch. A batch is evaluated in order until the budget is used
+        up; the candidates after that are withdrawn, so a search with a larger budget evaluates the same
+        trials first. With `cut_first` (the loop of 0.7.0 and older, kept to replay their folders) a batch
+        is cut to the remaining calls before it is evaluated, and the optimizer is asked again when cached
+        repeats left calls over."""
         study, state = self.state.study, self.state
         while (
             state.calls < self.max_evals and self.repeats < _MAX_REPEATS and len(self.seen) < self.space.size
         ):
-            batch = self.opt.ask()
-            self.batch, cut = batch[: self.max_evals - state.calls], batch[self.max_evals - state.calls :]
-            if cut:
-                self._cancel(cut)
-            self.scores = []
+            self.batch, self.scores = self.opt.ask(), []
+            if self.cut_first:
+                self._withdraw(self.max_evals - state.calls)
             for cand in self.batch:
+                if state.calls >= self.max_evals:
+                    break
                 self._evaluate(cand)
                 if self.stopping and self.log.done:
                     self.abandon(self.stopping)
                     return
+            self._withdraw(len(self.scores))
             self.opt.tell(self.batch, self.scores)
             self.batch, self.scores = [], []
             self._check_generation()
@@ -656,6 +793,12 @@ class _Run:
         population = self.opt.population()
         for listener in self.listeners:
             listener.on_generation(self.state, generation, trials, population)
+
+    def _withdraw(self, keep: int) -> None:
+        """Keeps the first `keep` candidates of the batch and withdraws the rest with cancel()."""
+        self.batch, cut = self.batch[:keep], self.batch[keep:]
+        if cut:
+            self._cancel(cut)
 
     def _cancel(self, cands: list[Candidate]) -> None:
         try:

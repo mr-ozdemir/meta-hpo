@@ -65,14 +65,20 @@ def _answers(rule, scores, direction="min", cached=()):
     return answers
 
 
-class _Elapsed:
-    """A run state that reports a fixed search time from elapsed(), the only thing MaxTime reads."""
+START = 1000.0
+"""The start of the hand-built runs of the MaxTime tests, in seconds since the epoch."""
 
-    def __init__(self, seconds):
-        self.seconds = seconds
 
-    def elapsed(self):
-        return self.seconds
+def _ended_after(seconds, paused=0.0):
+    """A run started at START with one trial that ends `seconds` of search time later: it starts after half
+    of them plus the `paused` seconds the run was stopped before it (a resume's pause) and lasts the other
+    half."""
+    state = _state("min")
+    state.started = START
+    state.pauses = [(0, paused)]
+    trial = Trial(0, {"x": 0.5}, 1.0, False, np.zeros(1), {}, START + paused + seconds / 2, seconds / 2)
+    state.study.trials.append(trial)
+    return state
 
 
 class _OwnRule(Stopper):
@@ -222,15 +228,57 @@ def test_patience_should_accept_the_smallest_values_and_a_numpy_integer():
     ],
 )
 def test_max_time_should_stop_once_the_search_time_reaches_the_sum_of_its_parts(rule, limit):
-    """Given MaxTime with a time given in seconds, minutes, hours or all three, when it reads a search time
-    one millisecond below the limit and exactly at it, then it says stop only at the limit.
+    """Given MaxTime with a time given in seconds, minutes, hours or all three, when the last trial ends one
+    millisecond below the limit and exactly at it, then it says stop only at the limit.
 
     Oracle: MaxTime docstring (stops when the run has searched for at least seconds + 60 * minutes +
-    3600 * hours seconds; the time is state.elapsed()).
+    3600 * hours seconds; the time is state.elapsed() at the trial's start_time + duration).
     """
-    states = [_Elapsed(limit - 0.001), _Elapsed(limit)]
+    states = [_ended_after(limit - 0.001), _ended_after(limit)]
 
     answers = [rule.should_stop(state) for state in states]
+
+    assert answers == [False, True]
+
+
+@pytest.mark.parametrize(
+    ("clock", "seconds", "expected"),
+    [
+        pytest.param(START + 3600.0, 89.0, False, id="clock-past-the-limit-trial-before-it"),
+        pytest.param(START, 90.0, True, id="clock-at-the-start-trial-at-the-limit"),
+    ],
+)
+def test_max_time_should_decide_from_the_recorded_end_of_the_trial_not_from_the_clock(
+    monkeypatch, clock, seconds, expected
+):
+    """Given MaxTime(seconds=90), a wall clock (RunState.now) that reads `clock` and a last trial that ends
+    `seconds` of search time after the start, when the rule is asked, then it answers from the end of the
+    trial alone: go on for a trial that ended at 89 s while the clock reads an hour, stop for one that ended
+    at 90 s while the clock still reads the start.
+
+    Oracle: MaxTime docstring (the time is state.elapsed() at the trial's start_time + duration; the answer
+    depends only on what the results folder records, so resume() replays it exactly). Decisive: a rule
+    that reads the clock when it is asked, after the listeners of the trial ran, decides otherwise than its
+    replay, which only knows the logged end of the trial.
+    """
+    monkeypatch.setattr(RunState, "now", lambda state: clock)
+
+    answer = MaxTime(seconds=90).should_stop(_ended_after(seconds))
+
+    assert answer is expected
+
+
+def test_max_time_should_leave_out_the_time_the_run_was_stopped_before_the_trial():
+    """Given MaxTime(seconds=90) and trials that end 89 s and 90 s of search time after the start, each 1000
+    s later on the wall clock because the run was stopped for 1000 s before them, when the rule is asked,
+    then it goes on after the first and stops after the second.
+
+    Oracle: MaxTime docstring (the time leaves out the time a run was stopped) and RunState.elapsed (the
+    time since `started` minus the time the run was stopped before that trial).
+    """
+    states = [_ended_after(89.0, paused=1000.0), _ended_after(90.0, paused=1000.0)]
+
+    answers = [MaxTime(seconds=90).should_stop(state) for state in states]
 
     assert answers == [False, True]
 

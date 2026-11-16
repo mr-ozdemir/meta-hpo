@@ -93,10 +93,12 @@ class MaxTime(Stopper):
     """Stops when the run has searched for at least seconds + 60 * minutes + 3600 * hours seconds; stop
     reason 'time'.
 
-    The time is state.elapsed(), the run's search time, which leaves out the time a run was stopped. It is
-    checked after every trial and never interrupts a running evaluation: the run ends after the first
-    evaluation that finishes at or past the limit. Every part is a finite number >= 0 and their sum is
-    positive.
+    The time is the run's search time at the end of the trial just recorded, state.elapsed() at its
+    start_time + duration, which leaves out the time a run was stopped. It is checked after every trial and
+    never interrupts a running evaluation: the run ends after the first evaluation that finishes at or past
+    the limit. The answer depends only on what the results folder records (the start of the run, its pauses
+    and the trial's start and duration), so resume() replays it exactly and a run that MaxTime ended comes
+    back without a call. Every part is a finite number >= 0 and their sum is positive.
     """
 
     reason = "time"
@@ -113,7 +115,8 @@ class MaxTime(Stopper):
             )
 
     def should_stop(self, state: RunState) -> bool:
-        return state.elapsed() >= self._limit
+        trial = state.study.trials[-1]
+        return state.elapsed(trial.start_time + trial.duration, trial.number) >= self._limit
 
 
 class TargetScore(Stopper):
