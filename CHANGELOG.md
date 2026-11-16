@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-16
+
 ### Fixed
 
 - A search whose budget ends inside a batch now tries the first trials of the same search with a larger
