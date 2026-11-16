@@ -19,6 +19,15 @@ and the project uses [Semantic Versioning](https://semver.org/).
   arrays are rejected as duplicate choices.
 - The `Categorical` docstring and the README say that a choice is handed to the objective as it is and
   must not be changed in place.
+- `Trial == Trial` and `Study == Study` return a bool instead of raising `ValueError`: `x` and numpy arrays
+  in the params are compared element by element, and two failed trials with a NaN score are equal.
+- Integer arguments are checked before the search starts and before a results folder is written:
+  `max_evals`, `runs`, `log_every`, `verbose` and `seed` of `optimize()` and `resume()`, the integer
+  settings of the three optimizers and `Patience(evals)` accept Python and numpy integers and store them as
+  `int`, and reject floats (also `20.0`), booleans and strings with `ValueError`; `verbose` still takes
+  `False` and `True`, `seed` any iterable of seeds but a string (a numpy array, a range), `log_every=0` is
+  rejected also without console output, and a negative seed of a later run before the first run starts.
+  A folder that recorded an integer setting as a whole float (`limit=10.0`) still resumes.
 
 ## [0.7.1] - 2026-11-16
 

@@ -40,7 +40,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from metahpo import operators
-from metahpo.optimizers.base import Candidate, Direction, Optimizer
+from metahpo.optimizers.base import Candidate, Direction, Optimizer, _integer
 from metahpo.space import Space
 
 
@@ -81,15 +81,8 @@ class PSOOptimizer(Optimizer):
         max_tries: int = 100,
     ) -> None:
         super().__init__(space, direction, seed)
-        if max_tries < 1:
-            raise ValueError("max_tries must be at least 1")
-        self.max_tries = max_tries
-        try:
-            whole = int(swarm_size)
-        except (OverflowError, ValueError):
-            whole = 0
-        if whole != swarm_size or whole < 2:
-            raise ValueError(f"swarm_size must be an integer of at least 2, got {swarm_size!r}")
+        self.max_tries = _integer("max_tries", max_tries, 1)
+        whole = _integer("swarm_size", swarm_size, 2)
         self.inertia = _coefficient("inertia", inertia)
         self.cognitive = _coefficient("cognitive", cognitive)
         self.social = _coefficient("social", social)

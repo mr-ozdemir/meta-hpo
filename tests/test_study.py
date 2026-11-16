@@ -14,7 +14,9 @@ Covered raise site: study.py, Study.best_trial, ValueError "finite". The full in
 docstring of test_space_errors.py. best_trial has a single error path, so only the type is checked.
 
 Input space: Every list of trials with any scores and cached flags, for both directions.
-Subset: Hand-made trials with literal scores for both directions.
+Subset: Hand-made trials with literal scores for both directions; pairs of trials with a two-element x
+that differ in exactly one compared field or only in the timing fields, NaN scores, numpy arrays in
+params and meta, and values of other classes; pairs of studies that differ in one field.
 """
 
 import math
@@ -184,3 +186,153 @@ def test_study_scores_should_be_float64_array_in_trial_order_when_a_score_is_nan
     assert type(scores) is np.ndarray
     assert scores.dtype == np.float64
     np.testing.assert_array_equal(scores, np.array([0.1, math.nan, 2.5]))
+
+
+class _Incomparable:
+    """A params value whose == raises, as a numpy array of several elements does in a boolean context."""
+
+    def __eq__(self, other):
+        raise RuntimeError("cannot compare")
+
+
+def _pair_trial(**changes):
+    """A trial with a two-element x, params holding a numpy array, a NaN-free score and meta; `changes`
+    replaces fields."""
+    fields = {
+        "number": 3,
+        "params": {"lr": 0.1, "w": np.array([1.0, 5.0])},
+        "score": 0.5,
+        "cached": False,
+        "x": np.array([0.25, 0.75]),
+        "meta": {"phase": "fly", "generation": 1, "individual": 2},
+        "start_time": 100.0,
+        "duration": 2.0,
+    }
+    return Trial(**{**fields, **changes})
+
+
+def test_trial_should_equal_a_twin_with_a_two_element_x_and_an_array_in_its_params():
+    """Given two trials built from equal fields with a two-element x and a numpy array in params, when they
+    are compared with == and !=, then == gives True and != gives False, both as bools.
+
+    Oracle: the Trial docstring (the timing fields are measurements, left out of ==, so the same seed gives
+    equal trials) and Python's comparison protocol (== gives a bool). Decisive: the dataclass equality
+    compared the x arrays inside a tuple, which raised 'The truth value of an array ... is ambiguous'.
+    """
+    a, b = _pair_trial(), _pair_trial()
+
+    results = (a == b, a != b)
+
+    assert results == (True, False)
+    assert (type(results[0]), type(results[1])) == (bool, bool)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param({"number": 4}, id="number"),
+        pytest.param({"params": {"lr": 0.1, "w": np.array([1.0, 6.0])}}, id="array-in-params"),
+        pytest.param({"params": {"lr": 0.2, "w": np.array([1.0, 5.0])}}, id="number-in-params"),
+        pytest.param({"params": {"lr": 0.1, "w": np.array([1.0, 5.0, 1.0])}}, id="array-shape-in-params"),
+        pytest.param({"score": 0.6}, id="score"),
+        pytest.param({"score": math.nan}, id="nan-against-a-number"),
+        pytest.param({"cached": True}, id="cached"),
+        pytest.param({"x": np.array([0.25, 0.5])}, id="x"),
+        pytest.param({"x": np.array([0.25, 0.75, 0.0])}, id="x-length"),
+        pytest.param({"meta": {"phase": "init", "generation": 1, "individual": 2}}, id="meta"),
+        pytest.param({"params": {"layers": [32, 65]}}, id="list-in-params"),
+        pytest.param({"params": {"lr": 0.1, "w": (1.0, 5.0)}}, id="tuple-instead-of-array"),
+        pytest.param({"params": {"lr": _Incomparable(), "w": np.array([1.0, 5.0])}}, id="comparison-raises"),
+    ],
+)
+def test_trial_should_differ_from_a_trial_that_differs_in_one_compared_field(changes):
+    """Given a trial and a copy that differs in exactly one of number, params, score, cached, x or meta,
+    when they are compared, then == gives False and != gives True.
+
+    Oracle: the Trial docstring (only the timing fields are left out of ==) and the dataclass field list.
+    """
+    a, b = _pair_trial(), _pair_trial(**changes)
+
+    assert (a == b, a != b) == (False, True)
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        pytest.param({}, {"start_time": 200.0, "duration": 9.0}, id="other-timing"),
+        pytest.param(
+            {"score": float("nan")}, {"score": float("nan"), "start_time": 7.0}, id="both-failed-with-nan"
+        ),
+        pytest.param(
+            {"params": {"layers": [32, 64], "pair": (1, 2)}},
+            {"params": {"layers": [32, 64], "pair": (1, 2)}},
+            id="equal-lists-and-tuples-in-params",
+        ),
+    ],
+)
+def test_trial_should_equal_a_trial_that_differs_only_in_timing_or_has_a_nan_score_as_well(left, right):
+    """Given two trials that differ only in their start time and duration, that both failed with a NaN
+    score, or whose params hold equal lists and tuples, when they are compared, then == gives True.
+
+    Oracle: the Trial docstring (timing fields are left out of ==, so the same seed still gives equal
+    trials; a failed trial is a NaN or infinite score), so two failed twins of the same seed are equal.
+    Decisive: NaN == NaN is False, so a failed trial never equalled its own twin. The NaN scores are two
+    different float objects, and lists and tuples in params are compared item by item.
+    """
+    assert _pair_trial(**left) == _pair_trial(**right)
+
+
+@pytest.mark.parametrize(
+    "other", [pytest.param(3, id="int"), pytest.param("trial", id="string"), pytest.param(None, id="none")]
+)
+def test_trial_and_study_should_leave_a_comparison_with_another_class_to_python(other):
+    """Given a trial and a study compared with an int, a string and None, when == runs, then Trial.__eq__
+    and Study.__eq__ give NotImplemented and the comparison falls back to False.
+
+    Oracle: Python's data model (__eq__ returns NotImplemented for an unsupported operand) and the dataclass
+    convention the classes kept (only an object of the same class compares).
+    """
+    trial, study = _pair_trial(), Study("min", [_pair_trial()])
+
+    assert (trial.__eq__(other), study.__eq__(other)) == (NotImplemented, NotImplemented)
+    assert (trial == other, study == other, trial != other) == (False, False, True)
+
+
+def test_trial_and_study_should_stay_unhashable_as_before():
+    """Given a trial, whose params dict is unhashable, and a study, when hash() is called, then both raise
+    TypeError, as in 0.7.1.
+
+    Oracle: the stage brief (hashability stays what it is) and the dataclass rules: a frozen Trial hashes its
+    fields, which include a dict; a mutable Study with == has no hash.
+    """
+    with pytest.raises(TypeError):
+        hash(_pair_trial())
+    with pytest.raises(TypeError):
+        hash(Study("min"))
+
+    assert Study.__hash__ is None
+
+
+@pytest.mark.parametrize(
+    ("other", "expected"),
+    [
+        pytest.param(Study("max", [_pair_trial(), _pair_trial(number=4)], "budget"), True, id="twin"),
+        pytest.param(Study("min", [_pair_trial(), _pair_trial(number=4)], "budget"), False, id="direction"),
+        pytest.param(
+            Study("max", [_pair_trial(), _pair_trial(number=4)], "patience"), False, id="stop-reason"
+        ),
+        pytest.param(Study("max", [_pair_trial()], "budget"), False, id="fewer-trials"),
+        pytest.param(Study("max", [_pair_trial(), _pair_trial(number=5)], "budget"), False, id="other-trial"),
+    ],
+)
+def test_study_should_compare_direction_stop_reason_and_every_trial(other, expected):
+    """Given a 'max' study with two trials and stop reason 'budget', when it is compared with a twin and with
+    studies that differ in direction, stop reason, number of trials or one trial, then == gives True only
+    for the twin and != the opposite, both as bools.
+
+    Oracle: the Study fields (direction, trials, stop_reason) and Python's comparison protocol. Decisive:
+    the dataclass equality compared the trials' x arrays and raised ValueError.
+    """
+    study = Study("max", [_pair_trial(), _pair_trial(number=4)], "budget")
+
+    assert (study == other, study != other) == (expected, not expected)

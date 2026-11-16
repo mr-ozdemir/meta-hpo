@@ -613,6 +613,12 @@ def _optimizer_with_told_employed():
         pytest.param({"colony_size": 0}, "colony_size", id="colony-0"),
         pytest.param({"limit": 0}, "limit", id="limit-0-boundary"),
         pytest.param({"limit": -1}, "limit", id="limit-negative"),
+        pytest.param({"colony_size": 10.0}, "colony_size", id="colony-whole-float"),
+        pytest.param({"colony_size": "10"}, "colony_size", id="colony-string"),
+        pytest.param({"limit": 2.5}, "limit", id="limit-fraction"),
+        pytest.param({"limit": True}, "limit", id="limit-bool"),
+        pytest.param({"max_tries": 100.0}, "max_tries", id="max-tries-whole-float"),
+        pytest.param({"max_tries": "5"}, "max_tries", id="max-tries-string"),
     ],
 )
 def test_abc_optimizer_should_raise_value_error_when_colony_size_or_limit_is_too_small(kwargs, match):
@@ -622,7 +628,9 @@ def test_abc_optimizer_should_raise_value_error_when_colony_size_or_limit_is_too
     Oracle: task specification (colony_size >= 4, limit >= 1, invalid values raise ValueError) and the
     messages in ABCOptimizer.__init__. Inputs: 3 and 0 are one below the boundary and one past it, 0 and -1
     likewise for limit; the other argument keeps its valid default (colony_size=10, limit=15). The keyword
-    of each message does not occur in the other, so a case fails if the wrong site fires.
+    of each message does not occur in the other, so a case fails if the wrong site fires. An integer
+    setting that is a float (also a whole one), a bool or a string is rejected at the same site; before,
+    colony_size=10.0 raised TypeError, limit=2.5 was taken and max_tries=100.0 failed during the search.
     """
     space = Space({"x": Float(0.0, 1.0)})
 

@@ -188,13 +188,18 @@ def test_bbpso_optimizer_should_default_the_target_to_one_when_maximising():
         pytest.param({"target": math.inf}, id="target-inf"),
         pytest.param({"max_tries": 0}, id="max-tries-0"),
         pytest.param({"direction": "up"}, id="direction-unknown"),
+        pytest.param({"swarm_size": 8.0}, id="swarm-whole-float"),
+        pytest.param({"swarm_size": "8"}, id="swarm-string"),
+        pytest.param({"max_tries": 2.0}, id="max-tries-whole-float"),
+        pytest.param({"max_tries": True}, id="max-tries-bool"),
     ],
 )
 def test_bbpso_optimizer_should_raise_value_error_when_a_setting_is_invalid(kwargs):
     """Given one invalid constructor argument, when BBPSOOptimizer is built, then ValueError is raised.
 
     Oracle: BBPSO theory parameter table (swarm_size an integer >= 6; crossover in [0, 1]; q_alpha in
-    (0, 1]; q_gamma in [0, 1); target finite; max_tries >= 1) and the Optimizer direction check.
+    (0, 1]; q_gamma in [0, 1); target finite; max_tries >= 1) and the Optimizer direction check; an
+    integer setting is a Python or numpy integer, not a float such as 8.0, a bool or a string.
     """
     space = _box()
 

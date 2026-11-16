@@ -84,7 +84,7 @@ from typing import IO, Any, cast
 
 import numpy as np
 
-from metahpo.optimizers.base import Optimizer
+from metahpo.optimizers.base import Optimizer, _integer
 from metahpo.space import Categorical, Float, Int, Space, _choice_index, _choice_text, _without_addresses
 from metahpo.study import Study, Trial
 
@@ -259,10 +259,8 @@ class ConsoleReporter(Callback):
     """
 
     def __init__(self, verbose: int = 1, log_every: int = 1, stream: IO[str] | None = None) -> None:
-        if log_every < 1:
-            raise ValueError("log_every must be at least 1")
         self.verbose = verbose
-        self.log_every = log_every
+        self.log_every = _integer("log_every", log_every, 1)
         self.stream = stream
         self._broken = False
         self._run_bests: list[tuple[int, float]] = []

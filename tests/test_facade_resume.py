@@ -37,7 +37,9 @@ lambdas, bound methods, partials and plain objects built again from new objects,
 memory addresses 0.7.0 kept, and spaces whose choices really differ. A state.json without each of its keys,
 and with content of the wrong kind; a config.json without each key resume() reads, with values of the wrong
 kind, and with a space, settings or seed that do not build; a log line whose trial number overflows. A
-Categorical of numpy arrays resumed with the space passed.
+Categorical of numpy arrays resumed with the space passed. log_every and verbose that are no integers,
+False as verbose, and a numpy integer max_evals. The integer settings of ABC and PSO recorded as
+whole floats, as 0.6.0 and 0.7.0 stored them.
 """
 
 import csv
@@ -1296,6 +1298,10 @@ def test_resume_should_refuse_a_config_json_that_is_not_valid_json_and_name_it(t
             id="unknown-optimizer-setting",
         ),
         pytest.param(_set("seeds", [-1]), id="negative-seed"),
+        pytest.param(
+            lambda config: {**config, "optimizer": {**config["optimizer"], "settings": {"limit": 2.5}}},
+            id="limit-not-a-whole-number",
+        ),
     ],
 )
 def test_resume_should_name_config_json_when_its_space_settings_or_seed_do_not_build(
@@ -1364,3 +1370,98 @@ def test_resume_should_continue_a_folder_whose_categorical_holds_numpy_arrays_wi
 
     reference = optimize(_weighted, _array_space(), "max", 20, seed=ANY_SEED, output=None)
     assert _positions(study) == _positions(reference)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "name"),
+    [
+        pytest.param({"log_every": 0}, "log_every", id="log-every-0-without-console"),
+        pytest.param({"log_every": 2.0}, "log_every", id="log-every-whole-float"),
+        pytest.param({"verbose": 1.5}, "verbose", id="verbose-fraction"),
+        pytest.param({"verbose": -1}, "verbose", id="verbose-negative"),
+        pytest.param({"max_evals": 50.0}, "max_evals", id="max-evals-whole-float"),
+    ],
+)
+def test_resume_should_reject_an_integer_argument_that_is_no_integer_before_the_folder_changes(
+    tmp_path, no_plots, kwargs, name
+):
+    """Given a run interrupted on its 10th call, when resume() gets log_every 0 or 2.0, verbose 1.5 or -1, or
+    max_evals 50.0, then ValueError names the argument and every file of the folder is unchanged.
+
+    Oracle: resume docstring (verbose, log_every and callbacks work as in optimize(); nothing in the
+    folder changes before the arguments are checked) and the library's error convention. Decisive:
+    log_every=0 and verbose=1.5 were taken, and the run was restored and written again.
+    """
+    _, folder = _start(tmp_path, MAKERS[0].values[0], _interrupting(9))
+    before = {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+
+    with pytest.raises(ValueError, match=name):
+        resume(_refusing, folder, **kwargs)
+
+    assert {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()} == before
+
+
+def test_resume_should_accept_a_numpy_integer_max_evals_and_record_a_python_int(tmp_path, no_plots):
+    """Given a run that finished at max_evals 40, when resume() gets max_evals=np.int64(50), then the study
+    equals a run started with 50 and config.json records 50 as a plain JSON integer.
+
+    Oracle: resume docstring (max_evals gives the result of a run started with that budget).
+    """
+    make = MAKERS[0].values[0]
+    _, folder = _start(tmp_path, make, _score)
+
+    study = resume(_score, folder, max_evals=np.int64(50), verbose=0)
+
+    recorded = _json(folder / "config.json")["max_evals"]
+    assert _trajectory(study) == _trajectory(_reference(make, max_evals=50))
+    assert (recorded, type(recorded)) == (50, int)
+
+
+def test_resume_should_take_false_as_verbose_level_0(tmp_path, no_plots, capsys, monkeypatch):
+    """Given a finished folder and no METAHPO_VERBOSE, when resume() gets verbose=False, then it returns the
+    study without a call and prints nothing.
+
+    Oracle: resume docstring (verbose works as in optimize()) and the optimize docstring (False is level 0).
+    """
+    monkeypatch.delenv("METAHPO_VERBOSE", raising=False)
+    original, folder = _start(tmp_path, MAKERS[0].values[0], _score)
+
+    study = resume(_refusing, folder, verbose=False)
+
+    assert (_trajectory(study), capsys.readouterr().out) == (_trajectory(original), "")
+
+
+def _whole_floats(folder, names):
+    """Writes the settings `names` of config.json as floats, as 0.6.0 and 0.7.0 recorded a setting given as
+    10.0."""
+    config = _json(folder / "config.json")
+    settings = config["optimizer"]["settings"]
+    config["optimizer"]["settings"] = {k: float(v) if k in names else v for k, v in settings.items()}
+    (folder / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("make", "names"),
+    [
+        pytest.param(MAKERS[0].values[0], ("colony_size", "limit", "max_tries"), id="abc"),
+        pytest.param(MAKERS[1].values[0], ("swarm_size", "max_tries"), id="pso"),
+        pytest.param(MAKERS[2].values[0], ("swarm_size", "max_tries"), id="bbpso"),
+    ],
+)
+def test_resume_should_take_an_integer_setting_recorded_as_a_whole_float_as_that_integer(
+    tmp_path, no_plots, make, names
+):
+    """Given each optimizer interrupted on its 10th call whose config.json records its integer settings as
+    whole floats (limit 15.0, max_tries 100.0, ...), as 0.6.0 and 0.7.0 recorded a setting given that way,
+    when resume() rebuilds the optimizer from the folder, then the study equals the uninterrupted run.
+
+    Oracle: resume docstring (folders of older versions continue; the optimizer is built again with its
+    recorded settings) and the stage brief (a recorded whole-number float is taken as that integer).
+    Decisive: the integer settings now reject floats, so such a folder raised ValueError naming config.json.
+    """
+    _, folder = _start(tmp_path, make, _interrupting(9))
+    _whole_floats(folder, names)
+
+    study = resume(_score, folder, verbose=0)
+
+    assert _trajectory(study) == _trajectory(_reference(make))

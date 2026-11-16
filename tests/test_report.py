@@ -22,7 +22,7 @@ all-NaN objective; a budget above COMPRESS_FROM after lowering it; non-default s
 and a custom optimizer; choices of every JSON type, of Python types and NaN; scores NaN, inf and -inf;
 trials 0.5 s and 2 s apart on a fake clock; no stopping rule, one rule, and the three built-in rules in a
 given order, with one and two runs; bounds given as numpy scalars; Categoricals of numpy arrays and of
-0, False, 1, True and 1.0.
+0, False, 1, True and 1.0; numpy integer and float settings of every optimizer and stopping rule.
 """
 
 import csv
@@ -1430,3 +1430,92 @@ def test_categories_csv_should_count_each_choice_by_its_own_trials_for_arrays_an
 
     assert [row["trials"] for row in rows] == _trials_per_choice(study, kept)
     assert parameters[0]["distinct_values"] == str(sum(n != "0" for n in _trials_per_choice(study, kept)))
+
+
+NUMPY_SETTINGS = [
+    pytest.param(
+        lambda s: ABCOptimizer(s, "max", np.int64(8), np.int32(5), seed=ANY_SEED, max_tries=np.int16(50)),
+        {"colony_size": 8, "limit": 5, "max_tries": 50},
+        id="abc",
+    ),
+    pytest.param(
+        lambda s: PSOOptimizer(
+            s, "max", np.int64(7), np.float32(0.5), np.float64(1.5), 2, np.float16(0.5), ANY_SEED, np.int8(9)
+        ),
+        {
+            "swarm_size": 7,
+            "inertia": 0.5,
+            "cognitive": 1.5,
+            "social": 2.0,
+            "max_velocity": 0.5,
+            "max_tries": 9,
+        },
+        id="pso",
+    ),
+    pytest.param(
+        lambda s: BBPSOOptimizer(
+            s, "max", np.int32(6), np.float32(0.5), 1, np.float64(0.25), 0, ANY_SEED, np.uint8(7)
+        ),
+        {"swarm_size": 6, "target": 0.5, "crossover": 1.0, "q_alpha": 0.25, "q_gamma": 0.0, "max_tries": 7},
+        id="bbpso",
+    ),
+]
+
+
+@pytest.mark.parametrize(("make", "expected"), NUMPY_SETTINGS)
+def test_config_json_should_record_numpy_and_int_settings_as_plain_python_numbers(tmp_path, make, expected):
+    """Given each optimizer built with numpy integers for its integer settings and numpy floats or ints for
+    its float settings, and Patience(np.int64(30), np.float32(0.5)), when config.json is read, then every
+    setting is the plain JSON number of the same value, integers as ints and float settings as floats.
+
+    Oracle: Optimizer.settings() and Stopper.settings() (config.json records the constructor settings),
+    the stage brief (integer settings stored as int, float settings as plain Python numbers). Decisive: a
+    numpy integer max_tries was kept as np.int64, so json.dumps(optimizer.settings()) raised TypeError.
+    """
+    optimizer = make(_space())
+    _run(tmp_path, optimizer, max_evals=8, stop=[Patience(np.int64(30), np.float32(0.5))])
+
+    config = _json(_folder(tmp_path) / "config.json")
+
+    settings = config["optimizer"]["settings"]
+    assert settings == expected
+    assert [type(v) for v in settings.values()] == [type(v) for v in expected.values()]
+    assert config["stop"][0]["settings"] == {"evals": 30, "min_delta": 0.5}
+    assert json.loads(json.dumps(optimizer.settings())) == expected
+
+
+def test_console_reporter_should_reject_a_log_every_that_is_no_integer():
+    """Given log_every 2.0, when ConsoleReporter is built, then ValueError names log_every.
+
+    Oracle: ConsoleReporter (one line every `log_every` generations) and the library's error convention;
+    a whole float is no integer. Decisive: 2.0 was taken as it was.
+    """
+    with pytest.raises(ValueError, match="log_every") as excinfo:
+        ConsoleReporter(verbose=1, log_every=2.0)
+
+    assert excinfo.type is ValueError
+
+
+class _NumpySettings(_RandomSearch):
+    """A custom random search whose step and label settings are kept as the values given, numpy ones too."""
+
+    def __init__(self, space, direction="min", step=0.1, label=None, seed=None):
+        super().__init__(space, direction, seed)
+        self.step = step
+        self.label = label
+
+
+def test_config_json_should_record_numpy_settings_of_a_custom_optimizer_as_plain_numbers(tmp_path):
+    """Given a custom optimizer whose step setting is np.float32(0.5) and whose label is np.int64(3), when
+    config.json is read, then it records the plain JSON numbers 0.5 and 3 and holds no numpy text.
+
+    Oracle: report module docstring (config.json records the optimizer with every constructor setting) and
+    the stage brief (nothing numpy-typed reaches config.json).
+    """
+    optimizer = _NumpySettings(_space(), "max", step=np.float32(0.5), label=np.int64(3), seed=ANY_SEED)
+    _, folder = _run(tmp_path, optimizer, max_evals=3)
+
+    text = (folder / "config.json").read_text(encoding="utf-8")
+
+    assert json.loads(text)["optimizer"]["settings"] == {"step": 0.5, "label": 3}
+    assert "np." not in text

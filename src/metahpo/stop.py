@@ -11,9 +11,7 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
-import numpy as np
-
-from metahpo.optimizers.base import _init_settings
+from metahpo.optimizers.base import _init_settings, _integer
 from metahpo.report import RunState
 
 RESERVED_REASONS = ("budget", "exhausted", "repeats", "interrupted", "error")
@@ -64,9 +62,7 @@ class Patience(Stopper):
     reason = "patience"
 
     def __init__(self, evals: int, min_delta: float = 0.0) -> None:
-        if isinstance(evals, bool) or not isinstance(evals, (int, np.integer)) or evals < 1:
-            raise ValueError(f"evals must be an integer of at least 1, got {evals!r}")
-        self.evals = int(evals)
+        self.evals = _integer("evals", evals, 1)
         self.min_delta = _non_negative("min_delta", min_delta)
         self._reference: float | None = None
         self._improved_at = 0

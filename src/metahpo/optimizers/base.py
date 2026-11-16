@@ -24,6 +24,16 @@ def _init_settings(obj: object, skip: Sequence[str] = ()) -> dict[str, Any]:
     return {name: getattr(obj, name) for name in names if name not in skip and hasattr(obj, name)}
 
 
+def _integer(name: str, value: Any, low: int, note: str = "") -> int:
+    """`value` as a Python int when it is a Python or numpy integer of at least `low`; ValueError
+    '<name> must be an integer of at least <low><note>, got <value>' for anything else, booleans, floats
+    (also whole ones such as 20.0) and strings included. The integer arguments of optimize() and resume()
+    and the integer settings of the optimizers and stopping rules are checked with it."""
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < low:
+        raise ValueError(f"{name} must be an integer of at least {low}{note}, got {value!r}")
+    return int(value)
+
+
 @dataclass(frozen=True)
 class Candidate:
     """A point to evaluate: `x` in the unit cube, `params` as the user's function receives them, and `key`,
