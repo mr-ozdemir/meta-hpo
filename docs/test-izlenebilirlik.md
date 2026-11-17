@@ -4,10 +4,10 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 
 ## Özet
 
-- Test dosyası: 68 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 5107, hepsi geçiyor; tüm paket yaklaşık 95 saniyede koşuyor.
+- Test dosyası: 69 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
+- Toplanan test: 5152, hepsi geçiyor; tüm paket yaklaşık 95 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (2600 satırdan 2596'i), dal kapsamı 722/722. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 102, 106, 110, 113).
+- Satır kapsamı %99 (2619 satırdan 2615'i), dal kapsamı 728/728. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 102, 106, 110, 113).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -467,6 +467,17 @@ Gereksinim: `optimize(stop=...)` (issue #71): aramayı bütçeden önce bitiren 
 | Klasör kaydı | **test_report.py**: config.json içinde `stop` kaydının kural sırası, sınıf adı ve ayarlarıyla yazılması, kural yokken boş liste; konsol başlığının kuralları yalnız kural varken adlandırması, kural yokken bugünkü satırın değişmemesi; report.md'de 'Stopping rules' satırının yalnız kural varken yazılması; `RunState.rules` içinde her koşunun kendi kural kopyaları; **test_facade_resume.py**: 0.5.1 klasörü benzetiminde `stop` kaydının da silinmesi |
 | resume() ve kurallar | **test_facade_resume_stop.py**: kuralın bitirdiği klasörün (Patience, TargetScore, iki kural) çağrısız ve aynı nedenle dönmesi ve kayıttan yeniden kurulan kuralların resumes kaydına yazılması, kural tetiklenmeden Ctrl+C ile kesilen koşunun (ilk toplu adayın içinde ve sonra) aynı kurallı kesintisiz koşuya eşitliği (Study, trials.jsonl, summary), daha önce durduracak verilen kuralla koşunun geri yüklemeden hemen sonra bitmesi ve kayıtlı denemelerin atılmaması, daha cömert `stop=Patience(40)` ile sürme ve config.json'un yeni kuralı kaydetmesi, `stop=[]` ile bütçeye kadar sürme, kendi kuralının `stop=` istemesi ve klasörün bayt bayt değişmemesi, hatalı `stop=` değerlerinde klasörün değişmemesi, üç koşulu klasörde bitmiş koşunun geri yüklenmesi ve kesilen koşunun sürmesi, `stop` kaydı olmayan eski klasör |
 | Oturumlar arası süre | **test_facade_resume_stop.py**: sahte saatle (her değerlendirme on dakika, oturumlar arası on saat) MaxTime(hours=1) ile bitmiş koşunun bitmiş kalması ve `stop=MaxTime(hours=2)` ile tam altı değerlendirme daha sürmesi; geri yüklenen denemelerde `state.elapsed()` değerinin duvar saati değil kayıtlı arama süresi (600, 1200, 1800 s) olması; **test_api_contract.py**: `resume` imzasında `stop` |
+
+### warnings
+
+Gereksinim: `MetaHpoWarning(UserWarning)` meta-hpo'nun her uyarısının kategorisidir; her durum çağrı başına bir kez, `optimize()`/`resume()`'u çağıran satırı göstererek `warnings.warn` ile verilir. Argümanlardan bilinen durum tüm argüman kontrolleri geçtikten sonra ve arama başlamadan, henüz hiçbir şey yazılmamış ve hedef fonksiyon çağrılmamışken; sonuca bağlı durum çağrı bittiğinde, tüm sonuç dosyaları yazıldıktan sonra verilir; standart filtreler geçerlidir. `optimize()`, optimizer nesnesiyle birlikte verilen ve etkisiz kalan `seed` için arama başlamadan uyarır.
+
+| Konu | Testler |
+|---|---|
+| Kategori ve dışa aktarım | **test_facade_warnings.py**: `metahpo.MetaHpoWarning`'in `UserWarning` alt sınıfı ve `metahpo.report` içindeki sınıf olması; **test_api_contract.py**: `__all__` ve sınıf olarak dışa aktarım |
+| Etkisiz seed | **test_facade_warnings.py**: ABC, PSO ve BBPSO nesnesiyle int, liste ve numpy tamsayısı seed'de tam bir uyarı, metnin seed'in etkisiz olduğunu ve seed'li aramanın yolunu söylemesi, uyarının `optimize()`'ı çağıran test satırını göstermesi (`filename`), Study'nin seed'siz aynı nesneyle koşuya eşitliği; fonksiyon optimizer'la seed, öntanımlı optimizer'la seed ve seed'siz nesnede uyarı olmaması |
+| Arama başlamadan | **test_facade_warnings.py**: `simplefilter("error")` altında MetaHpoWarning yükselirken çıktı klasörünün boş kalması, konsolun bir şey basmaması, hiçbir koşunun başlamaması ve hedef fonksiyonun hiç çağrılmaması; başka yönde ya da başka uzayda optimizer, iki koşu için tek nesne, sıfır bütçe ve Stopper olmayan kuralda argüman hatasının öncesinde uyarı olmadan gelmesi |
+| Çağrı bitince | **test_facade_warnings.py**: sonuca bağlı bir bildirimin (iki kez bildirilse de) `optimize()` ve `resume()` çağrısında bir kez ve çağıran test satırını göstererek verilmesi; `simplefilter("error")` altında yükselirken klasörde bitmiş best.json, `budget` nedenli summary.json, report.md ve deneme başına bir trials.jsonl satırı olması ve klasörün `resume()` ile çağrısız dönmesi; `filterwarnings("ignore", category=MetaHpoWarning)` ile uyarının susması |
 
 ## Stil kontrol listesi
 

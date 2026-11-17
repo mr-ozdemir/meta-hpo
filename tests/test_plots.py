@@ -78,7 +78,6 @@ def _plots(tmp_path, optimizer, function=_score):
         direction="max",
         max_evals=80,
         optimizer=optimizer,
-        seed=ANY_SEED,
         verbose=0,
         output=None,
         callbacks=[ResultWriter(tmp_path)],

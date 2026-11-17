@@ -964,7 +964,7 @@ def _optimize_config(config):
         direction=config["direction"],
         max_evals=config["max_evals"],
         optimizer=optimizer,
-        seed=README_SEED,
+        seed=README_SEED if optimizer is None else None,
     )
     return declared, study
 

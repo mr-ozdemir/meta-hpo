@@ -124,9 +124,7 @@ def _keys(opt, score, asks):
 def _found_mixed_optimum(seed):
     """True when 300 calls with `seed` end below 0.05 with activation 'gelu'."""
     space = _mixed()
-    study = optimize(
-        _mixed_score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=seed), seed=seed
-    )
+    study = optimize(_mixed_score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=seed))
     return study.best_score < 0.05 and study.best_params["act"] == "gelu"
 
 
@@ -526,9 +524,7 @@ def test_bbpso_should_evaluate_each_value_of_a_four_value_space_once_and_stop():
     """
     space = Space({"k": Int(0, 3)})
 
-    study = optimize(
-        lambda p: p["k"], space, max_evals=40, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(lambda p: p["k"], space, max_evals=40, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.n_calls == 4
 
@@ -613,7 +609,7 @@ def test_bbpso_flags_should_stay_between_one_and_five_over_a_long_run():
     space = _box()
     opt = BBPSOOptimizer(space, seed=ANY_SEED)
 
-    optimize(_rastrigin, space, max_evals=600, optimizer=opt, seed=ANY_SEED)
+    optimize(_rastrigin, space, max_evals=600, optimizer=opt)
 
     assert set(opt.flags) <= {1, 2, 3, 4, 5}
     assert bool(np.all((opt.positions >= 0.0) & (opt.positions <= 1.0))) is True
@@ -627,9 +623,7 @@ def test_bbpso_should_reach_the_sphere_minimum_within_300_calls():
     """
     space = _box()
 
-    study = optimize(
-        _sphere, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_sphere, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < 1e-3
 
@@ -642,9 +636,7 @@ def test_bbpso_should_improve_on_its_initial_batch_on_rastrigin():
     """
     space = _box()
 
-    study = optimize(
-        _rastrigin, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_rastrigin, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < min(t.score for t in study.trials[:SWARM])
 
@@ -669,16 +661,13 @@ def test_bbpso_should_evaluate_the_same_points_when_maximising_minus_f_with_targ
     """
     space = _box()
 
-    low = optimize(
-        _sphere, space, max_evals=200, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    low = optimize(_sphere, space, max_evals=200, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
     high = optimize(
         lambda p: -_sphere(p),
         space,
         direction="max",
         max_evals=200,
         optimizer=BBPSOOptimizer(space, direction="max", target=0.0, seed=ANY_SEED),
-        seed=ANY_SEED,
     )
 
     assert [tuple(t.x) for t in low.trials] == [tuple(t.x) for t in high.trials]
@@ -933,9 +922,7 @@ def test_bbpso_should_use_the_whole_budget_when_no_particle_is_ever_better(score
     """
     space = _unit()
 
-    study = optimize(
-        score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.n_calls == 300
 

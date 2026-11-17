@@ -154,6 +154,7 @@ REQUIRED_IDS = frozenset(
         "R-FACADE-DEFAULT-AND-CUSTOM-OPT",
         "R-FUNCTION-RECEIVES-DICT",
         "R-USER-EXC-PROPAGATES",
+        "R-WARNINGS",
     }
 )
 
@@ -814,6 +815,32 @@ REQUIREMENTS = {
             "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
         ],
     },
+    "R-WARNINGS": {
+        "source": [
+            "CHANGELOG.md | `MetaHpoWarning`, a `UserWarning`, is the category of every warning meta-hpo "
+            "emits, once per condition and call; `optimize()` warns before the search starts, when nothing "
+            "is written yet, that a `seed` given together with an optimizer object has no effect, and a "
+            "condition that depends on the outcome is warned about when the call has finished and every "
+            "result file is written.",
+            "metahpo.facade.optimize | A condition the arguments show is warned about after every argument "
+            "check has passed and before the search starts: nothing is written and the objective is not "
+            "called yet, and an argument that raises comes without a warning.",
+            "metahpo.facade.optimize | optimize() warns so when `seed` is given together with an optimizer "
+            "object, which already holds its random generator, so the seed has no effect.",
+            "metahpo.report.MetaHpoWarning | The standard filters apply:",
+        ],
+        "tests": [
+            "test_facade_warnings::test_meta_hpo_warning_should_be_a_user_warning_exported_by_the_package",
+            "test_facade_warnings::test_optimize_should_warn_once_that_the_seed_has_no_effect_on_an_optimizer_object",
+            "test_facade_warnings::test_optimize_should_not_warn_when_the_seed_takes_effect_or_none_is_given",
+            "test_facade_warnings::test_optimize_should_raise_the_seed_warning_turned_into_an_error_before_anything_is_written_or_called",
+            "test_facade_warnings::test_optimize_should_raise_an_argument_error_without_a_warning_before_it",
+            "test_facade_warnings::test_the_warning_of_a_finished_call_should_point_at_the_caller_of_optimize_and_of_resume",
+            "test_facade_warnings::test_a_finished_call_should_raise_its_warning_turned_into_an_error_after_writing_a_complete_folder",
+            "test_facade_warnings::test_the_ignore_filter_should_silence_every_meta_hpo_warning",
+            "test_api_contract::test_metahpo_should_export_exactly_the_documented_names",
+        ],
+    },
 }
 
 
@@ -1402,7 +1429,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 23}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 24}
 
 
 @pytest.mark.parametrize(

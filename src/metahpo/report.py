@@ -92,6 +92,18 @@ from metahpo.optimizers.base import Optimizer, _integer
 from metahpo.space import Categorical, Float, Int, Space, _choice_index, _choice_text, _without_addresses
 from metahpo.study import Study, Trial
 
+
+class MetaHpoWarning(UserWarning):
+    """The category of every warning meta-hpo emits: something about a search the user should know that does
+    not stop it. optimize() and resume() emit each condition once per call with warnings.warn, pointing at
+    the line that called them: a condition the arguments show after every argument check has passed and
+    before the search starts, when nothing is written and the objective was not called, and a condition that
+    depends on the outcome when the call has finished and every result file was written. So a warning
+    turned into an exception (`-W error`, warnings.simplefilter('error')) costs no result. The standard
+    filters apply: warnings.filterwarnings('ignore', category=MetaHpoWarning) silences them. Deprecations
+    will use FutureWarning, as Optuna and scikit-learn do."""
+
+
 DEFAULT_OUTPUT = "hpo_results"
 COMPRESS_FROM = 50_000
 FSYNC_EVERY = 1.0

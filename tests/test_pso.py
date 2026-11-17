@@ -114,7 +114,7 @@ def _distinct_keys(opt):
 def _found_mixed_optimum(seed):
     """True when 300 calls of PSOOptimizer with `seed` end below 0.05 with activation 'gelu'."""
     space = _mixed()
-    study = optimize(_mixed_score, space, max_evals=300, optimizer=PSOOptimizer(space, seed=seed), seed=seed)
+    study = optimize(_mixed_score, space, max_evals=300, optimizer=PSOOptimizer(space, seed=seed))
     return study.best_score < 0.05 and study.best_params["act"] == "gelu"
 
 
@@ -518,7 +518,6 @@ def test_pso_should_evaluate_each_value_of_a_three_value_space_once_and_stop():
         space,
         max_evals=50,
         optimizer=PSOOptimizer(space, seed=ANY_SEED),
-        seed=ANY_SEED,
     )
 
     assert (study.n_calls, sorted(calls)) == (3, [0, 1, 2])
@@ -612,9 +611,7 @@ def test_pso_should_reach_the_sphere_minimum_within_forty_iterations():
     """
     space = _box()
 
-    study = optimize(
-        _sphere, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_sphere, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < 1e-3
 
@@ -628,9 +625,7 @@ def test_pso_should_improve_on_its_initial_batch_on_rastrigin():
     """
     space = _box()
 
-    study = optimize(
-        _rastrigin, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_rastrigin, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < min(t.score for t in study.trials[:SWARM])
 
@@ -656,14 +651,13 @@ def test_pso_should_evaluate_the_same_points_when_maximising_minus_f_or_minimisi
     """
     space = _box()
 
-    low = optimize(_sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED)
+    low = optimize(_sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED))
     high = optimize(
         lambda p: -_sphere(p),
         space,
         direction="max",
         max_evals=200,
         optimizer=PSOOptimizer(space, direction="max", seed=ANY_SEED),
-        seed=ANY_SEED,
     )
 
     assert [tuple(t.x) for t in low.trials] == [tuple(t.x) for t in high.trials]
@@ -678,15 +672,9 @@ def test_pso_should_evaluate_the_same_points_when_the_objective_is_scaled_by_1e_
     """
     space = _box(3)
 
-    plain = optimize(
-        _sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    plain = optimize(_sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED))
     scaled = optimize(
-        lambda p: 1e-20 * _sphere(p),
-        space,
-        max_evals=200,
-        optimizer=PSOOptimizer(space, seed=ANY_SEED),
-        seed=ANY_SEED,
+        lambda p: 1e-20 * _sphere(p), space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED)
     )
 
     assert [tuple(t.x) for t in plain.trials] == [tuple(t.x) for t in scaled.trials]

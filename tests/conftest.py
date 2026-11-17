@@ -122,7 +122,8 @@ branches found unreached; specification gaps; generated spaces and non-finite sc
 hand-written cache=False example behind the grammar property; direction 'max' at study, optimizer and
 trajectory level; repeated runs with one seed per run and optimizer functions; resuming a stopped, killed,
 finished or extended search from its results folder; stopping rules ending a run inside a batch, in order,
-with fresh copies per run; resuming with the recorded or replaced stopping rules
+with fresh copies per run; resuming with the recorded or replaced stopping rules; MetaHpoWarning emitted once
+per condition at the end of a call, pointing at the caller and obeying the warning filters
     test_facade.py | unit | optimize() argument checks, budget and cache bookkeeping
     test_facade_budget.py | unit | exact trial and call counts of the evaluation budget
     test_facade_doubles.py | integration | scripted optimizer, objective stubs, spies and mocks
@@ -138,6 +139,7 @@ with fresh copies per run; resuming with the recorded or replaced stopping rules
     test_facade_resume.py | integration | resume() of interrupted, killed, finished and extended runs
     test_facade_stop.py | integration | optimize(stop=...) ending runs early through the stopping rules
     test_facade_resume_stop.py | integration | resume() with the recorded stopping rules or with stop=
+    test_facade_warnings.py | integration | MetaHpoWarning of optimize() and resume() and the warning filters
 
 Plan: results reporting
 Scenario groups: console lines per generation and per trial; environment overrides of output and verbose;

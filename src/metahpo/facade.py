@@ -8,6 +8,7 @@ import inspect
 import math
 import os
 import time
+import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,6 +24,7 @@ from metahpo.report import (
     DEFAULT_OUTPUT,
     Callback,
     ConsoleReporter,
+    MetaHpoWarning,
     ResultWriter,
     RunState,
     _describe_rules,
@@ -144,6 +146,14 @@ def optimize(
 
     A run that stopped, for any reason, continues from its results folder with resume().
 
+    Warnings: a condition the user should know about that does not stop the search is emitted once per call
+    as a metahpo.MetaHpoWarning. A condition the arguments show is warned about after every argument check
+    has passed and before the search starts: nothing is written and the objective is not called yet, and an
+    argument that raises comes without a warning. optimize() warns so when `seed` is given together with an
+    optimizer object, which already holds its random generator, so the seed has no effect. A condition that
+    depends on the outcome of the search is warned about when the call has finished and every result file
+    is written; a call that raises during the search emits none of these.
+
     The integer arguments (max_evals, runs, log_every, verbose and every seed) take Python or numpy
     integers; a float (also a whole one such as 20.0), a bool or a string raises ValueError before the
     search starts and before a results folder is written. verbose also takes False and True as 0 and 1, and
@@ -159,15 +169,16 @@ def optimize(
     folder = resolve_output(output)
     writer = None if folder is None else ResultWriter(folder)
     listeners = _listeners(verbose, log_every, writer, callbacks)
+    if isinstance(optimizer, Optimizer):
+        _matching(optimizer, space, direction)
+    _warn(_ignored_seed(optimizer, seed, seeds))
 
     def starts() -> Iterator[_Start]:
         for number, run_seed in enumerate(seeds, start=1):
-            opt = _checked(make(run_seed), direction)
-            if opt.space is not space:
-                raise ValueError("the optimizer must use the same space and direction as optimize()")
-            yield _Start(number, run_seed, opt)
+            yield _Start(number, run_seed, _matching(make(run_seed), space, direction))
 
     studies = _search(function, starts(), direction, max_evals, cache, runs, seeds, listeners, rules)
+    _warn(_finished_notices(studies))
     return studies[0] if runs == 1 else studies
 
 
@@ -242,6 +253,10 @@ def resume(
     instead of their usual lines; callbacks receive the events of the restored trials too, with
     RunState.replaying True. Elapsed times, durations and the console clock leave out the time the run was
     stopped (see metahpo.report).
+
+    Warnings: as in optimize(), each condition is emitted once per call as a metahpo.MetaHpoWarning; one that
+    depends on the outcome of the search when the call has finished and every result file is written, and
+    none when the call raises.
     """
     verbose = 1 if verbose is None else _verbose(verbose)
     log_every = _integer("log_every", log_every, 1)
@@ -272,7 +287,39 @@ def resume(
     writer = ResultWriter._continuing(root, config, entry)
     listeners = _listeners(verbose, log_every, writer, callbacks)
     studies = _search(function, starts, direction, budget, cache, runs, seeds, listeners, rules)
+    _warn(_finished_notices(studies))
     return studies[0] if runs == 1 else studies
+
+
+def _warn(notices: Sequence[str]) -> None:
+    """Emits every notice once, as a MetaHpoWarning pointing at the user's line that called optimize() or
+    resume() (stacklevel 3: this function, then optimize() or resume(), which must call it themselves).
+    optimize() calls it for the notices its arguments give after every argument check has passed and before
+    the search starts, when nothing is written yet, and both call it for the notices of _finished_notices()
+    when the search has returned, after every result file was written and closed; so a warning that the
+    filters turn into an exception costs no result."""
+    for notice in dict.fromkeys(notices):
+        warnings.warn(notice, MetaHpoWarning, stacklevel=3)
+
+
+def _finished_notices(studies: Sequence[Study]) -> list[str]:
+    """The notices that depend on the outcome of a finished optimize() or resume() call; none so far."""
+    return []
+
+
+def _ignored_seed(optimizer: Any, seed: Seed, seeds: list[Any]) -> list[str]:
+    """The notice for a seed given together with an optimizer object, which already holds its random
+    generator, so the seed has no effect on the search (config.json, summary.json and the console still
+    show it); empty otherwise."""
+    if not isinstance(optimizer, Optimizer) or all(s is None for s in seeds):
+        return []
+    name = type(optimizer).__name__
+    return [
+        f"seed={seed!r} has no effect because optimizer= is an optimizer object, which already holds its "
+        f"random generator (config.json still records the seed); pass the seed to the optimizer, as in "
+        f"{name}(space, seed=...), or pass a function seed -> optimizer, as in "
+        f"optimizer=lambda seed: {name}(space, seed=seed)"
+    ]
 
 
 def _listeners(
@@ -287,6 +334,14 @@ def _listeners(
         listeners.append(writer)
     listeners.extend(callbacks or [])
     return listeners
+
+
+def _matching(opt: Any, space: Space, direction: Direction) -> Optimizer:
+    """The optimizer of an optimize() run, checked for its type, direction and space."""
+    checked = _checked(opt, direction)
+    if checked.space is not space:
+        raise ValueError("the optimizer must use the same space and direction as optimize()")
+    return checked
 
 
 def _checked(opt: Any, direction: Direction) -> Optimizer:
