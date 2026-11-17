@@ -194,7 +194,12 @@ class ABCOptimizer(Optimizer):
 
     @property
     def generation(self) -> int:
-        """Completed cycles (employed, onlooker and scout phase)."""
+        """Completed cycles (employed, onlooker and scout phase). A cycle is complete as soon as its last
+        candidate was told: the scout's, or the last onlooker's when no food source has reached `limit`, so
+        the cycle has no scout. In that case `cycle` itself moves on at the next ask, which starts the
+        employed sweep of the next cycle; the decision draws no random number, so it can be read here."""
+        if self.phase == "scout" and max(self.trial) < self.limit:
+            return self.cycle + 1
         return self.cycle
 
     def population(self) -> dict[str, Any] | None:

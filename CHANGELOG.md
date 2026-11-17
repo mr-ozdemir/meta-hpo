@@ -33,6 +33,14 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - report.md names the compressed `trials.csv.gz` and `population.csv.gz` of a large run, leaves out a
   population file an optimizer without population never wrote, and always ends its generation table with
   the last generation.
+- The generation event of `ABCOptimizer` and `BBPSOOptimizer` fires right after the last trial of the
+  generation, as for PSO, instead of after the first trial of the next one: the console's `evals`
+  equals the `calls` column of generations.csv, and the population columns of generations.csv and the rows
+  of population.csv show the population at the end of the generation. A run that ends with a complete
+  generation counts it in summary.json's `generations`. The trials of a search do not change.
+- A console whose encoding cannot show a parameter name, a choice or a value (cp1254, ascii) prints the
+  character as a backslash escape and keeps printing, instead of going silent for the rest of the search;
+  a stream whose `encoding` is missing, None or not usable gets the lines unchanged.
 
 - `Int` and `Float` bounds given as numpy scalars or 0-d arrays are stored as the Python numbers they hold:
   `Int(np.uint8(0), np.uint8(255))` no longer overflows into an empty, "exhausted" run, and `float32`

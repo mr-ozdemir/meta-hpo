@@ -275,12 +275,34 @@ def _stats(values: Sequence[float], direction: str) -> dict[str, float]:
         }
 
 
+def _encodable(text: str, stream: Any) -> str:
+    """`text` with every character that the encoding of `stream` cannot represent written as a backslash
+    escape, as Python's backslashreplace error handler writes it, so a console of a narrow encoding prints
+    the line instead of failing on it. Whenever the encoding cannot be used for that, the text is given
+    back as it is: a stream without an encoding (StringIO), with encoding None or a value that is not a
+    non-empty str, an encoding attribute that raises, or a name that is not a text codec Python knows. The
+    stream itself and its error handler are left unchanged."""
+    try:
+        encoding = getattr(stream, "encoding", None)
+        if not isinstance(encoding, str) or not encoding:
+            return text
+        try:
+            text.encode(encoding)
+        except UnicodeEncodeError:
+            return text.encode(encoding, "backslashreplace").decode(encoding)
+        return text
+    except Exception:
+        return text
+
+
 class ConsoleReporter(Callback):
     """Epoch-style progress on the console: one line per generation, or per trial with verbose=2.
 
     When the console cannot be written (a closed stream or a broken pipe), it stops printing and the search
-    and the other listeners go on. The trials a resume restores print no lines; one 'resumed' line with
-    their number, their calls and their best score comes before the lines of the trials evaluated anew.
+    and the other listeners go on. A character the stream's encoding cannot represent (a parameter name, a
+    choice or a value) is printed as a backslash escape, and the line is still printed. The trials a resume
+    restores print no lines; one 'resumed' line with their number, their calls and their best score comes
+    before the lines of the trials evaluated anew.
     """
 
     def __init__(self, verbose: int = 1, log_every: int = 1, stream: IO[str] | None = None) -> None:
@@ -294,8 +316,9 @@ class ConsoleReporter(Callback):
     def _print(self, text: str) -> None:
         if self._broken:
             return
+        stream = self.stream if self.stream is not None else sys.stdout
         try:
-            print(text, file=self.stream if self.stream is not None else sys.stdout, flush=True)
+            print(_encodable(text, stream), file=stream, flush=True)
         except (OSError, ValueError):
             self._broken = True
 

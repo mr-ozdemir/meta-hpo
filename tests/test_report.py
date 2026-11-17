@@ -29,11 +29,15 @@ replace of best.json, config.json, state.json and summary.json refused for a whi
 simulated reader that holds the file); callbacks that raise RuntimeError or KeyboardInterrupt in
 on_run_start, on_trial, on_generation and on_run_end; a folder name taken by another search after the
 check for it; penalty scores near 1e300 and the largest float; report.md of a compressed run, of a
-custom optimizer without population and of a run whose last generation the table step skips.
+custom optimizer without population and of a run whose last generation the table step skips; the
+generation events of ABC, PSO and BBPSO with budgets that end inside and at the end of a generation;
+console streams of cp1254, ascii and cp1254 with surrogateescape, a StringIO and a stream whose
+encoding is None, with a parameter name and a choice they cannot all encode.
 """
 
 import csv
 import gzip
+import io
 import json
 import math
 import warnings
@@ -2155,3 +2159,281 @@ def test_report_md_should_end_its_generation_table_with_the_last_generation(tmp_
     last = _rows(folder / "run_001" / "generations.csv")[-1]["generation"]
     assert (rows[-1], last) == ("59", "59")
     assert len(rows) == 31
+
+
+class _Generations(Callback):
+    """Records, for every generation event, the trials and calls when it fired and when the generation's last
+    trial was recorded, and the population passed. on_trial comes before the optimizer is told the trial,
+    so the population seen at the next trial is the one right after the last trial of the generation was
+    told."""
+
+    def __init__(self):
+        self.seen = {}
+        self.events = []
+
+    def on_trial(self, state, trial, new_best):
+        self.seen[trial.number] = (len(state.study.trials), state.calls, state.optimizer.population())
+
+    def on_generation(self, state, generation, trials, population):
+        last = trials[-1].number
+        self.events.append(((len(state.study.trials), state.calls), self.seen[last][:2], last, population))
+
+    def populations_match(self):
+        """For every event followed by a further trial: whether its population equals the one seen at that
+        trial."""
+        return [
+            all(np.array_equal(np.asarray(self.seen[last + 1][2][k]), np.asarray(pop[k])) for k in pop)
+            for _, _, last, pop in self.events
+            if last + 1 in self.seen
+        ]
+
+
+GENERATION_OPTIMIZERS = [
+    pytest.param(lambda s: ABCOptimizer(s, "max", seed=ANY_SEED), 45, id="abc-ending-at-a-cycle-end"),
+    pytest.param(lambda s: ABCOptimizer(s, "max", seed=ANY_SEED), 61, id="abc-ending-inside-a-cycle"),
+    pytest.param(lambda s: PSOOptimizer(s, "max", swarm_size=5, seed=ANY_SEED), 47, id="pso"),
+    pytest.param(lambda s: BBPSOOptimizer(s, "max", swarm_size=6, seed=ANY_SEED), 61, id="bbpso"),
+]
+
+
+@pytest.mark.parametrize(("make", "budget"), GENERATION_OPTIMIZERS)
+def test_generation_event_should_fire_after_the_last_trial_of_its_generation_and_before_the_next(
+    make, budget
+):
+    """Given ABC (budgets ending at the end of a cycle and inside one), PSO and BBPSO runs, when every
+    on_generation event is compared with the moment the last trial of its generation was recorded, then
+    the study held the same trials and state.calls was the same, and the population passed equals the
+    optimizer's population right after that last trial was told (as the next trial sees it).
+
+    Oracle: Callback.on_generation docstring (when the optimizer's generation counter moves past
+    `generation`; `population` is the optimizer's snapshot) and the generation docstrings of the optimizers
+    (a generation is complete once its last candidate was told). Decisive: ABC and BBPSO moved their counter
+    only at the next ask, so the event came after the first trial of the next generation, with its calls and
+    its population.
+    """
+    recorder = _Generations()
+    optimizer = make(_space())
+
+    optimize(
+        _score,
+        optimizer.space,
+        "max",
+        budget,
+        optimizer=optimizer,
+        verbose=0,
+        output=None,
+        callbacks=[recorder],
+    )
+
+    matches = recorder.populations_match()
+    assert [at for at, _, _, _ in recorder.events] == [then for _, then, _, _ in recorder.events]
+    assert matches == [True] * len(recorder.events[:-1])
+
+
+@pytest.mark.parametrize(("make", "budget"), GENERATION_OPTIMIZERS)
+def test_console_evals_should_equal_the_calls_column_of_generations_csv_for_every_generation(
+    tmp_path, make, budget
+):
+    """Given the same runs with a console at verbose=1 and a results folder, when each 'gen' line is read,
+    then its evals count equals the calls column of the generations.csv row of that generation, and each
+    generation has one row and one line.
+
+    Oracle: ConsoleReporter docstring (one line per generation with the evaluations used) and the report
+    module docstring (generations.csv holds statistics per generation). Decisive: for ABC and BBPSO the line
+    counted the first call of the next generation (evals 16 for the 15 calls of ABC's generation 0).
+    """
+    stream = io.StringIO()
+    optimizer = make(_space())
+
+    _run(tmp_path, optimizer, max_evals=budget, callbacks=[ConsoleReporter(1, stream=stream)])
+
+    lines = [line for line in stream.getvalue().splitlines() if line.startswith("gen ")]
+    evals = [line.split("evals")[1].split("/")[0].strip() for line in lines]
+    calls = [row["calls"] for row in _rows(_folder(tmp_path) / "run_001" / "generations.csv")]
+    assert evals == calls
+
+
+def test_summary_should_count_a_cycle_that_ended_with_the_run_as_a_completed_generation(tmp_path):
+    """Given an ABC run (colony 10) whose budget of 45 ends with the last onlooker of cycle 3, which has no
+    scout, when summary.json and generations.csv are read, then the summary counts 4 generations and
+    generations.csv has the 4 rows of cycles 0 to 3, the last one once.
+
+    Oracle: Optimizer.generation docstring (completed generations) and the ABCOptimizer.generation docstring
+    (a cycle without a scout is complete after its last onlooker); the report module docstring (the last,
+    possibly unfinished generation is reported once when the run ends).
+    """
+    _, folder = _run(tmp_path, ABCOptimizer(_space(), "max", seed=ANY_SEED), max_evals=45)
+
+    rows = _rows(folder / "run_001" / "generations.csv")
+
+    assert (_json(folder / "summary.json")["generations"], [r["generation"] for r in rows]) == (
+        4,
+        ["0", "1", "2", "3"],
+    )
+
+
+class _NoEncoding(io.StringIO):
+    """A text stream whose encoding attribute is None, as some wrapped or captured streams have."""
+
+    encoding = None
+
+
+CONSOLE_STREAMS = [
+    pytest.param(lambda: io.TextIOWrapper(io.BytesIO(), encoding="cp1254"), "cp1254", id="cp1254-strict"),
+    pytest.param(
+        lambda: io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict"), "ascii", id="ascii"
+    ),
+    pytest.param(
+        lambda: io.TextIOWrapper(io.BytesIO(), encoding="cp1254", errors="surrogateescape"),
+        "cp1254",
+        id="cp1254-surrogateescape",
+    ),
+]
+
+
+def _wide_space():
+    """A parameter name and a choice with characters outside cp1254 and ascii."""
+    return Space({"öğrenme_学习": Float(0.0, 1.0), "act": Categorical(["doğrusal", "🙂", "x"])})
+
+
+def _wide_score(params):
+    return params["öğrenme_学习"]
+
+
+def _console_lines(stream, tmp_path):
+    """The console lines of two seeded runs of 12 evaluations at verbose=2 on _wide_space, written to
+    `stream` with a results folder below tmp_path."""
+    optimize(
+        _wide_score,
+        _wide_space(),
+        max_evals=12,
+        seed=[1, 2],
+        runs=2,
+        verbose=0,
+        output=tmp_path,
+        callbacks=[ConsoleReporter(2, stream=stream)],
+    )
+    stream.flush()
+    return stream
+
+
+@pytest.mark.parametrize(("make", "encoding"), CONSOLE_STREAMS)
+def test_console_should_print_every_line_with_escapes_when_its_encoding_cannot_show_a_name_or_choice(
+    tmp_path, make, encoding
+):
+    """Given a console stream of cp1254 or ascii (strict, or cp1254 with surrogateescape) and a parameter
+    name and a choice it cannot encode (学习, 🙂), when two runs print at verbose=2, then the stream gets all
+    31 lines (two headers, 24 trial lines, two generation lines, two end lines and the runs line), with the
+    characters it cannot encode as backslash escapes, the stream's error handler is unchanged, and the
+    results folder holds the names in UTF-8.
+
+    Oracle: ConsoleReporter docstring (a character the stream's encoding cannot represent is printed as a
+    backslash escape, and the line is still printed; the search goes on). Decisive: print raised
+    UnicodeEncodeError at the first such line, which silenced the console for the rest of the search.
+    """
+    stream = make()
+    errors = stream.errors
+
+    text = _console_lines(stream, tmp_path).buffer.getvalue().decode(encoding)
+
+    folder = _folder(tmp_path)
+    assert len(text.splitlines()) == 31
+    assert "\\u5b66\\u4e60" in text and stream.errors == errors
+    assert "öğrenme_学习" in (folder / "run_001" / "trials.csv").read_text(encoding="utf-8")
+
+
+def test_console_should_print_to_a_stream_whose_encoding_is_none(tmp_path):
+    """Given a text stream whose encoding attribute is None, when two runs print at verbose=2 on the same
+    space, then it gets the lines unchanged, the wide characters included.
+
+    Oracle: ConsoleReporter docstring (characters are escaped only for an encoding that cannot represent
+    them; a stream without an encoding gets the text as it is).
+    """
+    stream = _console_lines(_NoEncoding(), tmp_path)
+
+    lines = stream.getvalue().splitlines()
+
+    assert len(lines) == 31
+    assert "öğrenme_学习" in stream.getvalue()
+
+
+def test_console_should_print_the_text_as_it_is_for_an_encoding_python_does_not_know():
+    """Given a stream that names an encoding Python has no codec for, when ConsoleReporter prints a line with
+    wide characters, then the stream gets the line unchanged.
+
+    Oracle: ConsoleReporter docstring (only an encoding that cannot represent a character changes it); an
+    unknown encoding cannot be checked, so the text is left to the stream.
+    """
+
+    class _Unknown(io.StringIO):
+        encoding = "no-such-codec"
+
+    stream = _Unknown()
+
+    ConsoleReporter(1, stream=stream)._print("öğrenme 学习")
+
+    assert stream.getvalue() == "öğrenme 学习\n"
+
+
+def test_an_error_in_the_event_of_the_last_unfinished_generation_should_raise_after_the_writer_finished(
+    tmp_path,
+):
+    """Given an ABC run of 61 evaluations, which ends inside generation 5, and a callback that raises in the
+    event of generation 5, sent when the run ends, when optimize() runs, then that exception is raised and
+    summary.json records the stop reason 'budget' with the six rows of generations.csv written.
+
+    Oracle: _Run.finish docstring (the last, possibly unfinished generation and the end of the run reach
+    every listener, also when some raise; the first exception is raised afterwards).
+    """
+    error = RuntimeError("bug in the last generation")
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Raising("on_generation", error, at=5)], max_evals=61)
+
+    folder = _folder(tmp_path)
+    assert raised.value is error
+    assert (
+        _json(folder / "summary.json")["stop_reason"],
+        len(_rows(folder / "run_001" / "generations.csv")),
+    ) == ("budget", 6)
+
+
+class _RaisingEncoding(io.StringIO):
+    """A text stream whose encoding attribute raises when it is read."""
+
+    @property
+    def encoding(self):
+        raise RuntimeError("no encoding here")
+
+
+def _odd_stream(encoding):
+    """A StringIO whose encoding attribute is `encoding`, which is not a usable str."""
+    return type("_Odd", (io.StringIO,), {"encoding": encoding})()
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(lambda: _odd_stream(1254), id="int"),
+        pytest.param(lambda: _odd_stream(b"cp1254"), id="bytes"),
+        pytest.param(lambda: _odd_stream(object()), id="object"),
+        pytest.param(lambda: _odd_stream("rot13"), id="text-to-text-codec"),
+        pytest.param(_RaisingEncoding, id="raising-property"),
+    ],
+)
+def test_console_should_leave_the_search_and_the_lines_alone_for_an_encoding_it_cannot_use(tmp_path, make):
+    """Given a console stream whose encoding attribute is an int, bytes, an object, the name of a
+    text-to-text codec or a property that raises, when two runs print at verbose=2, then both runs finish
+    and the stream gets all 31 lines unchanged, the wide characters included.
+
+    Oracle: ConsoleReporter docstring (the search goes on whatever the console can show) and the _encodable
+    docstring (whenever the encoding cannot be used, the text is given back as it is). Decisive: an encoding
+    that is not a str made str.encode raise TypeError, and a raising attribute escaped as well, both out of
+    optimize().
+    """
+    stream = _console_lines(make(), tmp_path)
+
+    text = stream.getvalue()
+
+    assert len(text.splitlines()) == 31
+    assert "öğrenme_学习" in text

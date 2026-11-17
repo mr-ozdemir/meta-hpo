@@ -35,7 +35,8 @@ contract tests), trial-counter values (abc-acceptance-mutation-guided), move() a
 (abc-protocol-invariants) and cache hits (facade-integration).
 
 Input space: Every ask/tell sequence with any scores, colony_size, limit and seed, which is unbounded.
-Subset: Phase schedules of small colonies, compared step by step with the rules of the original ABC.py.
+Subset: Phase schedules of small colonies, compared step by step with the rules of the original ABC.py;
+the generation counter after the last onlooker of a cycle with and without a scout due.
 """
 
 import math
@@ -507,3 +508,43 @@ def test_abc_optimizer_should_replace_the_most_exhausted_source_with_the_scout_e
     assert scout.phase == "scout"
     assert _sources(next_employed) == [0, 1]
     assert int(np.count_nonzero(next_employed[replaced].x != scout.x)) == 1
+
+
+def _through_the_onlookers(limit):
+    """An ABC colony of two food sources and the given limit, asked and told with a constant score through
+    the initial batch, the employed and the onlooker phase of cycle 0, so it waits in the scout phase."""
+    opt = ABCOptimizer(Space({"x": Float(0.0, 1.0)}), colony_size=4, limit=limit, seed=ANY_SEED)
+    batch = opt.ask()
+    opt.tell(batch, [1.0] * len(batch))
+    while opt.phase != "scout":
+        (cand,) = opt.ask()
+        opt.tell([cand], [1.0])
+    return opt
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    [
+        pytest.param(15, (0, 1, 1), id="no-scout-due"),
+        pytest.param(1, (0, 0, 0), id="scout-due"),
+    ],
+)
+def test_abc_generation_should_count_a_cycle_without_a_scout_as_complete_after_its_last_onlooker(
+    limit, expected
+):
+    """Given a colony told constant scores up to the end of the onlooker phase of cycle 0, with limit 15 (no
+    food source has reached it, so the cycle has no scout) or limit 1 (every source has, so a scout is due),
+    when cycle, generation and the generation of the next candidate are read, then without a scout the
+    cycle counts as complete (generation 1) while `cycle` stays 0 until the next ask, whose candidate
+    belongs to cycle 1; with a scout due the cycle is not complete and the next candidate is its scout.
+
+    Oracle: ABCOptimizer.generation docstring (a cycle is complete as soon as its last candidate was told:
+    the scout's, or the last onlooker's when no food source has reached `limit`). Decisive: generation
+    stayed 0 until the next ask, so optimize() saw the end of the cycle only after a trial of the next one.
+    """
+    opt = _through_the_onlookers(limit)
+    reading = (opt.cycle, opt.generation)
+
+    (cand,) = opt.ask()
+
+    assert (*reading, cand.meta["generation"]) == expected
