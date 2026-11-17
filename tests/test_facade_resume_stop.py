@@ -700,3 +700,24 @@ def test_resume_should_return_a_run_that_max_time_ended_while_its_trial_was_writ
 
     assert (len(original.trials), original.stop_reason) == (5, "time")
     assert _trajectory(study) == _trajectory(original)
+
+
+def test_resume_should_take_the_evals_of_patience_recorded_as_a_whole_float_as_that_integer(
+    tmp_path, no_plots
+):
+    """Given a folder ended by Patience(15) whose config.json records evals as 15.0, when resume() builds the
+    rule again without stop=, then it returns the same trials and stop_reason without a call.
+
+    Oracle: resume docstring (the built-in rules are built again from their settings; a run a rule had
+    ended comes back without a call) and the stage brief (a recorded whole-number float is taken as that
+    integer).
+    """
+    original, folder = _start(tmp_path, _sphere, [Patience(15)])
+    path = folder / "config.json"
+    config = _json(path)
+    config["stop"][0]["settings"]["evals"] = 15.0
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    study = resume(_refusing, folder, verbose=0)
+
+    assert _trajectory(study) == _trajectory(original)

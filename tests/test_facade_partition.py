@@ -39,11 +39,14 @@ bound); which evaluations the cache skips for a continuous space; max_evals of a
 
 Input space: Every objective, space, direction, budget, optimizer, seed and cache flag of optimize(), which is
 unbounded.
-Subset: One representative per budget and configuration class, plus the single-point corner.
+Subset: One representative per budget and configuration class, plus the single-point corner; bounds as
+numpy integers of three widths and as numpy floats of two precisions against the Python numbers they
+hold.
 """
 
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 
 from metahpo import ABCOptimizer, Categorical, Float, Int, Space, optimize
@@ -183,3 +186,64 @@ def test_optimize_should_call_the_function_once_when_the_space_has_a_single_poin
     assert {type(t.params["a"]) for t in study.trials} == {int}
     assert [t.cached for t in study.trials] == [False] + [True] * (SN_OF_DEFAULT_COLONY - 1)
     assert (study.n_calls, len(calls)) == (1, 1)
+
+
+def _bounded(low, high, log=False, kind=Int):
+    """A space of one `kind` parameter with the given bounds beside a linear Float."""
+    return Space({"p": kind(low, high, log=log), "f": Float(0.0, 1.0)})
+
+
+def _sum_of_params(params):
+    return float(params["p"]) + params["f"]
+
+
+@pytest.mark.parametrize(
+    ("numpy_space", "python_space"),
+    [
+        pytest.param(lambda: _bounded(np.uint8(0), np.uint8(255)), lambda: _bounded(0, 255), id="int-uint8"),
+        pytest.param(
+            lambda: _bounded(np.int8(-100), np.int8(100)), lambda: _bounded(-100, 100), id="int-int8"
+        ),
+        pytest.param(
+            lambda: _bounded(np.int32(-2_000_000_000), np.int32(2_000_000_000)),
+            lambda: _bounded(-2_000_000_000, 2_000_000_000),
+            id="int-int32",
+        ),
+        pytest.param(
+            lambda: _bounded(np.uint16(1), np.uint16(500), log=True),
+            lambda: _bounded(1, 500, log=True),
+            id="int-log-uint16",
+        ),
+        pytest.param(
+            lambda: _bounded(np.float32(0.1), np.float32(0.9), kind=Float),
+            lambda: _bounded(0.10000000149011612, 0.8999999761581421, kind=Float),
+            id="float-float32",
+        ),
+        pytest.param(
+            lambda: _bounded(np.float16(0.5), np.float16(2.0), log=True, kind=Float),
+            lambda: _bounded(0.5, 2.0, log=True, kind=Float),
+            id="float-log-float16",
+        ),
+    ],
+)
+def test_optimize_should_try_the_same_trials_with_numpy_bounds_as_with_the_python_numbers_they_hold(
+    numpy_space, python_space
+):
+    """Given a space whose Int or Float bounds are numpy scalars and the same space with the Python numbers
+    those scalars hold, when optimize() runs each with seed 0 and 40 evaluations, then both give the same
+    trials: params, positions, cached flags and scores, and the same best params.
+
+    Oracle: the Int and Float docstrings (numpy bounds are stored as the Python numbers they hold, so the
+    search is the same as with those numbers). Decisive: uint8, int8 and int32 bounds overflowed in the
+    width of the Int (a 0-trial 'exhausted' run alone, overflow warnings beside a Float), and float32 or
+    float16 bounds made ABC's one-coordinate moves decode in that precision.
+    """
+    with_numpy = optimize(_sum_of_params, numpy_space(), max_evals=40, seed=ANY_SEED)
+
+    with_python = optimize(_sum_of_params, python_space(), max_evals=40, seed=ANY_SEED)
+
+    identity = [
+        [(t.params, t.x.tolist(), t.cached, t.score) for t in s.trials] for s in (with_numpy, with_python)
+    ]
+    assert identity[0] == identity[1]
+    assert with_numpy.best_params == with_python.best_params

@@ -21,7 +21,9 @@ log_every 1 and 2; objectives that stop with each stop reason (budget, exhausted
 all-NaN objective; a budget above COMPRESS_FROM after lowering it; non-default settings of every optimizer
 and a custom optimizer; choices of every JSON type, of Python types and NaN; scores NaN, inf and -inf;
 trials 0.5 s and 2 s apart on a fake clock; no stopping rule, one rule, and the three built-in rules in a
-given order, with one and two runs.
+given order, with one and two runs; bounds given as numpy scalars; Categoricals of numpy arrays and of
+0, False, 1, True and 1.0; numpy integer and float settings of every optimizer and stopping rule; a
+custom optimizer with numpy scalars and arrays in its candidate meta and its population.
 """
 
 import csv
@@ -1363,3 +1365,268 @@ def test_run_state_should_hold_each_runs_own_copies_of_the_rules(tmp_path):
     first, second = recorder.rules
     assert [r.settings() for r in first + second] == [given.settings()] * 2
     assert (first[0] is given, second[0] is given, first[0] is second[0]) == (False, False, False)
+
+
+def test_config_json_should_record_numpy_bounds_as_plain_numbers(tmp_path):
+    """Given a space with Int(np.int64(1), np.uint8(9)) and Float(np.float16(0), np.float32(1)), when
+    config.json is read, then the space records the bounds as the plain JSON numbers 1, 9, 0.0 and 1.0.
+
+    Oracle: report module docstring (config.json records the space) and the Int and Float docstrings
+    (bounds are stored as Python ints and floats).
+    """
+    space = Space({"a": Int(np.int64(1), np.uint8(9)), "f": Float(np.float16(0), np.float32(1))})
+    optimize(lambda p: p["a"] + p["f"], space, max_evals=5, seed=ANY_SEED, verbose=0, output=tmp_path)
+
+    text = (_folder(tmp_path) / "config.json").read_text(encoding="utf-8")
+
+    assert [(p["low"], p["high"]) for p in json.loads(text)["space"]] == [(1, 9), (0.0, 1.0)]
+    assert "np." not in text
+
+
+def _odd_choices_run(tmp_path, choices):
+    """optimize() minimising lr on a space of the Categorical `choices` beside a Float, written below
+    tmp_path with plots off; returns the study and the results folder."""
+    space = Space({"c": Categorical(choices), "lr": Float(0.1, 1.0)})
+    study = optimize(
+        lambda p: p["lr"],
+        space,
+        max_evals=40,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False)],
+    )
+    return study, space.parameters[0].choices, _folder(tmp_path)
+
+
+def _trials_per_choice(study, choices):
+    """For every choice, the number of real, finite trials whose params hold that very object."""
+    real = [t for t in study.trials if not t.cached and not t.failed]
+    return [str(sum(t.params["c"] is choice for t in real)) for choice in choices]
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        pytest.param([np.array([1.0, 1.0]), np.array([1.0, 5.0]), np.array([1.0, 10.0])], id="numpy-arrays"),
+        pytest.param([0, False, 1, True, 1.0], id="equal-across-types"),
+    ],
+)
+def test_categories_csv_should_count_each_choice_by_its_own_trials_for_arrays_and_values_equal_across_types(
+    tmp_path, choices
+):
+    """Given a Categorical of three numpy arrays, or of 0, False, 1, True and 1.0, when the run writes
+    categories.csv and parameters.csv, then every choice has one row whose trial count is the number of
+    trials that received that very choice, and distinct_values counts the choices used.
+
+    Oracle: the Categorical docstring (any object can be a choice; choices equal across types stay
+    different choices) and the report module docstring (categories.csv has one row per category).
+    Decisive: matching trials to choices with == raised 'The truth value of an array ... is ambiguous' for
+    arrays and counted 1, True and 1.0 together (25 trials each in a run of 40).
+    """
+    study, kept, folder = _odd_choices_run(tmp_path, choices)
+
+    rows = _rows(folder / "run_001" / "categories.csv")
+    parameters = _rows(folder / "run_001" / "parameters.csv")
+
+    assert [row["trials"] for row in rows] == _trials_per_choice(study, kept)
+    assert parameters[0]["distinct_values"] == str(sum(n != "0" for n in _trials_per_choice(study, kept)))
+
+
+NUMPY_SETTINGS = [
+    pytest.param(
+        lambda s: ABCOptimizer(s, "max", np.int64(8), np.int32(5), seed=ANY_SEED, max_tries=np.int16(50)),
+        {"colony_size": 8, "limit": 5, "max_tries": 50},
+        id="abc",
+    ),
+    pytest.param(
+        lambda s: PSOOptimizer(
+            s, "max", np.int64(7), np.float32(0.5), np.float64(1.5), 2, np.float16(0.5), ANY_SEED, np.int8(9)
+        ),
+        {
+            "swarm_size": 7,
+            "inertia": 0.5,
+            "cognitive": 1.5,
+            "social": 2.0,
+            "max_velocity": 0.5,
+            "max_tries": 9,
+        },
+        id="pso",
+    ),
+    pytest.param(
+        lambda s: BBPSOOptimizer(
+            s, "max", np.int32(6), np.float32(0.5), 1, np.float64(0.25), 0, ANY_SEED, np.uint8(7)
+        ),
+        {"swarm_size": 6, "target": 0.5, "crossover": 1.0, "q_alpha": 0.25, "q_gamma": 0.0, "max_tries": 7},
+        id="bbpso",
+    ),
+]
+
+
+@pytest.mark.parametrize(("make", "expected"), NUMPY_SETTINGS)
+def test_config_json_should_record_numpy_and_int_settings_as_plain_python_numbers(tmp_path, make, expected):
+    """Given each optimizer built with numpy integers for its integer settings and numpy floats or ints for
+    its float settings, and Patience(np.int64(30), np.float32(0.5)), when config.json is read, then every
+    setting is the plain JSON number of the same value, integers as ints and float settings as floats.
+
+    Oracle: Optimizer.settings() and Stopper.settings() (config.json records the constructor settings),
+    the stage brief (integer settings stored as int, float settings as plain Python numbers). Decisive: a
+    numpy integer max_tries was kept as np.int64, so json.dumps(optimizer.settings()) raised TypeError.
+    """
+    optimizer = make(_space())
+    _run(tmp_path, optimizer, max_evals=8, stop=[Patience(np.int64(30), np.float32(0.5))])
+
+    config = _json(_folder(tmp_path) / "config.json")
+
+    settings = config["optimizer"]["settings"]
+    assert settings == expected
+    assert [type(v) for v in settings.values()] == [type(v) for v in expected.values()]
+    assert config["stop"][0]["settings"] == {"evals": 30, "min_delta": 0.5}
+    assert json.loads(json.dumps(optimizer.settings())) == expected
+
+
+def test_console_reporter_should_reject_a_log_every_that_is_no_integer():
+    """Given log_every 2.0, when ConsoleReporter is built, then ValueError names log_every.
+
+    Oracle: ConsoleReporter (one line every `log_every` generations) and the library's error convention;
+    a whole float is no integer. Decisive: 2.0 was taken as it was.
+    """
+    with pytest.raises(ValueError, match="log_every") as excinfo:
+        ConsoleReporter(verbose=1, log_every=2.0)
+
+    assert excinfo.type is ValueError
+
+
+class _NumpySettings(_RandomSearch):
+    """A custom random search whose step and label settings are kept as the values given, numpy ones too."""
+
+    def __init__(self, space, direction="min", step=0.1, label=None, seed=None):
+        super().__init__(space, direction, seed)
+        self.step = step
+        self.label = label
+
+
+def test_config_json_should_record_numpy_settings_of_a_custom_optimizer_as_plain_numbers(tmp_path):
+    """Given a custom optimizer whose step setting is np.float32(0.5) and whose label is np.int64(3), when
+    config.json is read, then it records the plain JSON numbers 0.5 and 3 and holds no numpy text.
+
+    Oracle: report module docstring (config.json records the optimizer with every constructor setting) and
+    the stage brief (nothing numpy-typed reaches config.json).
+    """
+    optimizer = _NumpySettings(_space(), "max", step=np.float32(0.5), label=np.int64(3), seed=ANY_SEED)
+    _, folder = _run(tmp_path, optimizer, max_evals=3)
+
+    text = (folder / "config.json").read_text(encoding="utf-8")
+
+    assert json.loads(text)["optimizer"]["settings"] == {"step": 0.5, "label": 3}
+    assert "np." not in text
+
+
+class _NumpyMeta(_RandomSearch):
+    """A custom random search whose candidates carry numpy scalars and an array in their meta and whose
+    population holds numpy scores, a numpy integer column and an array column."""
+
+    def ask(self):
+        meta = {
+            "generation": np.int64(0),
+            "phase": "draw",
+            "individual": np.int32(2),
+            "weight": np.float32(0.5),
+            "flag": np.bool_(True),
+            "shape": np.array([1, 2]),
+        }
+        return [metahpo.Candidate(c.id, c.x, c.params, c.key, meta) for c in self._fresh(1)]
+
+    def population(self):
+        return {
+            "x": np.zeros((2, self.space.dim)),
+            "score": [np.float32(1.0), 2.0],
+            "age": [np.int64(1), np.int64(2)],
+            "tag": [np.array([1, 2]), np.array([3, 4])],
+        }
+
+
+def _numpy_meta_run(tmp_path):
+    """A run of _NumpyMeta on a Float beside a Categorical of numpy arrays, written below tmp_path."""
+    weights = [np.array([1.0, 5.0]), np.array([2.0, 3.0])]
+    space = Space({"a": Float(0.0, 1.0), "w": Categorical(weights)})
+    optimizer = _NumpyMeta(space, "max", seed=ANY_SEED)
+    optimize(lambda p: p["a"], space, "max", 3, optimizer=optimizer, verbose=0, output=tmp_path)
+    return _folder(tmp_path)
+
+
+def test_results_files_should_write_numpy_values_of_the_meta_as_the_plain_numbers_and_lists_they_hold(
+    tmp_path,
+):
+    """Given a custom optimizer whose candidate meta holds np.int64, np.int32, np.float32, np.bool_ and a
+    numpy array, whose population holds numpy values and whose space has a Categorical of numpy arrays, when
+    the run writes its folder, then trials.jsonl and trials.csv hold the meta as plain JSON numbers, a
+    boolean and a list, population.csv the extra columns as numbers and list text, and no results file
+    but config.json (which records the Categorical as repr text, see the next test) holds numpy text.
+
+    Oracle: report module docstring (trials.jsonl holds each trial's meta and params; every file is
+    derived from the trials) and the stage brief (numpy scalars as the plain numbers they hold, arrays as
+    lists wherever a value goes to JSON or CSV). Decisive: json.dumps of the meta for trials.csv raised
+    'Object of type float32 is not JSON serializable', and arrays were written as 'array([1., 5.])' text.
+    """
+    folder = _numpy_meta_run(tmp_path)
+
+    record = json.loads((folder / "run_001" / "trials.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    row = _rows(folder / "run_001" / "trials.csv")[0]
+    population = _rows(folder / "run_001" / "population.csv")[0]
+    files = [p for p in folder.rglob("*") if p.suffix in (".json", ".jsonl", ".csv", ".md")]
+    texts = [p.read_text(encoding="utf-8") for p in files if p.name != "config.json"]
+
+    assert (record["generation"], record["individual"]) == (0, 2)
+    assert record["detail"] == {"weight": 0.5, "flag": True, "shape": [1, 2]}
+    assert json.loads(row["detail"]) == {"weight": 0.5, "flag": True, "shape": [1, 2]}
+    assert (population["age"], population["tag"]) == ("1", "[1, 2]")
+    assert [("np." in t or "array(" in t) for t in texts] == [False] * len(texts)
+
+
+def test_config_json_should_still_record_a_categorical_of_numpy_arrays_as_marked_repr_text(tmp_path):
+    """Given the same run, when config.json is read, then its Categorical of numpy arrays is still recorded
+    as repr() text marked "repr": true, while trials.jsonl writes the chosen array as a list.
+
+    Oracle: report module docstring (any Categorical whose choices are not all JSON values stores the
+    repr() of each choice and is marked "repr": true) and the stage brief (writing arrays as lists must not
+    change how a choice is recorded in config.json).
+    """
+    folder = _numpy_meta_run(tmp_path)
+
+    config = _json(folder / "config.json")
+    record = json.loads((folder / "run_001" / "trials.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+    assert config["space"][1] == {
+        "name": "w",
+        "type": "Categorical",
+        "choices": ["array([1., 5.])", "array([2., 3.])"],
+        "repr": True,
+    }
+    assert record["params"]["w"] in ([1.0, 5.0], [2.0, 3.0])
+
+
+@pytest.mark.parametrize(
+    ("make", "module"),
+    [
+        pytest.param(lambda s: ABCOptimizer(s, "max", seed=ANY_SEED), "metahpo.optimizers.abc", id="abc"),
+        pytest.param(lambda s: PSOOptimizer(s, "max", seed=ANY_SEED), "metahpo.optimizers.pso", id="pso"),
+        pytest.param(
+            lambda s: BBPSOOptimizer(s, "max", seed=ANY_SEED), "metahpo.optimizers.bbpso", id="bbpso"
+        ),
+        pytest.param(lambda s: _RandomSearch(s, "max", ANY_SEED), __name__, id="custom"),
+    ],
+)
+def test_config_json_should_record_the_module_of_the_optimizer_class(tmp_path, make, module):
+    """Given each library optimizer and a custom one, when config.json is read, then the optimizer record
+    holds the module of its class next to its name.
+
+    Oracle: report module docstring (config.json records the optimizer with every constructor setting and
+    the module of its class, so resume() builds again only the library's own optimizers).
+    """
+    optimizer = make(_space())
+    _, folder = _run(tmp_path, optimizer, max_evals=4)
+
+    record = _json(folder / "config.json")["optimizer"]
+
+    assert (record["name"], record["module"]) == (type(optimizer).__name__, module)

@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from metahpo.space import Categorical, _choice_text
+from metahpo.space import Categorical, _choice_index, _choice_text
 
 
 def _style(ax: Any) -> None:
@@ -146,19 +146,17 @@ def make_plots(
         cols = min(3, n)
         rows = math.ceil(n / cols)
         fig, axes = subplots(rows, cols, figsize=(4.6 * cols, 3.6 * rows), squeeze=False)
-        for ax, name, p in zip(axes.flat, names, params, strict=False):
+        for j, (ax, name, p) in enumerate(zip(axes.flat, names, params, strict=False)):
             values = [t.params[name] for t in ok]
             if isinstance(p, Categorical):
-                labels = [repr(v) for v in values]
-                order = [repr(c) for c in p.choices]
-                where = np.array([order.index(label) for label in labels])
+                where = np.array([_choice_index(p, float(t.x[j])) for t in ok], dtype=np.int64)
                 used = sorted(set(where.tolist()))
                 ax.boxplot(
                     [ok_scores[where == i] for i in used], positions=used, widths=0.6, showfliers=False
                 )
                 jitter = np.random.default_rng(0).uniform(-0.15, 0.15, len(where))
                 ax.scatter(where + jitter, ok_scores, s=4, color="k", alpha=0.4)
-                ax.set_xticks(range(len(order)), [_choice_text(c) for c in p.choices])
+                ax.set_xticks(range(len(p.choices)), [_choice_text(c) for c in p.choices])
             else:
                 ax.scatter(values, ok_scores, s=10, alpha=0.5, c=np.arange(len(ok)), cmap="viridis")
                 if getattr(p, "log", False):
@@ -171,10 +169,10 @@ def make_plots(
 
         fig, axes = subplots(rows, cols, figsize=(4.6 * cols, 3.4 * rows), squeeze=False)
         numbers = [t.number for t in ok]
-        for ax, name, p in zip(axes.flat, names, params, strict=False):
+        for j, (ax, name, p) in enumerate(zip(axes.flat, names, params, strict=False)):
             values = [t.params[name] for t in ok]
             if isinstance(p, Categorical):
-                values = [list(p.choices).index(v) for v in values]
+                values = [_choice_index(p, float(t.x[j])) for t in ok]
                 ax.set_yticks(range(len(p.choices)), [_choice_text(c) for c in p.choices])
             sc = ax.scatter(numbers, values, s=8, c=ok_scores, cmap="viridis")
             if getattr(p, "log", False):

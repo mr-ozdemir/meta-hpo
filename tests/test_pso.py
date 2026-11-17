@@ -152,13 +152,20 @@ def test_pso_optimizer_should_store_the_documented_defaults():
         pytest.param({"max_velocity": math.inf}, id="max-velocity-inf"),
         pytest.param({"max_tries": 0}, id="max-tries-0"),
         pytest.param({"direction": "up"}, id="direction-unknown"),
+        pytest.param({"swarm_size": 7.0}, id="swarm-whole-float"),
+        pytest.param({"swarm_size": True}, id="swarm-bool"),
+        pytest.param({"swarm_size": "7"}, id="swarm-string"),
+        pytest.param({"max_tries": 100.0}, id="max-tries-whole-float"),
+        pytest.param({"max_tries": True}, id="max-tries-bool"),
+        pytest.param({"max_tries": "3"}, id="max-tries-string"),
     ],
 )
 def test_pso_optimizer_should_raise_value_error_when_a_setting_is_invalid(kwargs):
     """Given one invalid constructor argument, when PSOOptimizer is built, then ValueError is raised.
 
     Oracle: issue #18 parameter table (swarm_size an integer >= 2, so also not inf or NaN; coefficients
-    finite and >= 0; max_velocity finite and > 0; max_tries >= 1) and the Optimizer direction check.
+    finite and >= 0; max_velocity finite and > 0; max_tries >= 1) and the Optimizer direction check; an
+    integer setting is a Python or numpy integer, not a float such as 7.0, a bool or a string.
     """
     space = _box()
 

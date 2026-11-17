@@ -6,6 +6,39 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `Int` and `Float` bounds given as numpy scalars or 0-d arrays are stored as the Python numbers they hold:
+  `Int(np.uint8(0), np.uint8(255))` no longer overflows into an empty, "exhausted" run, and `float32`
+  bounds give the same search as the same Python floats.
+- `Int(0, 10**400)` and `Float` bounds too large for a float raise `ValueError` instead of `OverflowError`.
+- One-coordinate decoding agrees with batch decoding for `Int` ranges wider than 2**53, and a unit value
+  below 0 gives the first choice of a `Categorical` instead of one from the end.
+- A `Categorical` of numpy arrays, or of choices equal across types such as `1`, `True` and `1.0`, works
+  in the results files and plots, which find a trial's choice from its position, not by `==`; two equal
+  arrays are rejected as duplicate choices.
+- The `Categorical` docstring and the README say that a choice is handed to the objective as it is and
+  must not be changed in place.
+- `Trial == Trial` and `Study == Study` return a bool instead of raising `ValueError`: `x` and numpy arrays
+  in the params are compared element by element, and two failed trials with a NaN score are equal.
+- Integer arguments are checked before the search starts and before a results folder is written:
+  `max_evals`, `runs`, `log_every`, `verbose` and `seed` of `optimize()` and `resume()`, the integer
+  settings of the three optimizers and `Patience(evals)` accept Python and numpy integers and store them as
+  `int`, and reject floats (also `20.0`), booleans and strings with `ValueError`; `verbose` still takes
+  `False` and `True`, `seed` any iterable of seeds but a string (a numpy array, a range), `log_every=0` is
+  rejected also without console output, and a negative seed of a later run before the first run starts.
+  A folder that recorded an integer setting as a whole float (`limit=10.0`) still resumes.
+- BBPSO no longer stops with `ZeroDivisionError` when all scores are tiny (around 1e-165 and below): the
+  inverse quadratic interpolation step works on the scores scaled by a power of 2, and searches with scores
+  of ordinary scale are unchanged.
+- numpy values in the `meta` of a candidate (from an optimizer of your own) and numpy arrays among the
+  parameters are written as the plain numbers and lists they hold in `trials.jsonl`, the CSV files and the
+  summaries, instead of failing with `TypeError` or writing `array(...)` text; `config.json` records a
+  `Categorical` as before.
+- `config.json` records the module of the optimizer class, and `resume()` builds `ABCOptimizer`,
+  `PSOOptimizer` or `BBPSOOptimizer` again only when the folder was written by the library's class; an
+  optimizer of your own with one of these names now asks for `optimizer=` instead of being replaced.
+
 ## [0.7.1] - 2026-11-16
 
 ### Fixed

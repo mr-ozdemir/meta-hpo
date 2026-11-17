@@ -17,7 +17,8 @@ beyond the leader, and how many attempts a regeneration needed.
 Input space: Every space, configuration, seed and ask/tell sequence, which is unbounded.
 Subset: One- to four-dimensional spaces of every parameter kind; defaults and the boundary values of every
 constructor check; scripted constant, improving, worse and NaN scores that force each branch of the move and
-refinement rules; seeded runs on the sphere and Rastrigin functions.
+refinement rules; seeded runs on the sphere and Rastrigin functions; the sphere scaled by 2**-550,
+where the scores are near 1e-166.
 """
 
 import math
@@ -188,13 +189,18 @@ def test_bbpso_optimizer_should_default_the_target_to_one_when_maximising():
         pytest.param({"target": math.inf}, id="target-inf"),
         pytest.param({"max_tries": 0}, id="max-tries-0"),
         pytest.param({"direction": "up"}, id="direction-unknown"),
+        pytest.param({"swarm_size": 8.0}, id="swarm-whole-float"),
+        pytest.param({"swarm_size": "8"}, id="swarm-string"),
+        pytest.param({"max_tries": 2.0}, id="max-tries-whole-float"),
+        pytest.param({"max_tries": True}, id="max-tries-bool"),
     ],
 )
 def test_bbpso_optimizer_should_raise_value_error_when_a_setting_is_invalid(kwargs):
     """Given one invalid constructor argument, when BBPSOOptimizer is built, then ValueError is raised.
 
     Oracle: BBPSO theory parameter table (swarm_size an integer >= 6; crossover in [0, 1]; q_alpha in
-    (0, 1]; q_gamma in [0, 1); target finite; max_tries >= 1) and the Optimizer direction check.
+    (0, 1]; q_gamma in [0, 1); target finite; max_tries >= 1) and the Optimizer direction check; an
+    integer setting is a Python or numpy integer, not a float such as 8.0, a bool or a string.
     """
     space = _box()
 
@@ -968,3 +974,33 @@ def test_bbpso_unique_best_particle_should_use_g_as_its_neighbour():
 
     assert np.array_equal(move[0].x, init[0].x)
     assert np.array_equal(opt.guide, init[0].x)
+
+
+def _shifted_sphere(params):
+    """The sphere plus 0.3, so no score is 0."""
+    return _sphere(params) + 0.3
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_bbpso_should_search_scores_near_1e_minus_166_exactly_as_the_same_scores_at_ordinary_scale(seed):
+    """Given the shifted sphere on a three-dimensional box, once as it is and once multiplied by 2**-550
+    (scores near 1e-166), when optimize() runs BBPSO with the same seed and 300 evaluations, then both runs
+    hand out the same positions, cached flags and phases.
+
+    Oracle: bbpso module docstring (comparisons are relative only and the root methods work on h = s (f -
+    target), so the search does not depend on the scale of the objective; target 0 for 'min') and the
+    iqi_point docstring (no score scale divides by zero). Scaling by a power of 2 is exact. Decisive: the
+    IQI step divided by a product of score differences that underflowed to 0 and raised ZeroDivisionError.
+    """
+    space, other = _box(3), _box(3)
+    scaled = optimize(
+        lambda p: _shifted_sphere(p) * 2.0**-550,
+        space,
+        max_evals=300,
+        optimizer=BBPSOOptimizer(space, seed=seed),
+    )
+
+    plain = optimize(_shifted_sphere, other, max_evals=300, optimizer=BBPSOOptimizer(other, seed=seed))
+
+    identity = [[(t.x.tolist(), t.cached, t.meta) for t in s.trials] for s in (scaled, plain)]
+    assert identity[0] == identity[1]

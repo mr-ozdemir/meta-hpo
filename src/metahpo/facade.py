@@ -16,7 +16,7 @@ from typing import Any, Literal, cast, overload
 import numpy as np
 
 from metahpo.optimizers.abc import ABCOptimizer
-from metahpo.optimizers.base import Candidate, Direction, Optimizer
+from metahpo.optimizers.base import Candidate, Direction, Optimizer, _integer
 from metahpo.optimizers.bbpso import BBPSOOptimizer
 from metahpo.optimizers.pso import PSOOptimizer
 from metahpo.report import (
@@ -145,11 +145,16 @@ def optimize(
     records the rules, and resume() applies them again.
 
     A run that stopped, for any reason, continues from its results folder with resume().
+
+    The integer arguments (max_evals, runs, log_every, verbose and every seed) take Python or numpy
+    integers; a float (also a whole one such as 20.0), a bool or a string raises ValueError before the
+    search starts and before a results folder is written. verbose also takes False and True as 0 and 1, and
+    seed any iterable of seeds but a string (a list, a tuple, a range, a 1-D numpy array).
     """
-    if max_evals < 1:
-        raise ValueError("max_evals must be at least 1")
-    if isinstance(runs, bool) or not isinstance(runs, int) or runs < 1:
-        raise ValueError("runs must be an integer of at least 1")
+    max_evals = _integer("max_evals", max_evals, 1)
+    runs = _integer("runs", runs, 1)
+    verbose = _verbose(verbose)
+    log_every = _integer("log_every", log_every, 1)
     rules = _rules(stop)
     seeds = _run_seeds(seed, runs)
     make = _optimizer_factory(optimizer, space, direction, runs)
@@ -240,6 +245,8 @@ def resume(
     RunState.replaying True. Elapsed times, durations and the console clock leave out the time the run was
     stopped (see metahpo.report).
     """
+    verbose = 1 if verbose is None else _verbose(verbose)
+    log_every = _integer("log_every", log_every, 1)
     root = Path(folder)
     config = _read_config(root)
     runs = int(config["runs"])
@@ -265,7 +272,7 @@ def resume(
         "trials": sum(len(log.trials) for log in logs if log is not None),
     }
     writer = ResultWriter._continuing(root, config, entry)
-    listeners = _listeners(1 if verbose is None else verbose, log_every, writer, callbacks)
+    listeners = _listeners(verbose, log_every, writer, callbacks)
     studies = _search(function, starts, direction, budget, cache, runs, seeds, listeners, rules)
     return studies[0] if runs == 1 else studies
 
@@ -411,8 +418,7 @@ _BUILT_IN: dict[str, type[Optimizer]] = {
 def _resume_budget(max_evals: int | None, recorded: int, logs: list[_RunLog | None]) -> int:
     """The budget of a resume: `max_evals` or the recorded one, at least the calls every run logged."""
     budget = recorded if max_evals is None else max_evals
-    if isinstance(budget, bool) or not isinstance(budget, (int, np.integer)) or budget < 1:
-        raise ValueError("max_evals must be an integer of at least 1")
+    budget = _integer("max_evals", budget, 1)
     for number, log in enumerate(logs, start=1):
         if log is not None and budget < log.needed:
             raise ValueError(
@@ -450,7 +456,7 @@ def _resume_rules(
                 "pass stop=, the rules to go on with (stop=[] for none)"
             )
         try:
-            rules.append(build(**settings))
+            rules.append(build(**_recorded_settings(build, settings)))
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"{path} records settings of the stopping rule {name} that it rejects ({exc}); pass stop=, "
@@ -474,7 +480,7 @@ def _rebuild(
         return _optimizer_factory(optimizer, cast(Space, space), direction, runs)
     name = config["optimizer"]["name"]
     cls = _BUILT_IN.get(name)
-    if cls is None:
+    if cls is None or config["optimizer"].get("module", cls.__module__) != cls.__module__:
         raise ValueError(
             f"the folder was written by {name}, which resume() cannot build again; pass optimizer=, an "
             "optimizer object or a function seed -> optimizer as in optimize()"
@@ -491,7 +497,7 @@ def _rebuild(
         raise ValueError(
             "the search space has a Categorical whose choices config.json stores only as text; pass space="
         )
-    settings = config["optimizer"]["settings"]
+    settings = _recorded_settings(cls, config["optimizer"]["settings"])
     built = space
 
     def build(seed: Any) -> Optimizer:
@@ -504,6 +510,23 @@ def _rebuild(
             ) from exc
 
     return build
+
+
+def _recorded_settings(cls: Callable[..., Any], settings: dict[str, Any]) -> dict[str, Any]:
+    """The settings config.json records for a class of the library, with a whole-number float recorded for
+    an integer parameter (annotated int) taken as that integer: 0.6.0 and 0.7.0 stored a setting as given,
+    so limit=10.0 or max_tries=50.0 may stand in their folders. Any other value is left as it is, so a
+    fraction such as limit 2.5 is still rejected by the class."""
+    parameters = inspect.signature(cls).parameters
+    return {
+        name: int(value)
+        if isinstance(value, float)
+        and value.is_integer()
+        and name in parameters
+        and parameters[name].annotation == "int"
+        else value
+        for name, value in settings.items()
+    }
 
 
 def _resume_start(
@@ -640,14 +663,39 @@ def _replay_error(
     return None
 
 
+def _verbose(verbose: Any) -> int:
+    """The console level of optimize() and resume(): an integer >= 0, or False and True as 0 and 1, as
+    0.7.x took them; ValueError for anything else."""
+    return int(verbose) if isinstance(verbose, bool) else _integer("verbose", verbose, 0)
+
+
 def _run_seeds(seed: Seed, runs: int) -> list[Any]:
-    """One seed per run: None for every run, the same integer for every run, or the given sequence."""
-    if seed is None or isinstance(seed, (int, np.integer)):
-        return [seed] * runs
-    seeds = list(seed)
+    """One seed per run: None for every run, the same integer for every run (a 0-d numpy integer array
+    counts as one), or any iterable of seeds but a string; every seed None or an integer >= 0, numpy
+    integers become ints. ValueError for anything else before any run starts."""
+    if isinstance(seed, np.ndarray) and seed.ndim == 0:
+        seed = seed[()]
+    if seed is None or isinstance(seed, (bool, int, np.integer)):
+        return [_seed(seed)] * runs
+    if isinstance(seed, (str, bytes)):
+        raise ValueError(f"seed must be None, an integer >= 0 or an iterable of them, got {seed!r}")
+    try:
+        given = list(cast(Iterable[Any], seed))
+    except TypeError:
+        raise ValueError(f"seed must be None, an integer >= 0 or an iterable of them, got {seed!r}") from None
+    seeds = [_seed(s) for s in given]
     if len(seeds) != runs:
         raise ValueError(f"seed holds {len(seeds)} values but runs={runs}; give one seed per run")
     return seeds
+
+
+def _seed(seed: Any) -> int | None:
+    """One run's seed: None, or an integer >= 0 as a Python int; ValueError for anything else."""
+    if seed is None:
+        return None
+    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or seed < 0:
+        raise ValueError(f"a seed must be None or an integer >= 0, got {seed!r}")
+    return int(seed)
 
 
 def _optimizer_factory(

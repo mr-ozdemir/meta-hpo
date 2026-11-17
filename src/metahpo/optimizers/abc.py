@@ -32,7 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from metahpo import operators
-from metahpo.optimizers.base import Candidate, Direction, Optimizer
+from metahpo.optimizers.base import Candidate, Direction, Optimizer, _integer
 from metahpo.space import Space
 
 
@@ -62,13 +62,9 @@ class ABCOptimizer(Optimizer):
         max_tries: int = 100,
     ) -> None:
         super().__init__(space, direction, seed)
-        if max_tries < 1:
-            raise ValueError("max_tries must be at least 1")
-        self.max_tries = max_tries
-        if colony_size < 4:
-            raise ValueError("colony_size must be at least 4 (two food sources)")
-        if limit < 1:
-            raise ValueError("limit must be at least 1")
+        self.max_tries = max_tries = _integer("max_tries", max_tries, 1)
+        colony_size = _integer("colony_size", colony_size, 4, " (two food sources)")
+        limit = _integer("limit", limit, 1)
         self.colony_size = colony_size
         self.food_number = sn = colony_size // 2
         self.limit = limit
