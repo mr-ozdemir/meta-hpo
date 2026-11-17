@@ -259,18 +259,20 @@ def _finite(values: Sequence[float]) -> np.ndarray[Any, np.dtype[np.float64]]:
 
 
 def _stats(values: Sequence[float], direction: str) -> dict[str, float]:
-    """best, mean, median, std and worst of the finite values (NaN when there is none)."""
+    """best, mean, median, std and worst of the finite values (NaN when there is none). A mean or std that
+    does not fit a float (scores near 1e308) is inf or NaN, without a numpy warning."""
     arr = _finite(values)
     if arr.size == 0:
         return {k: math.nan for k in ("best", "mean", "median", "std", "worst")}
     best, worst = (np.min(arr), np.max(arr)) if direction == "min" else (np.max(arr), np.min(arr))
-    return {
-        "best": float(best),
-        "mean": float(arr.mean()),
-        "median": float(np.median(arr)),
-        "std": float(arr.std()),
-        "worst": float(worst),
-    }
+    with np.errstate(over="ignore", invalid="ignore"):
+        return {
+            "best": float(best),
+            "mean": float(arr.mean()),
+            "median": float(np.median(arr)),
+            "std": float(arr.std()),
+            "worst": float(worst),
+        }
 
 
 class ConsoleReporter(Callback):
@@ -1145,7 +1147,7 @@ class ResultWriter(Callback):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     plot_files = plots.make_plots(
-                        state, self.run_dir, self._generation_rows, self._best_history
+                        state, self.run_dir, self._generation_rows, self._best_history, self._notes
                     )
             except Exception as exc:
                 self._notes.append(f"Plots failed: {type(exc).__name__}: {exc}")
@@ -1186,7 +1188,7 @@ class ResultWriter(Callback):
 
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    run_plots = plots.make_run_plots(self._runs, self.folder, state.direction)
+                    run_plots = plots.make_run_plots(self._runs, self.folder, state.direction, notes)
             except Exception as exc:
                 notes.append(f"Run plots failed: {type(exc).__name__}: {exc}")
         runs = [
@@ -1275,9 +1277,12 @@ def _rank(values: np.ndarray[Any, np.dtype[np.float64]]) -> np.ndarray[Any, np.d
 
 
 def _corr(a: np.ndarray[Any, np.dtype[np.float64]], b: np.ndarray[Any, np.dtype[np.float64]]) -> float:
-    if len(a) < 3 or np.std(a) == 0 or np.std(b) == 0:
-        return math.nan
-    return float(np.corrcoef(a, b)[0, 1])
+    """Pearson correlation of a and b; NaN for fewer than three values, a constant one, or values whose
+    variance does not fit a float, without a numpy warning."""
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        if len(a) < 3 or np.std(a) == 0 or np.std(b) == 0:
+            return math.nan
+        return float(np.corrcoef(a, b)[0, 1])
 
 
 def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
@@ -1366,6 +1371,15 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
     cats_file.close()
 
 
+def _written(run_dir: Path, stem: str) -> str:
+    """The name under which the table `stem` was written in run_dir: <stem>.csv.gz for a large run,
+    <stem>.csv otherwise, or '' when it was not written (population.csv of an optimizer without one)."""
+    for name in (f"{stem}.csv.gz", f"{stem}.csv"):
+        if (run_dir / name).is_file():
+            return name
+    return ""
+
+
 def _write_report(
     folder: Path, run_dir: Path, state: RunState, summary: dict[str, Any], generations: list[dict[str, Any]]
 ) -> None:
@@ -1425,7 +1439,10 @@ def _write_report(
         "|---|---|---|---|---|---|---|",
     ]
     step = max(1, len(generations) // 25)
-    for row in generations[::step]:
+    shown = generations[::step]
+    if generations and shown[-1] is not generations[-1]:
+        shown.append(generations[-1])
+    for row in shown:
         lines.append(
             f"| {row['generation']} | {row['calls']} | {_fmt(row['best_so_far'])} | "
             f"{_fmt(row['gen_best'])} | {_fmt(row['gen_mean'])} | {_fmt(row['gen_std'])} | "
@@ -1435,11 +1452,15 @@ def _write_report(
         "",
         "## Files",
         "",
-        f"- `{rel}/trials.csv`: every trial (phase, generation, individual, parameters, unit-cube x, score, "
-        "start and end time, duration)",
+        f"- `{rel}/{_written(run_dir, 'trials')}`: every trial (phase, generation, individual, parameters, "
+        "unit-cube x, score, start and end time, duration)",
         f"- `{rel}/generations.csv`: statistics per generation (scores, population, diversity, parameter "
         "means)",
-        f"- `{rel}/population.csv`: the population at the end of every generation",
+        *(
+            [f"- `{rel}/{_written(run_dir, 'population')}`: the population at the end of every generation"]
+            if _written(run_dir, "population")
+            else []
+        ),
         f"- `{rel}/best_history.csv`, `{rel}/best.json`: every improvement and the best result",
         f"- `{rel}/parameters.csv`, `{rel}/categories.csv`: parameter analysis",
         "- `config.json`, `summary.json`: configuration and summary",

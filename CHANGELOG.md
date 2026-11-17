@@ -22,6 +22,17 @@ and the project uses [Semantic Versioning](https://semver.org/).
   error or stops the results writer.
 - Searches that start in the same second with the same `output`, in threads or processes, each get their
   own folder (`..._abc_2`, `_3`, ...) instead of failing with `FileExistsError`.
+- Scores that differ only in their last bits (0.3 and 0.1 + 0.2), or equal scores of 1e300, are drawn like
+  equal scores instead of losing every plot to "Too many bins for data range".
+- Every plot is drawn on its own: a plot that fails no longer takes the later ones with it, and
+  summary.json and report.md name each failed plot with its error.
+- A huge score (a penalty of 1e160, 1e300 or the largest float) no longer loses the plots: scores beyond
+  about 1e301 are drawn divided by a power of 2, and the statistics files are written without numpy
+  warnings, with inf or NaN where a mean, spread or correlation does not fit a float.
+- The plots of a large run are drawn in linear time (a 50,000-trial run: about 13 s instead of 68 s).
+- report.md names the compressed `trials.csv.gz` and `population.csv.gz` of a large run, leaves out a
+  population file an optimizer without population never wrote, and always ends its generation table with
+  the last generation.
 
 - `Int` and `Float` bounds given as numpy scalars or 0-d arrays are stored as the Python numbers they hold:
   `Int(np.uint8(0), np.uint8(255))` no longer overflows into an empty, "exhausted" run, and `float32`

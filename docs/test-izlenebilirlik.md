@@ -5,9 +5,9 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 ## Özet
 
 - Test dosyası: 68 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 5064, hepsi geçiyor; tüm paket yaklaşık 95 saniyede koşuyor.
+- Toplanan test: 5084, hepsi geçiyor; tüm paket yaklaşık 95 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (2465 satırdan 2461'i), dal kapsamı 696/696. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 102, 106, 110, 113).
+- Satır kapsamı %99 (2585 satırdan 2581'i), dal kapsamı 718/718. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 102, 106, 110, 113).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 

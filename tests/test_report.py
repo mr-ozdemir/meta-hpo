@@ -28,13 +28,15 @@ that changes the working directory with a relative output, METAHPO_OUTPUT and th
 replace of best.json, config.json, state.json and summary.json refused for a while or for good (a
 simulated reader that holds the file); callbacks that raise RuntimeError or KeyboardInterrupt in
 on_run_start, on_trial, on_generation and on_run_end; a folder name taken by another search after the
-check for it.
+check for it; penalty scores near 1e300 and the largest float; report.md of a compressed run, of a
+custom optimizer without population and of a run whose last generation the table step skips.
 """
 
 import csv
 import gzip
 import json
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -2049,3 +2051,107 @@ def test_a_keyboard_interrupt_in_on_run_end_of_a_finished_run_should_return_the_
 
     assert [s.stop_reason for s in studies] == ["budget"]
     assert (_folder(tmp_path) / "run_002").exists() is False
+
+
+def _penalised(penalty):
+    """_score, with `penalty` as the score of every trial whose drop-out is above 0.3."""
+
+    def objective(params):
+        return penalty if params["dropout"] > 0.3 else _score(params)
+
+    return objective
+
+
+@pytest.mark.parametrize(
+    "penalty",
+    [
+        pytest.param(1e160, id="1e160"),
+        pytest.param(1e300, id="1e300"),
+        pytest.param(-1e300, id="minus-1e300"),
+        pytest.param(1.7976931348623157e308, id="largest-float"),
+    ],
+)
+def test_statistics_files_should_be_written_without_numpy_warnings_for_huge_penalty_scores(tmp_path, penalty):
+    """Given a penalty score of 1e160, 1e300, -1e300 or the largest float among ordinary scores, with every
+    warning turned into an error, when a run of 40 evaluations writes its statistics (generations.csv,
+    parameters.csv, categories.csv, summary.json), then nothing raises and the score columns hold the
+    penalty, while a statistic that does not fit a float is inf or nan.
+
+    Oracle: _stats and _corr docstrings (a mean, std or correlation that does not fit a float is inf or NaN,
+    without a numpy warning). Decisive: the squares of the variance overflowed with 'overflow encountered'
+    RuntimeWarnings.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        study, folder = _run(tmp_path, max_evals=40, function=_penalised(penalty))
+
+    summary = _json(folder / "summary.json")
+    assert summary["trials"] == len(study.trials)
+    assert penalty in [t.score for t in study.trials]
+    assert len(_rows(folder / "run_001" / "parameters.csv")) == 4
+
+
+def test_report_md_should_name_the_compressed_tables_of_a_large_run(tmp_path, monkeypatch):
+    """Given COMPRESS_FROM lowered to 10 and a run of 30 evaluations, when report.md is read, then it names
+    run_001/trials.csv.gz and run_001/population.csv.gz, and every file it names exists.
+
+    Oracle: report module docstring (max_evals >= COMPRESS_FROM writes trials.csv and population.csv
+    gzip-compressed). Decisive: report.md named trials.csv and population.csv, which do not exist then.
+    """
+    monkeypatch.setattr(metahpo.report, "COMPRESS_FROM", 10)
+    _, folder = _run(tmp_path, max_evals=30)
+
+    text = (folder / "report.md").read_text(encoding="utf-8")
+
+    named = [name for name in text.split("`") if name.endswith((".csv", ".csv.gz", ".json"))]
+    assert "run_001/trials.csv.gz" in named and "run_001/population.csv.gz" in named
+    assert [(folder / name).is_file() for name in named] == [True] * len(named)
+
+
+def test_report_md_should_not_name_a_population_file_an_optimizer_without_population_never_wrote(tmp_path):
+    """Given a custom optimizer without population snapshots, when report.md is read, then it does not name
+    population.csv, which the run did not write, and names trials.csv.
+
+    Oracle: report module docstring (population.csv holds the optimizer's snapshots) and the _written
+    docstring ('' when a table was not written).
+    """
+    _, folder = _run(tmp_path, _RandomSearch(_space(), "max", ANY_SEED), max_evals=12)
+
+    text = (folder / "report.md").read_text(encoding="utf-8")
+
+    assert ("population.csv" in text, "run_001/trials.csv" in text) == (False, True)
+    assert (folder / "run_001" / "population.csv").exists() is False
+
+
+def test_report_md_should_end_its_generation_table_with_the_last_generation(tmp_path):
+    """Given a PSO run (swarm 7) of 60 generations, whose table shows every second generation, when report.md
+    is read, then the last row of the generation table is generation 59, the last row of generations.csv.
+
+    Oracle: report.md is a summary of the run with a table of the progress by generation; the last
+    generation is where the run ended. Decisive: the rows were generations[::step], which ends at 58 when
+    the step is 2 and the count is 60.
+    """
+    space = Space({"x": Float(0.0, 1.0), "y": Float(0.0, 1.0), "z": Float(0.0, 1.0)})
+    _, folder = _run(
+        tmp_path,
+        PSOOptimizer(space, "max", swarm_size=7, seed=ANY_SEED),
+        max_evals=427,
+        cache=False,
+        function=lambda p: p["x"],
+    )
+
+    table = (
+        (folder / "report.md")
+        .read_text(encoding="utf-8")
+        .split("## Progress by generation")[1]
+        .split("## Files")[0]
+    )
+
+    rows = [
+        line.split("|")[1].strip()
+        for line in table.splitlines()
+        if line.startswith("| ") and line[2].isdigit()
+    ]
+    last = _rows(folder / "run_001" / "generations.csv")[-1]["generation"]
+    assert (rows[-1], last) == ("59", "59")
+    assert len(rows) == 31
