@@ -8,12 +8,17 @@ The note tests replace make_plots with a stub that raises.
 Unspecified, therefore not asserted: the look of the plots and their pixel sizes.
 
 Input space: Every run that can be plotted, which is unbounded.
-Subset: One small run per optimizer on a mixed space, an all-NaN run, and stubs that raise ImportError and
-RuntimeError.
+Subset: One small run per optimizer on a mixed space, an all-NaN run, Categoricals of numpy arrays and of
+two objects with the same repr, and stubs that raise ImportError and
+RuntimeError; scores that differ only in their last bits, equal scores of 1e300, penalty scores of 1e160,
+1e300, -1e300 and the largest float among ordinary ones, and scores spanning the whole float range;
+a figure method that raises for two of the plots, with and without a notes list, and for one run plot.
 """
 
+import json
 import math
 
+import numpy as np
 import pytest
 
 import metahpo
@@ -28,6 +33,11 @@ from metahpo import (
     Space,
     optimize,
 )
+
+pytestmark = [
+    pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning"),
+    pytest.mark.filterwarnings("ignore:.*plot failures? (was|were) noted:metahpo.MetaHpoWarning"),
+]
 
 ANY_SEED = 0
 
@@ -73,7 +83,6 @@ def _plots(tmp_path, optimizer, function=_score):
         direction="max",
         max_evals=80,
         optimizer=optimizer,
-        seed=ANY_SEED,
         verbose=0,
         output=None,
         callbacks=[ResultWriter(tmp_path)],
@@ -262,3 +271,191 @@ def test_report_should_note_a_failure_of_the_run_plots(tmp_path, monkeypatch):
 
     assert "Run plots failed: RuntimeError: disk full" in (folder / "report.md").read_text(encoding="utf-8")
     assert (folder / "summary.json").is_file()
+
+
+class _Same:
+    """A callable choice whose repr is the same for every instance."""
+
+    def __repr__(self):
+        return "_Same()"
+
+    def __call__(self, x):
+        return x
+
+
+@pytest.mark.parametrize(
+    ("choices", "function"),
+    [
+        pytest.param(
+            lambda: [np.array([1.0, 2.0]), np.array([3.0, 4.0])],
+            lambda p: float(p["c"].sum()) * p["lr"],
+            id="numpy-arrays",
+        ),
+        pytest.param(lambda: [_Same(), _Same()], lambda p: p["c"](p["lr"]), id="same-repr"),
+    ],
+)
+def test_make_plots_should_draw_the_categorical_plots_for_arrays_and_choices_with_the_same_repr(
+    tmp_path, choices, function
+):
+    """Given a Categorical of two numpy arrays, or of two objects with the same repr, beside a log Float and
+    an Int, when the run ends, then every plot file is written and report.md notes no plot failure.
+
+    Oracle: plots module docstring (make_plots draws every plot of a run) and the Categorical docstring (any
+    object can be a choice). Decisive: the parameter plots looked a choice up with list.index, which
+    compares with == (ambiguous for arrays), and by its repr, which put both same-repr choices at the
+    first position.
+    """
+    space = Space({"c": Categorical(choices()), "lr": Float(1e-4, 1e-1, log=True), "units": Int(16, 256)})
+
+    names, folder = _plots(tmp_path, ABCOptimizer(space, direction="max", seed=ANY_SEED), function)
+
+    assert names == EXPECTED
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["notes"] == []
+
+
+def _last_bits(params):
+    """Scores of 0.3 and 0.1 + 0.2 in turn, by the drop-out value, which differ only in their last bit."""
+    return 0.3 if params["dropout"] < 0.25 else 0.1 + 0.2
+
+
+@pytest.mark.parametrize(
+    "function",
+    [
+        pytest.param(_last_bits, id="last-bit-differences"),
+        pytest.param(
+            lambda p: 1.0 if p["dropout"] < 0.25 else 1.0 + 60 * 2.0**-52,
+            id="spread-too-small-for-the-density",
+        ),
+        pytest.param(lambda p: 1e300, id="equal-scores-of-1e300"),
+        pytest.param(lambda p: 1e160 if p["dropout"] > 0.3 else _score(p), id="penalty-1e160"),
+        pytest.param(lambda p: 1e300 if p["dropout"] > 0.3 else _score(p), id="penalty-1e300"),
+        pytest.param(lambda p: -1e300 if p["dropout"] > 0.3 else _score(p), id="penalty-minus-1e300"),
+        pytest.param(
+            lambda p: 1.7976931348623157e308 if p["dropout"] > 0.3 else _score(p), id="penalty-largest-float"
+        ),
+        pytest.param(lambda p: 1.7e308 * (p["dropout"] * 4 - 1), id="span-of-the-whole-float-range"),
+    ],
+)
+def test_make_plots_should_write_every_plot_for_degenerate_and_huge_scores(tmp_path, function):
+    """Given scores that differ only in their last bits (0.3 and 0.1 + 0.2, or 1 and 1 + 60 ulp, whose spread
+    suits the histogram but not the density grid), equal scores of 1e300, a penalty
+    of 1e160, 1e300, -1e300 or the largest float among ordinary scores, or scores spanning -1.7e308 to
+    1.7e308, when the run ends, then all eleven plots are written and summary.json has no note.
+
+    Oracle: plots module docstring (scores that differ only in their last bits are drawn like equal scores;
+    scores beyond about 1e301 are drawn divided by a power of 2). Decisive: the histograms raised 'Too many
+    bins for data range', the density and the axis ranges overflowed ('supplied range of [-inf, inf] is not
+    finite'), and the first failure lost every later plot.
+    """
+    names, folder = _plots(tmp_path, ABCOptimizer(_space(), direction="max", seed=ANY_SEED), function)
+
+    assert names == EXPECTED
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["notes"] == []
+
+
+def _broken_colorbar(*args, **kwargs):
+    raise RuntimeError("colorbar broken")
+
+
+def test_make_plots_should_write_the_other_plots_and_note_each_failed_plot_with_its_error(
+    tmp_path, monkeypatch
+):
+    """Given Figure.colorbar raising RuntimeError, which the parameter evolution and the correlation plots
+    use, when the run ends, then the nine other plots are written and summary.json notes both failed plots by
+    name with the error.
+
+    Oracle: plots module docstring (every plot is drawn on its own; a plot that fails is skipped, the others
+    are still written, each failed plot is noted with its error). Decisive: the first exception skipped every
+    later plot and left one 'Plots failed' note.
+    """
+    monkeypatch.setattr("matplotlib.figure.Figure.colorbar", _broken_colorbar)
+
+    names, folder = _plots(tmp_path, ABCOptimizer(_space(), direction="max", seed=ANY_SEED))
+
+    notes = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["notes"]
+    assert names == EXPECTED - {"06_parameter_evolution.png", "08_correlation.png"}
+    assert notes == [
+        "Plot 06_parameter_evolution failed: RuntimeError: colorbar broken",
+        "Plot 08_correlation failed: RuntimeError: colorbar broken",
+    ]
+
+
+class _Grab(metahpo.Callback):
+    """Keeps the run state at the end of a run, for calling make_plots directly."""
+
+    def on_run_end(self, state):
+        self.state = state
+
+
+def test_make_plots_should_skip_a_failed_plot_silently_when_no_notes_list_is_given(tmp_path, monkeypatch):
+    """Given the finished state of a run and Figure.colorbar raising, when make_plots is called without a
+    notes list, then it returns the six plot files that apply without generations and improvements, the
+    parameter evolution and correlation plots left out, and raises nothing.
+
+    Oracle: make_plots docstring (a plot that fails is skipped and noted in `notes`), with `notes` left out.
+    """
+    grab = _Grab()
+    optimize(_score, _space(), "max", 40, seed=ANY_SEED, verbose=0, output=None, callbacks=[grab])
+    monkeypatch.setattr("matplotlib.figure.Figure.colorbar", _broken_colorbar)
+
+    written = metahpo.plots.make_plots(grab.state, tmp_path, [], [])
+
+    assert len(written) == 6
+    assert "06_parameter_evolution.png" not in {p.name for p in (tmp_path / "plots").iterdir()}
+
+
+def _broken_axhline(*args, **kwargs):
+    raise RuntimeError("axhline broken")
+
+
+def test_make_run_plots_should_write_one_run_plot_when_the_other_fails_and_note_it(tmp_path, monkeypatch):
+    """Given Axes.axhline raising, which only the plot of the best score per run uses, when two runs end, then
+    runs_convergence.png is written and summary.json notes runs_best with the error.
+
+    Oracle: make_run_plots docstring (each run plot is drawn on its own; one that fails is skipped and
+    noted).
+    """
+    monkeypatch.setattr("matplotlib.axes.Axes.axhline", _broken_axhline)
+
+    names, folder = _run_plots(tmp_path, 2)
+
+    notes = json.loads((folder / "summary.json").read_text(encoding="utf-8"))["notes"]
+    assert names == {"runs_convergence.png"}
+    assert "Plot runs_best failed: RuntimeError: axhline broken" in notes
+
+
+def test_make_run_plots_should_draw_both_run_plots_for_scores_near_the_largest_float(tmp_path):
+    """Given runs=2 and scores spanning -1.7e308 to 1.7e308, when the runs end, then both run plots are
+    written and no plot fails.
+
+    Oracle: plots module docstring (scores beyond about 1e301 are drawn divided by a power of 2).
+    """
+    names, folder = _run_plots(tmp_path, 2, lambda p: 1.7e308 * (p["dropout"] * 4 - 1))
+
+    assert names == {"runs_convergence.png", "runs_best.png"}
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["notes"] == []
+
+
+class _NamedGenerations(metahpo.Optimizer):
+    """A custom random search whose candidates name their generation with a word and carry a phase."""
+
+    def ask(self):
+        cands = self._fresh(1)
+        meta = {"phase": "draw", "generation": "first" if self._next_id < 6 else "second", "individual": 0}
+        return [metahpo.Candidate(c.id, c.x, c.params, c.key, meta) for c in cands]
+
+    def tell(self, candidates, scores):
+        pass
+
+
+def test_make_plots_should_draw_the_phase_plot_for_generations_named_by_words(tmp_path):
+    """Given a custom optimizer whose candidates name their generation 'first' or 'second', when the run ends,
+    then the phase plot is written and no plot fails.
+
+    Oracle: plots module docstring (every plot is drawn; a plot that fails is noted); the phase plot counts
+    trials per generation and phase whatever the generation is called.
+    """
+    names, folder = _plots(tmp_path, _NamedGenerations(_space(), "max", ANY_SEED))
+
+    assert "10_phases.png" in names
+    assert json.loads((folder / "summary.json").read_text(encoding="utf-8"))["notes"] == []

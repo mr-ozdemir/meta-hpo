@@ -37,7 +37,7 @@ def _decode_int(u: FloatArray, low: Any, high: Any, log: bool) -> FloatArray:
 
 
 def _decode_categorical(u: FloatArray, n: Any) -> FloatArray:
-    return np.asarray(np.minimum(np.floor(u * n), np.asarray(n) - 1), dtype=np.float64)
+    return np.asarray(np.maximum(np.minimum(np.floor(u * n), np.asarray(n) - 1), 0.0), dtype=np.float64)
 
 
 _ADDRESS = re.compile(r" at 0x[0-9A-Fa-f]+")
@@ -55,9 +55,12 @@ def _choice_text(choice: Any) -> str:
 
 
 def _same_choice(a: Any, b: Any) -> bool:
-    """True when a and b have the same type and compare equal; a comparison that fails counts as different."""
+    """True when a and b have the same type and compare equal; a comparison that fails counts as different.
+    Two numpy arrays are equal when they have the same shape, dtype and elements."""
     if type(a) is not type(b):
         return False
+    if isinstance(a, np.ndarray):
+        return a.shape == b.shape and a.dtype == b.dtype and bool(np.array_equal(a, b))
     try:
         return bool(a == b)
     except Exception:
@@ -85,7 +88,7 @@ def _has_duplicate(choices: Sequence[Any]) -> bool:
 def _exact_integer(value: Any) -> bool:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
     return number.is_integer() and abs(number) <= 2**53 and number == value
 
@@ -112,6 +115,12 @@ class Parameter:
 
 @dataclass(frozen=True)
 class Float(Parameter):
+    """Real numbers low..high, on a log scale with `log=True`.
+
+    The bounds are stored as Python floats: a numpy scalar or a Python int bound becomes the float it holds,
+    so the search is the same as with that float.
+    """
+
     low: float
     high: float
     log: bool = False
@@ -119,9 +128,16 @@ class Float(Parameter):
     def __post_init__(self) -> None:
         if not self.low < self.high:
             raise ValueError(f"Float needs low < high, got {self.low} and {self.high}")
-        if not math.isfinite(self.high - self.low):
-            raise ValueError(f"Float needs finite bounds with a finite width, got {self.low} and {self.high}")
-        if self.log and self.low <= 0:
+        width = f"Float needs finite bounds with a finite width, got {self.low} and {self.high}"
+        try:
+            low, high = float(self.low), float(self.high)
+        except OverflowError:
+            raise ValueError(width) from None
+        if not math.isfinite(high - low):
+            raise ValueError(width)
+        object.__setattr__(self, "low", low)
+        object.__setattr__(self, "high", high)
+        if self.log and low <= 0:
             raise ValueError("a log-scaled Float needs low > 0")
 
     @property
@@ -148,7 +164,8 @@ class Int(Parameter):
     """Integers low..high inclusive.
 
     With `log=False` every integer gets an equal share of the unit interval; with `log=True` the shares
-    are equal on a log scale, so small integers get larger shares.
+    are equal on a log scale, so small integers get larger shares. The bounds are stored as Python ints: a
+    numpy scalar or a whole float bound becomes the int it holds, so the search is the same as with that int.
     """
 
     low: int
@@ -159,6 +176,8 @@ class Int(Parameter):
         for bound in (self.low, self.high):
             if not _exact_integer(bound):
                 raise ValueError(f"Int bounds must be integers with magnitude at most 2**53, got {bound!r}")
+        object.__setattr__(self, "low", int(self.low))
+        object.__setattr__(self, "high", int(self.high))
         if not self.low <= self.high:
             raise ValueError(f"Int needs low <= high, got {self.low} and {self.high}")
         if self.log and self.low <= 0:
@@ -176,7 +195,8 @@ class Int(Parameter):
             lo, hi = np.log(self.low - 0.5), np.log(self.high + 0.5)
             value = float(np.rint(np.exp(lo + u * (hi - lo))))
         else:
-            value = self.low + math.floor(u * (self.high - self.low + 1))
+            low = float(self.low)
+            value = low + math.floor(u * (float(self.high) - low + 1.0))
         return float(min(max(value, self.low), self.high))
 
     def to_python(self, value: Any) -> int:
@@ -188,7 +208,12 @@ class Categorical(Parameter):
     """One of `choices`; every choice gets an equal share of the unit interval.
 
     Choices must be distinct: two choices of the same type that compare equal raise ValueError, because the
-    cache tells parameter sets apart by the index of the choice.
+    cache tells parameter sets apart by the index of the choice (two numpy arrays compare equal when their
+    shape, dtype and elements are). Any object can be a choice, a numpy array or a function as well as a
+    string or a number; choices that compare equal across types (0, False, 0.0) stay different choices.
+    The choices are kept in a tuple, and the objective receives the choice objects themselves, not copies:
+    an objective must not change a mutable choice (a list of layer sizes, an array) in place, because that
+    changes the choice for every later trial.
     """
 
     choices: Sequence[Any] = field(default_factory=tuple)
@@ -209,10 +234,17 @@ class Categorical(Parameter):
 
     def decode_one(self, u: float) -> float:
         n = len(self.choices)
-        return float(min(math.floor(u * n), n - 1))
+        return float(max(min(math.floor(u * n), n - 1), 0))
 
     def to_python(self, value: Any) -> Any:
         return self.choices[int(value)]
+
+
+def _choice_index(parameter: Categorical, u: float) -> int:
+    """The index in `parameter.choices` of the choice that the unit value u encodes, as decode() gives it.
+    The results files find the choice of a trial this way, from its x, because choices need not compare with
+    == (numpy arrays) and choices of different types may compare equal (1, True, 1.0)."""
+    return int(parameter.decode_one(u))
 
 
 class Space:

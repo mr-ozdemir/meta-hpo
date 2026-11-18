@@ -52,6 +52,8 @@ from metahpo import (
     optimize,
 )
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 ANY_SEED = 0
 
 PSO_SEED = 3
@@ -81,7 +83,7 @@ def _pso():
 def _pso_run(function=_sphere, optimizer=None, stop=None):
     """optimize() minimising `function` with `optimizer` (default a fresh _pso()) on its own space."""
     opt = _pso() if optimizer is None else optimizer
-    return optimize(function, opt.space, max_evals=BUDGET, optimizer=opt, seed=PSO_SEED, stop=stop)
+    return optimize(function, opt.space, max_evals=BUDGET, optimizer=opt, stop=stop)
 
 
 def _params(study):
@@ -408,7 +410,6 @@ def test_optimize_should_ask_the_rules_after_the_trial_is_recorded_and_the_callb
         space,
         max_evals=3,
         optimizer=optimizer,
-        seed=ANY_SEED,
         callbacks=[events],
         stop=[_Recording(_snapshot(log, events))],
     )
@@ -444,9 +445,7 @@ def test_optimize_should_not_count_cached_repeats_toward_patience():
     space = Space({"x": Float(0.0, 1.0)})
     optimizer = _Scripted(space, [0.1, 0.2, 0.2, 0.2, 0.3, 0.4, 0.5, 0.6], seed=ANY_SEED)
 
-    study = optimize(
-        lambda p: 1.0, space, max_evals=BUDGET, optimizer=optimizer, seed=ANY_SEED, stop=[Patience(3)]
-    )
+    study = optimize(lambda p: 1.0, space, max_evals=BUDGET, optimizer=optimizer, stop=[Patience(3)])
 
     assert [t.cached for t in study.trials] == [False, False, True, True, False, False]
     assert (study.n_calls, study.stop_reason) == (4, "patience")

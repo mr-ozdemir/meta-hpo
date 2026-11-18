@@ -2,12 +2,12 @@
 
 from metahpo.facade import optimize, resume
 from metahpo.optimizers import ABCOptimizer, BBPSOOptimizer, Candidate, Optimizer, PSOOptimizer
-from metahpo.report import Callback, ConsoleReporter, ResultWriter, RunState
+from metahpo.report import Callback, ConsoleReporter, MetaHpoWarning, ResultWriter, RunState
 from metahpo.space import Categorical, Float, Int, Space
 from metahpo.stop import MaxTime, Patience, Stopper, TargetScore
 from metahpo.study import Study, Trial
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 __all__ = [
     "ABCOptimizer",
@@ -19,6 +19,7 @@ __all__ = [
     "Float",
     "Int",
     "MaxTime",
+    "MetaHpoWarning",
     "Optimizer",
     "PSOOptimizer",
     "Patience",

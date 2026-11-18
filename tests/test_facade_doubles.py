@@ -66,6 +66,8 @@ import pytest
 
 from metahpo import ABCOptimizer, Candidate, Categorical, Float, Int, Optimizer, Space, Study, optimize
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 ANY_SEED = 0
 
 

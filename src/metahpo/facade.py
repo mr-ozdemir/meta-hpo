@@ -8,6 +8,7 @@ import inspect
 import math
 import os
 import time
+import warnings
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,13 +17,14 @@ from typing import Any, Literal, cast, overload
 import numpy as np
 
 from metahpo.optimizers.abc import ABCOptimizer
-from metahpo.optimizers.base import Candidate, Direction, Optimizer
+from metahpo.optimizers.base import Candidate, Direction, Optimizer, _integer
 from metahpo.optimizers.bbpso import BBPSOOptimizer
 from metahpo.optimizers.pso import PSOOptimizer
 from metahpo.report import (
     DEFAULT_OUTPUT,
     Callback,
     ConsoleReporter,
+    MetaHpoWarning,
     ResultWriter,
     RunState,
     _describe_rules,
@@ -145,26 +147,44 @@ def optimize(
     records the rules, and resume() applies them again.
 
     A run that stopped, for any reason, continues from its results folder with resume().
+
+    Warnings: a condition the user should know about that does not stop the search is emitted once per call
+    as a metahpo.MetaHpoWarning. A condition the arguments show is warned about after every argument check
+    has passed and before the search starts: nothing is written and the objective is not called yet, and an
+    argument that raises comes without a warning. optimize() warns so when `seed` is given together with an
+    optimizer object, which already holds its random generator, so the seed has no effect. A condition that
+    depends on the outcome of the search is warned about when the call has finished and every result file
+    is written, also when a KeyboardInterrupt ended it; a call that raises during the search emits none of
+    these. They are, in this order: a run that ended without a finite score (the objective returned only
+    NaN or infinite scores, or none before the run was interrupted), so its Study has no best trial; and
+    plots that a ResultWriter of the call could not draw, which summary.json notes. Under
+    warnings.simplefilter('error') the first warning of the call is the one raised.
+
+    The integer arguments (max_evals, runs, log_every, verbose and every seed) take Python or numpy
+    integers; a float (also a whole one such as 20.0), a bool or a string raises ValueError before the
+    search starts and before a results folder is written. verbose also takes False and True as 0 and 1, and
+    seed any iterable of seeds but a string (a list, a tuple, a range, a 1-D numpy array).
     """
-    if max_evals < 1:
-        raise ValueError("max_evals must be at least 1")
-    if isinstance(runs, bool) or not isinstance(runs, int) or runs < 1:
-        raise ValueError("runs must be an integer of at least 1")
+    max_evals = _integer("max_evals", max_evals, 1)
+    runs = _integer("runs", runs, 1)
+    verbose = _verbose(verbose)
+    log_every = _integer("log_every", log_every, 1)
     rules = _rules(stop)
     seeds = _run_seeds(seed, runs)
     make = _optimizer_factory(optimizer, space, direction, runs)
     folder = resolve_output(output)
     writer = None if folder is None else ResultWriter(folder)
     listeners = _listeners(verbose, log_every, writer, callbacks)
+    if isinstance(optimizer, Optimizer):
+        _matching(optimizer, space, direction)
+    _warn(_ignored_seed(optimizer, seed, seeds))
 
     def starts() -> Iterator[_Start]:
         for number, run_seed in enumerate(seeds, start=1):
-            opt = _checked(make(run_seed), direction)
-            if opt.space is not space:
-                raise ValueError("the optimizer must use the same space and direction as optimize()")
-            yield _Start(number, run_seed, opt)
+            yield _Start(number, run_seed, _matching(make(run_seed), space, direction))
 
     studies = _search(function, starts(), direction, max_evals, cache, runs, seeds, listeners, rules)
+    _warn(_finished_notices(studies, listeners))
     return studies[0] if runs == 1 else studies
 
 
@@ -239,8 +259,15 @@ def resume(
     instead of their usual lines; callbacks receive the events of the restored trials too, with
     RunState.replaying True. Elapsed times, durations and the console clock leave out the time the run was
     stopped (see metahpo.report).
+
+    Warnings: as in optimize(), each condition is emitted once per call as a metahpo.MetaHpoWarning when the
+    call has finished and every result file is written, and none when the call raises: a run without a
+    finite score, judged on every trial of the run when the call returns (also when every run was restored
+    and nothing was evaluated), and plots that could not be drawn.
     """
-    root = Path(folder)
+    verbose = 1 if verbose is None else _verbose(verbose)
+    log_every = _integer("log_every", log_every, 1)
+    root = Path(folder).absolute()
     config = _read_config(root)
     runs = int(config["runs"])
     direction = cast(Direction, config["direction"])
@@ -265,9 +292,77 @@ def resume(
         "trials": sum(len(log.trials) for log in logs if log is not None),
     }
     writer = ResultWriter._continuing(root, config, entry)
-    listeners = _listeners(1 if verbose is None else verbose, log_every, writer, callbacks)
+    listeners = _listeners(verbose, log_every, writer, callbacks)
     studies = _search(function, starts, direction, budget, cache, runs, seeds, listeners, rules)
+    _warn(_finished_notices(studies, listeners))
     return studies[0] if runs == 1 else studies
+
+
+def _warn(notices: Sequence[str]) -> None:
+    """Emits every notice once, as a MetaHpoWarning pointing at the user's line that called optimize() or
+    resume() (stacklevel 3: this function, then optimize() or resume(), which must call it themselves).
+    optimize() calls it for the notices its arguments give after every argument check has passed and before
+    the search starts, when nothing is written yet, and both call it for the notices of _finished_notices()
+    when the search has returned, after every result file was written and closed; so a warning that the
+    filters turn into an exception costs no result."""
+    for notice in dict.fromkeys(notices):
+        warnings.warn(notice, MetaHpoWarning, stacklevel=3)
+
+
+def _finished_notices(studies: Sequence[Study], listeners: Sequence[Callback]) -> list[str]:
+    """The notices that depend on the outcome of a finished optimize() or resume() call, in a fixed order:
+    runs without a finite score, then the plots that the call's ResultWriters could not draw."""
+    writers = [listener for listener in listeners if isinstance(listener, ResultWriter)]
+    return [*_no_finite_score(studies), *_failed_plots(writers)]
+
+
+def _no_finite_score(studies: Sequence[Study]) -> list[str]:
+    """The notice for the runs whose every trial has a NaN or infinite score, or that have no trial at all
+    (interrupted before the first one), so that their Study has no best trial; empty when every run has a
+    finite score."""
+    empty = [study for study in studies if all(trial.failed for trial in study.trials)]
+    if not empty:
+        return []
+    runs, count = len(studies), len(empty)
+    which = "the run" if runs == 1 else f"all {runs} runs" if count == runs else f"{count} of the {runs} runs"
+    whose = "its Study has" if count == 1 else "their studies have"
+    record = "its best.json records" if count == 1 else "their best.json files record"
+    none = ", or none before an interrupt" if any(not study.trials for study in empty) else ""
+    return [
+        f"{which} ended without a finite score: the objective returned only NaN or infinite scores{none}, so "
+        f"{whose} no best trial (best_trial raises ValueError) and {record} none; check that the objective "
+        f"returns a finite number, for example that a training that fails or diverges does not come back as "
+        f"NaN or inf"
+    ]
+
+
+def _failed_plots(writers: Sequence[ResultWriter]) -> list[str]:
+    """The notice for the plots that the ResultWriters of the call could not draw (every note of their
+    runs and of the run comparison), naming the number and the first failure; empty when every plot was
+    drawn or nothing was plotted."""
+    failures = [note for writer in writers for note in writer._failed_plots()]
+    if not failures:
+        return []
+    count = "1 plot failure was" if len(failures) == 1 else f"{len(failures)} plot failures were"
+    return [
+        f"{count} noted, the first: {failures[0]}; every other result file was written, and the notes of "
+        f"summary.json (and of run_<n>/summary.json with several runs) list each failure"
+    ]
+
+
+def _ignored_seed(optimizer: Any, seed: Seed, seeds: list[Any]) -> list[str]:
+    """The notice for a seed given together with an optimizer object, which already holds its random
+    generator, so the seed has no effect on the search (config.json, summary.json and the console still
+    show it); empty otherwise."""
+    if not isinstance(optimizer, Optimizer) or all(s is None for s in seeds):
+        return []
+    name = type(optimizer).__name__
+    return [
+        f"seed={seed!r} has no effect because optimizer= is an optimizer object, which already holds its "
+        f"random generator (config.json still records the seed); pass the seed to the optimizer, as in "
+        f"{name}(space, seed=...), or pass a function seed -> optimizer, as in "
+        f"optimizer=lambda seed: {name}(space, seed=seed)"
+    ]
 
 
 def _listeners(
@@ -282,6 +377,14 @@ def _listeners(
         listeners.append(writer)
     listeners.extend(callbacks or [])
     return listeners
+
+
+def _matching(opt: Any, space: Space, direction: Direction) -> Optimizer:
+    """The optimizer of an optimize() run, checked for its type, direction and space."""
+    checked = _checked(opt, direction)
+    if checked.space is not space:
+        raise ValueError("the optimizer must use the same space and direction as optimize()")
+    return checked
 
 
 def _checked(opt: Any, direction: Direction) -> Optimizer:
@@ -387,19 +490,21 @@ def _search(
             state.rules,
             start.cut_first,
         )
-        for listener in listeners:
-            listener.on_run_start(state)
         try:
+            run.start()
             run.loop()
         except KeyboardInterrupt:
             run.abandon("interrupted")
-            run.finish()
+            run.finish(quiet=True)
             break
         except BaseException:
             run.abandon("error")
-            run.finish()
+            run.finish(quiet=True)
             raise
-        run.finish()
+        try:
+            run.finish()
+        except KeyboardInterrupt:
+            break
     return studies
 
 
@@ -411,8 +516,7 @@ _BUILT_IN: dict[str, type[Optimizer]] = {
 def _resume_budget(max_evals: int | None, recorded: int, logs: list[_RunLog | None]) -> int:
     """The budget of a resume: `max_evals` or the recorded one, at least the calls every run logged."""
     budget = recorded if max_evals is None else max_evals
-    if isinstance(budget, bool) or not isinstance(budget, (int, np.integer)) or budget < 1:
-        raise ValueError("max_evals must be an integer of at least 1")
+    budget = _integer("max_evals", budget, 1)
     for number, log in enumerate(logs, start=1):
         if log is not None and budget < log.needed:
             raise ValueError(
@@ -450,7 +554,7 @@ def _resume_rules(
                 "pass stop=, the rules to go on with (stop=[] for none)"
             )
         try:
-            rules.append(build(**settings))
+            rules.append(build(**_recorded_settings(build, settings)))
         except (TypeError, ValueError) as exc:
             raise ValueError(
                 f"{path} records settings of the stopping rule {name} that it rejects ({exc}); pass stop=, "
@@ -474,7 +578,7 @@ def _rebuild(
         return _optimizer_factory(optimizer, cast(Space, space), direction, runs)
     name = config["optimizer"]["name"]
     cls = _BUILT_IN.get(name)
-    if cls is None:
+    if cls is None or config["optimizer"].get("module", cls.__module__) != cls.__module__:
         raise ValueError(
             f"the folder was written by {name}, which resume() cannot build again; pass optimizer=, an "
             "optimizer object or a function seed -> optimizer as in optimize()"
@@ -491,7 +595,7 @@ def _rebuild(
         raise ValueError(
             "the search space has a Categorical whose choices config.json stores only as text; pass space="
         )
-    settings = config["optimizer"]["settings"]
+    settings = _recorded_settings(cls, config["optimizer"]["settings"])
     built = space
 
     def build(seed: Any) -> Optimizer:
@@ -504,6 +608,23 @@ def _rebuild(
             ) from exc
 
     return build
+
+
+def _recorded_settings(cls: Callable[..., Any], settings: dict[str, Any]) -> dict[str, Any]:
+    """The settings config.json records for a class of the library, with a whole-number float recorded for
+    an integer parameter (annotated int) taken as that integer: 0.6.0 and 0.7.0 stored a setting as given,
+    so limit=10.0 or max_tries=50.0 may stand in their folders. Any other value is left as it is, so a
+    fraction such as limit 2.5 is still rejected by the class."""
+    parameters = inspect.signature(cls).parameters
+    return {
+        name: int(value)
+        if isinstance(value, float)
+        and value.is_integer()
+        and name in parameters
+        and parameters[name].annotation == "int"
+        else value
+        for name, value in settings.items()
+    }
 
 
 def _resume_start(
@@ -640,14 +761,39 @@ def _replay_error(
     return None
 
 
+def _verbose(verbose: Any) -> int:
+    """The console level of optimize() and resume(): an integer >= 0, or False and True as 0 and 1, as
+    0.7.x took them; ValueError for anything else."""
+    return int(verbose) if isinstance(verbose, bool) else _integer("verbose", verbose, 0)
+
+
 def _run_seeds(seed: Seed, runs: int) -> list[Any]:
-    """One seed per run: None for every run, the same integer for every run, or the given sequence."""
-    if seed is None or isinstance(seed, (int, np.integer)):
-        return [seed] * runs
-    seeds = list(seed)
+    """One seed per run: None for every run, the same integer for every run (a 0-d numpy integer array
+    counts as one), or any iterable of seeds but a string; every seed None or an integer >= 0, numpy
+    integers become ints. ValueError for anything else before any run starts."""
+    if isinstance(seed, np.ndarray) and seed.ndim == 0:
+        seed = seed[()]
+    if seed is None or isinstance(seed, (bool, int, np.integer)):
+        return [_seed(seed)] * runs
+    if isinstance(seed, (str, bytes)):
+        raise ValueError(f"seed must be None, an integer >= 0 or an iterable of them, got {seed!r}")
+    try:
+        given = list(cast(Iterable[Any], seed))
+    except TypeError:
+        raise ValueError(f"seed must be None, an integer >= 0 or an iterable of them, got {seed!r}") from None
+    seeds = [_seed(s) for s in given]
     if len(seeds) != runs:
         raise ValueError(f"seed holds {len(seeds)} values but runs={runs}; give one seed per run")
     return seeds
+
+
+def _seed(seed: Any) -> int | None:
+    """One run's seed: None, or an integer >= 0 as a Python int; ValueError for anything else."""
+    if seed is None:
+        return None
+    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or seed < 0:
+        raise ValueError(f"a seed must be None or an integer >= 0, got {seed!r}")
+    return int(seed)
 
 
 def _optimizer_factory(
@@ -767,8 +913,7 @@ class _Run:
         if new_best:
             state.best = trial
         self.generation_trials.append(trial)
-        for listener in self.listeners:
-            listener.on_trial(state, trial, new_best)
+        self._notify("on_trial", trial, new_best)
         self._ask_rules()
 
     def _ask_rules(self) -> None:
@@ -792,9 +937,30 @@ class _Run:
         self.generation = now
 
     def _emit_generation(self, generation: int, trials: list[Trial]) -> None:
-        population = self.opt.population()
+        self._notify("on_generation", generation, trials, self.opt.population())
+
+    def start(self) -> None:
+        """Sends on_run_start to the listeners in order. When one raises, the later ones are not started
+        and only the listeners that started receive the rest of the run's events, on_run_end included."""
+        started: list[Callback] = []
+        try:
+            for listener in self.listeners:
+                listener.on_run_start(self.state)
+                started.append(listener)
+        finally:
+            self.listeners = started
+
+    def _notify(self, event: str, *args: Any) -> None:
+        """Sends an event to every listener in order. A listener that raises does not keep the event from the
+        others; the first exception is raised once all of them received it."""
+        first: BaseException | None = None
         for listener in self.listeners:
-            listener.on_generation(self.state, generation, trials, population)
+            try:
+                getattr(listener, event)(self.state, *args)
+            except BaseException as exc:
+                first = exc if first is None else first
+        if first is not None:
+            raise first
 
     def _withdraw(self, keep: int) -> None:
         """Keeps the first `keep` candidates of the batch and withdraws the rest with cancel()."""
@@ -821,10 +987,21 @@ class _Run:
             pass
         self.batch, self.scores = [], []
 
-    def finish(self) -> None:
-        """Emits the last, possibly unfinished generation and the end of the run."""
+    def finish(self, quiet: bool = False) -> None:
+        """Emits the last, possibly unfinished generation and the end of the run to every listener, also
+        when some of them raise, so the results writer always finishes. The first exception of a listener is
+        raised afterwards, unless `quiet`: after an error or an interrupt the original exception is the one
+        that counts, and a later one must not hide it."""
+        first: BaseException | None = None
         if self.generation_trials:
-            self._emit_generation(self.generation, self.generation_trials)
-            self.generation_trials = []
-        for listener in self.listeners:
-            listener.on_run_end(self.state)
+            trials, self.generation_trials = self.generation_trials, []
+            try:
+                self._emit_generation(self.generation, trials)
+            except BaseException as exc:
+                first = exc
+        try:
+            self._notify("on_run_end")
+        except BaseException as exc:
+            first = exc if first is None else first
+        if first is not None and not quiet:
+            raise first

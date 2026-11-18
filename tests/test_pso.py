@@ -114,7 +114,7 @@ def _distinct_keys(opt):
 def _found_mixed_optimum(seed):
     """True when 300 calls of PSOOptimizer with `seed` end below 0.05 with activation 'gelu'."""
     space = _mixed()
-    study = optimize(_mixed_score, space, max_evals=300, optimizer=PSOOptimizer(space, seed=seed), seed=seed)
+    study = optimize(_mixed_score, space, max_evals=300, optimizer=PSOOptimizer(space, seed=seed))
     return study.best_score < 0.05 and study.best_params["act"] == "gelu"
 
 
@@ -152,13 +152,20 @@ def test_pso_optimizer_should_store_the_documented_defaults():
         pytest.param({"max_velocity": math.inf}, id="max-velocity-inf"),
         pytest.param({"max_tries": 0}, id="max-tries-0"),
         pytest.param({"direction": "up"}, id="direction-unknown"),
+        pytest.param({"swarm_size": 7.0}, id="swarm-whole-float"),
+        pytest.param({"swarm_size": True}, id="swarm-bool"),
+        pytest.param({"swarm_size": "7"}, id="swarm-string"),
+        pytest.param({"max_tries": 100.0}, id="max-tries-whole-float"),
+        pytest.param({"max_tries": True}, id="max-tries-bool"),
+        pytest.param({"max_tries": "3"}, id="max-tries-string"),
     ],
 )
 def test_pso_optimizer_should_raise_value_error_when_a_setting_is_invalid(kwargs):
     """Given one invalid constructor argument, when PSOOptimizer is built, then ValueError is raised.
 
     Oracle: issue #18 parameter table (swarm_size an integer >= 2, so also not inf or NaN; coefficients
-    finite and >= 0; max_velocity finite and > 0; max_tries >= 1) and the Optimizer direction check.
+    finite and >= 0; max_velocity finite and > 0; max_tries >= 1) and the Optimizer direction check; an
+    integer setting is a Python or numpy integer, not a float such as 7.0, a bool or a string.
     """
     space = _box()
 
@@ -511,7 +518,6 @@ def test_pso_should_evaluate_each_value_of_a_three_value_space_once_and_stop():
         space,
         max_evals=50,
         optimizer=PSOOptimizer(space, seed=ANY_SEED),
-        seed=ANY_SEED,
     )
 
     assert (study.n_calls, sorted(calls)) == (3, [0, 1, 2])
@@ -605,9 +611,7 @@ def test_pso_should_reach_the_sphere_minimum_within_forty_iterations():
     """
     space = _box()
 
-    study = optimize(
-        _sphere, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_sphere, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < 1e-3
 
@@ -621,9 +625,7 @@ def test_pso_should_improve_on_its_initial_batch_on_rastrigin():
     """
     space = _box()
 
-    study = optimize(
-        _rastrigin, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_rastrigin, space, max_evals=820, optimizer=PSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < min(t.score for t in study.trials[:SWARM])
 
@@ -649,14 +651,13 @@ def test_pso_should_evaluate_the_same_points_when_maximising_minus_f_or_minimisi
     """
     space = _box()
 
-    low = optimize(_sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED)
+    low = optimize(_sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED))
     high = optimize(
         lambda p: -_sphere(p),
         space,
         direction="max",
         max_evals=200,
         optimizer=PSOOptimizer(space, direction="max", seed=ANY_SEED),
-        seed=ANY_SEED,
     )
 
     assert [tuple(t.x) for t in low.trials] == [tuple(t.x) for t in high.trials]
@@ -671,15 +672,9 @@ def test_pso_should_evaluate_the_same_points_when_the_objective_is_scaled_by_1e_
     """
     space = _box(3)
 
-    plain = optimize(
-        _sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    plain = optimize(_sphere, space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED))
     scaled = optimize(
-        lambda p: 1e-20 * _sphere(p),
-        space,
-        max_evals=200,
-        optimizer=PSOOptimizer(space, seed=ANY_SEED),
-        seed=ANY_SEED,
+        lambda p: 1e-20 * _sphere(p), space, max_evals=200, optimizer=PSOOptimizer(space, seed=ANY_SEED)
     )
 
     assert [tuple(t.x) for t in plain.trials] == [tuple(t.x) for t in scaled.trials]

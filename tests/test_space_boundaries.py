@@ -20,7 +20,8 @@ Unspecified, therefore not asserted:
 - which integer an exact share edge k / n belongs to (only the values just below and just above it are
   fixed by the equal-share rule; at the edge itself only agreement of all decode paths is asserted);
 - which integer a log-scaled Int gives near an end beyond being inside low..high;
-- Float or Int with infinite or NaN bounds, and Int ranges wider than 2**53 (not exactly representable);
+- Float or Int with infinite or NaN bounds, and which integer an Int range wider than 2**53 gives (not
+  exactly representable; only that decode and decode_one agree is asserted);
 - the exact float a log-scaled Float gives at u = 0.0 (only the linear Float is exactly low there).
 
 Not in this module: Float decoding outside [low, high] at u = 1.0 (linear and log) and at u = 0.0 (log).
@@ -39,7 +40,9 @@ representation makes the side ambiguous.
 
 Input space: Every row of d unit-cube coordinates in [0, 1] for every parameter kind and bound, which is
 unbounded.
-Subset: U = 0, u = 1.0, the equal-share boundaries and the log ends of every parameter kind.
+Subset: U = 0, u = 1.0, the equal-share boundaries and the log ends of every parameter kind; u = -0.5,
+-1e-12 and 1.5 outside [0, 1] for every kind; Int ranges wider than 2**53 at unit values where whole
+and float arithmetic round apart.
 """
 
 import math
@@ -556,3 +559,68 @@ def test_space_move_should_decode_the_new_coordinate_to_its_share_integer_when_u
     assert new_params == {"x": expected}
     assert type(new_params["x"]) is int
     assert new_key == (float(expected),)
+
+
+EDGE_PARAMETERS = [
+    pytest.param(Categorical(["a", "b", "c"]), (0.0, 2.0), id="categorical"),
+    pytest.param(Int(0, 4), (0.0, 4.0), id="int"),
+    pytest.param(Int(1, 9, log=True), (1.0, 9.0), id="int-log"),
+    pytest.param(Float(0, 1), (0.0, 1.0), id="float"),
+    pytest.param(Float(1e-3, 1.0, log=True), (1e-3, 1.0), id="float-log"),
+]
+
+
+@pytest.mark.parametrize("u", [pytest.param(-0.5, id="minus-half"), pytest.param(-1e-12, id="just-below-0")])
+@pytest.mark.parametrize(("parameter", "ends"), EDGE_PARAMETERS)
+def test_decode_and_decode_one_should_clip_a_unit_value_below_0_to_the_low_end(parameter, ends, u):
+    """Given every parameter kind and a unit value below 0, as a hand-made Candidate or rounding can give,
+    when Space.decode and decode_one read it, then both give the low end (the first choice of a
+    Categorical) as the same float.
+
+    Oracle: Parameter.decode_one ('decode for a single value, bit-identical to decode') and the
+    Categorical docstring ('one of choices', each with its share of [0, 1]). Decisive: the Categorical
+    clipped only at the top, so u = -0.5 gave index -2 and through negative indexing the second choice.
+    """
+    decoded = Space({"p": parameter}).decode(np.array([[u]]))[0, 0]
+
+    one = parameter.decode_one(u)
+
+    assert (decoded, one, type(one)) == (ends[0], ends[0], float)
+
+
+@pytest.mark.parametrize(("parameter", "ends"), EDGE_PARAMETERS)
+def test_decode_and_decode_one_should_clip_a_unit_value_above_1_to_the_high_end(parameter, ends):
+    """Given every parameter kind and u = 1.5, when Space.decode and decode_one read it, then both give the
+    high end (the last choice of a Categorical) as the same float.
+
+    Oracle: Parameter.decode_one ('bit-identical to decode'). Decisive: a Float with int bounds returned
+    the int bound from decode_one, not a float.
+    """
+    decoded = Space({"p": parameter}).decode(np.array([[1.5]]))[0, 0]
+
+    one = parameter.decode_one(1.5)
+
+    assert (decoded, one, type(one)) == (ends[1], ends[1], float)
+
+
+@pytest.mark.parametrize(
+    ("low", "high", "u"),
+    [
+        pytest.param(-(2**53), 6031496469437509, 0.4091763455209756, id="odd-high"),
+        pytest.param(-(2**53) + 1, 5234384549812750, 0.39349397034171807, id="odd-low"),
+        pytest.param(-(2**53), 2**53 - 3, 0.8165645464460266, id="nearly-full-range"),
+    ],
+)
+def test_int_decode_one_should_agree_bit_for_bit_with_decode_when_the_range_is_wider_than_2_53(low, high, u):
+    """Given an Int whose range high - low + 1 exceeds 2**53 and a unit value where whole-number and float
+    arithmetic round apart, when Space.decode and decode_one read it, then they give the same float.
+
+    Oracle: Parameter.decode_one ('decode for a single value, bit-identical to decode, for one-coordinate
+    moves'). Decisive: decode_one counted in Python ints and decode in float64, so the values differed by
+    one or two here (found by a seeded search over such ranges).
+    """
+    parameter = Int(low, high)
+
+    decoded = Space({"p": parameter}).decode(np.array([[u]]))[0, 0]
+
+    assert parameter.decode_one(u) == decoded

@@ -72,7 +72,7 @@ working directory:
 
 ```text
 [meta-hpo] run 1 | ABCOptimizer | direction=max | max_evals=300 | seed=1 | 4 parameters
-gen    0 | evals     16/300 | best 0.884134 (trial 13) | gen best 0.884134 mean 0.807182 std 0.0518115 | ...
+gen    0 | evals     15/300 | best 0.884134 (trial 13) | gen best 0.884134 mean 0.807182 std 0.0518115 | ...
 gen   29 | evals    300/300 | best 0.92 (trial 288) | gen best 0.919993 mean 0.913963 std 0.00801146 | ...
 [meta-hpo] run 1 finished (budget) after 300 calls in 00:00:00 | best 0.92 at trial 288 | {...}
 ```
@@ -172,7 +172,7 @@ Stopped after 120 of its 300 evaluations and resumed, the [Quick start](#quick-s
 ```text
 [meta-hpo] run 1 | ABCOptimizer | direction=max | max_evals=300 | seed=1 | 4 parameters
 [meta-hpo] run 1 | resumed | 120 trials restored (120 calls) | best 0.919322
-gen   11 | evals    126/300 | best 0.919326 (trial 122) | gen best 0.919326 mean 0.900067 std 0.0231047 | ...
+gen   11 | evals    125/300 | best 0.919326 (trial 122) | gen best 0.919326 mean 0.900067 std 0.0231047 | ...
 gen   29 | evals    300/300 | best 0.92 (trial 288) | gen best 0.919993 mean 0.913963 std 0.00801146 | ...
 [meta-hpo] run 1 finished (budget) after 300 calls in 00:00:00 | best 0.92 at trial 288 | {...}
 ```
@@ -243,6 +243,10 @@ Settings, algorithm details and references: [docs/optimizers.md](https://github.
 
 Optimizers search the unit cube `[0, 1]^d`; the space maps each point to typed parameters.
 
+Bounds may be Python or numpy numbers. A choice can be any object (a string, a number, a function, a numpy
+array); your function receives the choice itself, not a copy, so it must not change a mutable choice in
+place.
+
 ## Behaviour
 
 - A score of NaN or infinity counts as the worst possible value for the chosen direction.
@@ -257,6 +261,19 @@ deterministic, and different scores for the same parameters change the rest of t
 Optimizers do not hand out a parameter set twice: a repeat is drawn again, up to `max_tries` times (100
 by default), before it may come back. So candidates follow a different distribution than in the textbook
 algorithms, most visibly in small discrete spaces.
+
+## Warnings
+
+meta-hpo warns with `mh.MetaHpoWarning`, a `UserWarning`, once per condition and call:
+
+- `seed=` given together with an optimizer object, which ignores it, before the search starts.
+- Runs that ended without a finite score (only NaN or infinite scores), when the call has finished.
+- Plots that could not be drawn (`notes` in `summary.json` lists them), when the call has finished.
+
+The warnings after the search come once every result file is written, so turning them into errors costs no
+result. `warnings.filterwarnings("ignore", category=mh.MetaHpoWarning)` silences them;
+`warnings.simplefilter("error", mh.MetaHpoWarning)` or `python -W error::metahpo.MetaHpoWarning` turns them
+into errors. Deprecations will use `FutureWarning`.
 
 ## Contributing
 

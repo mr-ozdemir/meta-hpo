@@ -17,7 +17,8 @@ beyond the leader, and how many attempts a regeneration needed.
 Input space: Every space, configuration, seed and ask/tell sequence, which is unbounded.
 Subset: One- to four-dimensional spaces of every parameter kind; defaults and the boundary values of every
 constructor check; scripted constant, improving, worse and NaN scores that force each branch of the move and
-refinement rules; seeded runs on the sphere and Rastrigin functions.
+refinement rules; seeded runs on the sphere and Rastrigin functions; the sphere scaled by 2**-550,
+where the scores are near 1e-166; the generation counter after the last refinement slot.
 """
 
 import math
@@ -26,6 +27,8 @@ import numpy as np
 import pytest
 
 from metahpo import BBPSOOptimizer, Categorical, Float, Int, Space, operators, optimize
+
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
 
 ANY_SEED = 0
 
@@ -123,9 +126,7 @@ def _keys(opt, score, asks):
 def _found_mixed_optimum(seed):
     """True when 300 calls with `seed` end below 0.05 with activation 'gelu'."""
     space = _mixed()
-    study = optimize(
-        _mixed_score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=seed), seed=seed
-    )
+    study = optimize(_mixed_score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=seed))
     return study.best_score < 0.05 and study.best_params["act"] == "gelu"
 
 
@@ -188,13 +189,18 @@ def test_bbpso_optimizer_should_default_the_target_to_one_when_maximising():
         pytest.param({"target": math.inf}, id="target-inf"),
         pytest.param({"max_tries": 0}, id="max-tries-0"),
         pytest.param({"direction": "up"}, id="direction-unknown"),
+        pytest.param({"swarm_size": 8.0}, id="swarm-whole-float"),
+        pytest.param({"swarm_size": "8"}, id="swarm-string"),
+        pytest.param({"max_tries": 2.0}, id="max-tries-whole-float"),
+        pytest.param({"max_tries": True}, id="max-tries-bool"),
     ],
 )
 def test_bbpso_optimizer_should_raise_value_error_when_a_setting_is_invalid(kwargs):
     """Given one invalid constructor argument, when BBPSOOptimizer is built, then ValueError is raised.
 
     Oracle: BBPSO theory parameter table (swarm_size an integer >= 6; crossover in [0, 1]; q_alpha in
-    (0, 1]; q_gamma in [0, 1); target finite; max_tries >= 1) and the Optimizer direction check.
+    (0, 1]; q_gamma in [0, 1); target finite; max_tries >= 1) and the Optimizer direction check; an
+    integer setting is a Python or numpy integer, not a float such as 8.0, a bool or a string.
     """
     space = _box()
 
@@ -520,9 +526,7 @@ def test_bbpso_should_evaluate_each_value_of_a_four_value_space_once_and_stop():
     """
     space = Space({"k": Int(0, 3)})
 
-    study = optimize(
-        lambda p: p["k"], space, max_evals=40, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(lambda p: p["k"], space, max_evals=40, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.n_calls == 4
 
@@ -607,7 +611,7 @@ def test_bbpso_flags_should_stay_between_one_and_five_over_a_long_run():
     space = _box()
     opt = BBPSOOptimizer(space, seed=ANY_SEED)
 
-    optimize(_rastrigin, space, max_evals=600, optimizer=opt, seed=ANY_SEED)
+    optimize(_rastrigin, space, max_evals=600, optimizer=opt)
 
     assert set(opt.flags) <= {1, 2, 3, 4, 5}
     assert bool(np.all((opt.positions >= 0.0) & (opt.positions <= 1.0))) is True
@@ -621,9 +625,7 @@ def test_bbpso_should_reach_the_sphere_minimum_within_300_calls():
     """
     space = _box()
 
-    study = optimize(
-        _sphere, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_sphere, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < 1e-3
 
@@ -636,9 +638,7 @@ def test_bbpso_should_improve_on_its_initial_batch_on_rastrigin():
     """
     space = _box()
 
-    study = optimize(
-        _rastrigin, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_rastrigin, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.best_score < min(t.score for t in study.trials[:SWARM])
 
@@ -663,16 +663,13 @@ def test_bbpso_should_evaluate_the_same_points_when_maximising_minus_f_with_targ
     """
     space = _box()
 
-    low = optimize(
-        _sphere, space, max_evals=200, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    low = optimize(_sphere, space, max_evals=200, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
     high = optimize(
         lambda p: -_sphere(p),
         space,
         direction="max",
         max_evals=200,
         optimizer=BBPSOOptimizer(space, direction="max", target=0.0, seed=ANY_SEED),
-        seed=ANY_SEED,
     )
 
     assert [tuple(t.x) for t in low.trials] == [tuple(t.x) for t in high.trials]
@@ -927,9 +924,7 @@ def test_bbpso_should_use_the_whole_budget_when_no_particle_is_ever_better(score
     """
     space = _unit()
 
-    study = optimize(
-        score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(score, space, max_evals=300, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     assert study.n_calls == 300
 
@@ -968,3 +963,63 @@ def test_bbpso_unique_best_particle_should_use_g_as_its_neighbour():
 
     assert np.array_equal(move[0].x, init[0].x)
     assert np.array_equal(opt.guide, init[0].x)
+
+
+def _shifted_sphere(params):
+    """The sphere plus 0.3, so no score is 0."""
+    return _sphere(params) + 0.3
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_bbpso_should_search_scores_near_1e_minus_166_exactly_as_the_same_scores_at_ordinary_scale(seed):
+    """Given the shifted sphere on a three-dimensional box, once as it is and once multiplied by 2**-550
+    (scores near 1e-166), when optimize() runs BBPSO with the same seed and 300 evaluations, then both runs
+    hand out the same positions, cached flags and phases.
+
+    Oracle: bbpso module docstring (comparisons are relative only and the root methods work on h = s (f -
+    target), so the search does not depend on the scale of the objective; target 0 for 'min') and the
+    iqi_point docstring (no score scale divides by zero). Scaling by a power of 2 is exact. Decisive: the
+    IQI step divided by a product of score differences that underflowed to 0 and raised ZeroDivisionError.
+    """
+    space, other = _box(3), _box(3)
+    scaled = optimize(
+        lambda p: _shifted_sphere(p) * 2.0**-550,
+        space,
+        max_evals=300,
+        optimizer=BBPSOOptimizer(space, seed=seed),
+    )
+
+    plain = optimize(_shifted_sphere, other, max_evals=300, optimizer=BBPSOOptimizer(other, seed=seed))
+
+    identity = [[(t.x.tolist(), t.cached, t.meta) for t in s.trials] for s in (scaled, plain)]
+    assert identity[0] == identity[1]
+
+
+def _through_the_first_iteration(opt):
+    """Asks and tells `opt` the sphere until its generation counter moves; returns the trials told."""
+    told = 0
+    while opt.generation == 0:
+        batch = opt.ask()
+        opt.tell(batch, [_sphere(c.params) for c in batch])
+        told += len(batch)
+    return told
+
+
+def test_bbpso_generation_should_count_an_iteration_as_complete_once_its_last_refinement_slot_is_finished():
+    """Given a BBPSO swarm of 6 asked and told the sphere until its generation counter moves, when iteration,
+    generation and the next candidate are read, then the iteration counts as complete (generation 1) while
+    `iteration` stays 0 until the next ask, whose candidate is the first move of iteration 1, and more than
+    the 12 trials of the initial batch and the moves were told.
+
+    Oracle: BBPSOOptimizer.generation docstring (an iteration is complete as soon as its last refinement slot
+    is finished; `iteration` moves on at the next ask). Decisive: generation stayed 0 until the next ask, so
+    optimize() saw the end of the iteration only after the first move of the next one.
+    """
+    opt = BBPSOOptimizer(_box(2), seed=ANY_SEED, swarm_size=6)
+    told = _through_the_first_iteration(opt)
+    reading = (opt.iteration, opt.generation)
+
+    (cand,) = opt.ask()
+
+    assert (*reading, cand.meta["phase"], cand.meta["generation"]) == (0, 1, "move", 1)
+    assert told > 12

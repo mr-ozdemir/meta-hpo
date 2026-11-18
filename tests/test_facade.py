@@ -27,9 +27,15 @@ Unspecified, not asserted: which check fires first when max_evals < 1 is combine
 
 Input space: Every objective, space, direction, budget, optimizer, seed and cache flag of optimize(), which is
 unbounded.
-Subset: Tiny spaces, small budgets and one invalid argument or raising objective per error path.
+Subset: Tiny spaces, small budgets and one invalid argument or raising objective per error path; floats
+(also whole ones), booleans, strings and negative values for every integer argument, and numpy integers
+for every integer argument; False and True for verbose; seeds as a numpy array, a range, a tuple, a
+generator and a 0-d numpy array.
 """
 
+import json
+
+import numpy as np
 import pytest
 
 from metahpo import ABCOptimizer, Categorical, Float, Space, optimize
@@ -266,3 +272,130 @@ def test_optimize_should_propagate_objective_exception_unchanged_when_objective_
 
     assert excinfo.type is ObjectiveFailed
     assert excinfo.value is failure
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "name"),
+    [
+        pytest.param({"max_evals": 20.0}, "max_evals", id="max-evals-whole-float"),
+        pytest.param({"max_evals": True}, "max_evals", id="max-evals-bool"),
+        pytest.param({"max_evals": "5"}, "max_evals", id="max-evals-string"),
+        pytest.param({"runs": 2.0}, "runs", id="runs-whole-float"),
+        pytest.param({"runs": True}, "runs", id="runs-bool"),
+        pytest.param({"log_every": 0}, "log_every", id="log-every-0-without-console"),
+        pytest.param({"log_every": 2.0}, "log_every", id="log-every-whole-float"),
+        pytest.param({"verbose": 1.5}, "verbose", id="verbose-fraction"),
+        pytest.param({"verbose": "2"}, "verbose", id="verbose-string"),
+        pytest.param({"verbose": -1}, "verbose", id="verbose-negative"),
+        pytest.param({"seed": 2.0}, "seed", id="seed-whole-float"),
+        pytest.param({"seed": "12"}, "seed", id="seed-string"),
+        pytest.param({"seed": True}, "seed", id="seed-bool"),
+        pytest.param({"seed": -1}, "seed", id="seed-negative"),
+        pytest.param({"seed": [1, -1], "runs": 2}, "seed", id="seed-of-the-second-run-negative"),
+        pytest.param({"seed": [1, 2.0], "runs": 2}, "seed", id="seed-of-the-second-run-float"),
+        pytest.param({"seed": np.array([[1, 2]]), "runs": 1}, "seed", id="seed-2-d-array"),
+        pytest.param({"seed": 1.5 + 0j}, "seed", id="seed-not-iterable"),
+    ],
+)
+def test_optimize_should_reject_an_integer_argument_that_is_no_integer_before_any_call_or_folder(
+    tmp_path, kwargs, name
+):
+    """Given one integer argument of optimize() that is a float (also a whole one), a bool, a string or
+    below its smallest value, when optimize() is called with an output folder, then ValueError names the
+    argument, the objective is never called and no results folder is written.
+
+    Oracle: the library's error convention (bad input raises ValueError before any training and before
+    any folder is written) and the existing messages ('runs must be an integer of at least 1'). Decisive:
+    max_evals=20.0 failed only inside the loop after the folder was written, log_every=0 passed with
+    verbose=0, and a negative seed of the second run failed after the first run.
+    """
+    calls = []
+    space = Space({"x": Float(0.0, 1.0)})
+    arguments = {"max_evals": 5, "seed": ANY_SEED, "verbose": 0, **kwargs}
+    seed = arguments.pop("seed")
+
+    with pytest.raises(ValueError, match=name):
+        optimize(_spy_objective(calls), space, seed=seed, output=tmp_path, **arguments)
+
+    assert (calls, list(tmp_path.iterdir())) == ([], [])
+
+
+def test_optimize_should_accept_numpy_integers_for_its_integer_arguments_and_record_python_ints(tmp_path):
+    """Given max_evals, runs, log_every, verbose and seed as numpy integers, when optimize() runs with an
+    output folder, then it makes two runs of 6 calls each and config.json records max_evals, runs and the
+    seeds as plain JSON integers.
+
+    Oracle: the stage brief and the optimize docstring (max_evals counts calls; runs repeats the search;
+    seed is an integer per run); numpy integers are integers.
+    """
+    space = Space({"x": Float(0.0, 1.0)})
+
+    studies = optimize(
+        dummy_objective,
+        space,
+        max_evals=np.int64(6),
+        runs=np.int32(2),
+        log_every=np.int16(1),
+        verbose=np.int8(0),
+        seed=np.uint32(3),
+        output=tmp_path,
+    )
+
+    config = json.loads(next(tmp_path.iterdir()).joinpath("config.json").read_text(encoding="utf-8"))
+    assert [s.n_calls for s in studies] == [6, 6]
+    assert (config["max_evals"], config["runs"], config["seeds"]) == (6, 2, [3, 3])
+    assert [type(v) for v in (config["max_evals"], config["runs"], *config["seeds"])] == [int] * 4
+
+
+@pytest.mark.parametrize(
+    ("verbose", "printed"), [pytest.param(False, 0, id="false"), pytest.param(True, 3, id="true")]
+)
+def test_optimize_should_take_false_and_true_for_verbose_as_levels_0_and_1(
+    monkeypatch, capsys, verbose, printed
+):
+    """Given verbose=False and verbose=True without METAHPO_VERBOSE, when optimize() runs one generation,
+    then False prints nothing and True prints the header, the generation line and the end line of level 1.
+
+    Oracle: optimize docstring (verbose takes False and True as 0 and 1; verbose=1 prints one line per
+    generation) and 0.7.x, which took them that way. Decisive: rejecting a bool verbose broke a common habit.
+    """
+    monkeypatch.delenv("METAHPO_VERBOSE", raising=False)
+    space = Space({"x": Float(0.0, 1.0)})
+
+    optimize(dummy_objective, space, max_evals=5, seed=ANY_SEED, verbose=verbose, output=None)
+
+    assert len(capsys.readouterr().out.splitlines()) == printed
+
+
+def _seed_generator():
+    return (seed for seed in (1, 2))
+
+
+@pytest.mark.parametrize(
+    ("seed", "expected"),
+    [
+        pytest.param(lambda: np.array([1, 2]), [1, 2], id="numpy-array"),
+        pytest.param(lambda: range(1, 3), [1, 2], id="range"),
+        pytest.param(lambda: (1, np.int64(2)), [1, 2], id="tuple"),
+        pytest.param(_seed_generator, [1, 2], id="generator"),
+        pytest.param(lambda: np.array(7), [7, 7], id="zero-d-array"),
+    ],
+)
+def test_optimize_should_accept_any_iterable_of_seeds_but_a_string_and_record_python_ints(
+    tmp_path, seed, expected
+):
+    """Given seed as a 1-D numpy array, a range, a tuple, a generator or a 0-d numpy array, with runs=2,
+    when optimize() runs with an output folder, then both runs are made and config.json records the seeds
+    as plain JSON integers.
+
+    Oracle: optimize docstring (seed is None, one integer or one seed per run; any iterable of seeds but a
+    string) and 0.7.x, which took any iterable through list(seed). Decisive: a numpy array of seeds was
+    refused once the seeds were checked.
+    """
+    space = Space({"x": Float(0.0, 1.0)})
+
+    studies = optimize(dummy_objective, space, max_evals=4, runs=2, seed=seed(), verbose=0, output=tmp_path)
+
+    config = json.loads(next(tmp_path.iterdir()).joinpath("config.json").read_text(encoding="utf-8"))
+    assert [s.n_calls for s in studies] == [4, 4]
+    assert (config["seeds"], [type(s) for s in config["seeds"]]) == (expected, [int, int])

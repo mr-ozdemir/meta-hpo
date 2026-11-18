@@ -8,7 +8,8 @@ for ITP). Expected values are computed by hand; distribution checks use a seeded
 Input space: Float64 arrays and numbers of any size, which is unbounded.
 Subset: Literal vectors with exact results, the boundary cases named in each docstring (d = 1, constant
 vectors, equal h values, z on the walls, NaN and inf coordinates), 100,000 seeded draws for the two
-samplers, and the bracketed root of cos t = t for the ITP step.
+samplers, and the bracketed root of cos t = t for the ITP step; IQI inputs scaled by 2**-550, 2**-1000
+and 2**1000, where products of h differences underflow or products of h values overflow.
 """
 
 import math
@@ -319,3 +320,43 @@ def test_move_levy_difference_should_keep_x_where_the_crossover_does_not_pick_th
     )
 
     assert moved.tolist() == [0.625, 0.1]
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [
+        pytest.param(2.0**-550, id="h-near-1e-165"),
+        pytest.param(2.0**-1000, id="h-near-1e-301"),
+        pytest.param(2.0**1000, id="h-near-1e301"),
+    ],
+)
+def test_iqi_point_should_give_the_unscaled_point_when_every_h_is_scaled_to_an_extreme(scale):
+    """Given the IQI inputs of the quadratic test with every h multiplied by 2**-550, 2**-1000 or 2**1000,
+    where (h_a - h_b) * (h_a - h_c) underflows to 0 or h_b * h_c overflows, when the IQI point is computed,
+    then it is bit for bit the point of the unscaled h values.
+
+    Oracle: iqi_point docstring (the weights do not change when the h values are scaled by one factor, and
+    they are computed again from the h values divided by the largest |h| when a product underflows or a
+    weight is not finite). Scaling by a power of 2 is exact, so the point must be identical. Decisive: the
+    product of two differences underflowed to 0 and the division raised ZeroDivisionError.
+    """
+    a, b, c = np.array([0.0625, 0.2]), np.array([0.5625, 0.4]), np.array([1.0, 0.9])
+
+    point = operators.iqi_point(a, b, c, -0.5 * scale, 0.5 * scale, 1.0 * scale)
+
+    np.testing.assert_array_equal(point, operators.iqi_point(a, b, c, -0.5, 0.5, 1.0))
+
+
+def test_iqi_point_should_still_refuse_two_equal_h_values():
+    """Given h_a == h_b, when the IQI point is computed, then ZeroDivisionError says it needs three different
+    h values, as the division by zero did before.
+
+    Oracle: iqi_point docstring (equation 11 divides by the differences of the h values); the bbpso module
+    never calls it with two equal h values (it redraws partners first).
+    """
+    a, b, c = np.array([0.1]), np.array([0.5]), np.array([0.9])
+
+    with pytest.raises(ZeroDivisionError, match="three different h values") as excinfo:
+        operators.iqi_point(a, b, c, 1.0, 1.0, 2.0)
+
+    assert excinfo.type is ZeroDivisionError

@@ -10,7 +10,10 @@ ship with the library and are switched on by default:
   Trials, the best result, generations and population snapshots are appended while the search runs and
   flushed after every write, so the best result is on disk even if the process is killed. Summaries,
   analyses and plots are written when the run ends, also after KeyboardInterrupt or an error in the
-  objective.
+  objective or in a callback. The folder becomes an absolute path when the search starts, so an objective
+  that changes the working directory does not move it; searches that start in the same second get the
+  suffixes _2, _3, ... JSON files that another process holds open are retried for about a second (see
+  _write_json); best.json is skipped while the run goes on if it stays held.
 
 The environment variables METAHPO_OUTPUT and METAHPO_VERBOSE replace the defaults of `output` and `verbose`
 (METAHPO_OUTPUT=none switches the folder off), which is useful in test suites and CI.
@@ -34,7 +37,8 @@ Large searches (max_evals >= COMPRESS_FROM) write trials.csv and population.csv 
 
 What a resume needs (see metahpo.resume). config.json records the space, the direction, the budget, the
 runs and their seeds, the cache flag and the optimizer with every constructor setting
-(Optimizer.settings()); `stop` lists the stopping rules of the runs in order, each with its class name and
+(Optimizer.settings()) and the module of its class, so resume() builds again only the library's own
+optimizers; `stop` lists the stopping rules of the runs in order, each with its class name and
 `settings` (Stopper.settings()), and is empty for a search without rules (a folder written by an older
 version has no `stop`, which counts as no rules); each rule also records the `module` of its class, so
 resume() builds again only the library's own rules. A Categorical whose choices are all strings, integers,
@@ -84,14 +88,37 @@ from typing import IO, Any, cast
 
 import numpy as np
 
-from metahpo.optimizers.base import Optimizer
-from metahpo.space import Categorical, Float, Int, Space, _choice_text, _without_addresses
+from metahpo.optimizers.base import Optimizer, _integer
+from metahpo.space import Categorical, Float, Int, Space, _choice_index, _choice_text, _without_addresses
 from metahpo.study import Study, Trial
+
+
+class MetaHpoWarning(UserWarning):
+    """The category of every warning meta-hpo emits: something about a search the user should know that does
+    not stop it. optimize() and resume() emit each condition once per call with warnings.warn, pointing at
+    the line that called them: a condition the arguments show after every argument check has passed and
+    before the search starts, when nothing is written and the objective was not called (a seed given
+    together with an optimizer object, which ignores it), and a condition that depends on the outcome when
+    the call has finished and every result file was written (a run that ended without a finite score, then
+    plots that could not be drawn). So a warning turned into an exception (`-W error`,
+    warnings.simplefilter('error')) costs no result; of two outcome warnings the first is the one raised.
+    The standard filters apply: warnings.filterwarnings('ignore', category=MetaHpoWarning) silences them.
+    Deprecations will use FutureWarning, as Optuna and scikit-learn do."""
+
 
 DEFAULT_OUTPUT = "hpo_results"
 COMPRESS_FROM = 50_000
 FSYNC_EVERY = 1.0
 """Seconds that pass at least between two syncs of trials.jsonl to disk."""
+REPLACE_TRIES = 20
+"""Attempts to replace a JSON file that another process holds open (Windows refuses with PermissionError)."""
+REPLACE_WAIT = 0.05
+"""Seconds between two attempts, so a JSON file is given up after about one second."""
+PROGRESS_TRIES = 3
+"""Attempts for best.json while the run goes on: it is written again at the next update, so the search
+waits for it at most about PROGRESS_WAIT * (PROGRESS_TRIES - 1) seconds."""
+PROGRESS_WAIT = 0.01
+"""Seconds between two attempts to replace best.json while the run goes on."""
 
 
 def _paused_at(pauses: Sequence[tuple[int, float]], number: int) -> float:
@@ -215,6 +242,16 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
+def _wait(seconds: float) -> None:
+    """Sleeps between two attempts to replace a JSON file."""
+    time.sleep(seconds)
+
+
+def _os_replace(source: Path, target: Path) -> None:
+    """os.replace, the step of an atomic write that another process holding the target can refuse."""
+    os.replace(source, target)
+
+
 def _clock(seconds: float) -> str:
     seconds = max(0, int(round(seconds)))
     return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
@@ -236,33 +273,55 @@ def _finite(values: Sequence[float]) -> np.ndarray[Any, np.dtype[np.float64]]:
 
 
 def _stats(values: Sequence[float], direction: str) -> dict[str, float]:
-    """best, mean, median, std and worst of the finite values (NaN when there is none)."""
+    """best, mean, median, std and worst of the finite values (NaN when there is none). A mean or std that
+    does not fit a float (scores near 1e308) is inf or NaN, without a numpy warning."""
     arr = _finite(values)
     if arr.size == 0:
         return {k: math.nan for k in ("best", "mean", "median", "std", "worst")}
     best, worst = (np.min(arr), np.max(arr)) if direction == "min" else (np.max(arr), np.min(arr))
-    return {
-        "best": float(best),
-        "mean": float(arr.mean()),
-        "median": float(np.median(arr)),
-        "std": float(arr.std()),
-        "worst": float(worst),
-    }
+    with np.errstate(over="ignore", invalid="ignore"):
+        return {
+            "best": float(best),
+            "mean": float(arr.mean()),
+            "median": float(np.median(arr)),
+            "std": float(arr.std()),
+            "worst": float(worst),
+        }
+
+
+def _encodable(text: str, stream: Any) -> str:
+    """`text` with every character that the encoding of `stream` cannot represent written as a backslash
+    escape, as Python's backslashreplace error handler writes it, so a console of a narrow encoding prints
+    the line instead of failing on it. Whenever the encoding cannot be used for that, the text is given
+    back as it is: a stream without an encoding (StringIO), with encoding None or a value that is not a
+    non-empty str, an encoding attribute that raises, or a name that is not a text codec Python knows. The
+    stream itself and its error handler are left unchanged."""
+    try:
+        encoding = getattr(stream, "encoding", None)
+        if not isinstance(encoding, str) or not encoding:
+            return text
+        try:
+            text.encode(encoding)
+        except UnicodeEncodeError:
+            return text.encode(encoding, "backslashreplace").decode(encoding)
+        return text
+    except Exception:
+        return text
 
 
 class ConsoleReporter(Callback):
     """Epoch-style progress on the console: one line per generation, or per trial with verbose=2.
 
     When the console cannot be written (a closed stream or a broken pipe), it stops printing and the search
-    and the other listeners go on. The trials a resume restores print no lines; one 'resumed' line with
-    their number, their calls and their best score comes before the lines of the trials evaluated anew.
+    and the other listeners go on. A character the stream's encoding cannot represent (a parameter name, a
+    choice or a value) is printed as a backslash escape, and the line is still printed. The trials a resume
+    restores print no lines; one 'resumed' line with their number, their calls and their best score comes
+    before the lines of the trials evaluated anew.
     """
 
     def __init__(self, verbose: int = 1, log_every: int = 1, stream: IO[str] | None = None) -> None:
-        if log_every < 1:
-            raise ValueError("log_every must be at least 1")
         self.verbose = verbose
-        self.log_every = log_every
+        self.log_every = _integer("log_every", log_every, 1)
         self.stream = stream
         self._broken = False
         self._run_bests: list[tuple[int, float]] = []
@@ -271,8 +330,9 @@ class ConsoleReporter(Callback):
     def _print(self, text: str) -> None:
         if self._broken:
             return
+        stream = self.stream if self.stream is not None else sys.stdout
         try:
-            print(text, file=self.stream if self.stream is not None else sys.stdout, flush=True)
+            print(_encodable(text, stream), file=stream, flush=True)
         except (OSError, ValueError):
             self._broken = True
 
@@ -455,9 +515,14 @@ def _rebuild_space(described: list[dict[str, Any]]) -> Space | None:
 
 
 def _jsonable(value: Any) -> Any:
-    if isinstance(value, (np.integer,)):
-        return int(value)
-    if isinstance(value, (np.floating, float)):
+    """A value as JSON holds it: numpy scalars as the Python values they hold, numpy arrays as lists, a
+    non-finite float as null, dicts, lists and tuples item by item, and anything else as its text without
+    memory addresses."""
+    if isinstance(value, np.generic):
+        return _jsonable(value.item())
+    if isinstance(value, np.ndarray):
+        return _jsonable(value.tolist())
+    if isinstance(value, float):
         return None if not math.isfinite(float(value)) else float(value)
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
@@ -468,11 +533,23 @@ def _jsonable(value: Any) -> Any:
     return _choice_text(value)
 
 
-def _write_json(path: Path, data: Any, sync: bool = False) -> None:
+def _write_json(
+    path: Path,
+    data: Any,
+    sync: bool = False,
+    required: bool = True,
+    errors: list[BaseException] | None = None,
+) -> None:
     """Writes JSON atomically: a temporary file replaced in one step, so a reader never sees half a file.
 
     With `sync` the temporary file is synced to disk (os.fsync) before it replaces the file, so the file
-    survives a power cut; the files that are rewritten often are not synced.
+    survives a power cut; the files that are rewritten often are not synced. While another process holds
+    the file open, Windows refuses the replace with PermissionError: it is tried REPLACE_TRIES times,
+    REPLACE_WAIT seconds apart (PROGRESS_TRIES times, PROGRESS_WAIT seconds apart, for a file that is not
+    `required`). When it still fails, the temporary file is removed; a file that is not `required`
+    (best.json while the run goes on, written again at the next update and when the run ends) is left as it
+    was, and the error of any other file is raised, or appended to `errors` when a list is given so that the
+    caller writes its other files first.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
@@ -480,7 +557,21 @@ def _write_json(path: Path, data: Any, sync: bool = False) -> None:
         if sync:
             fh.flush()
             os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    tries, pause = (REPLACE_TRIES, REPLACE_WAIT) if required else (PROGRESS_TRIES, PROGRESS_WAIT)
+    for attempt in range(1, tries + 1):
+        try:
+            _os_replace(tmp, path)
+            return
+        except PermissionError as exc:
+            refused = exc
+            if attempt < tries:
+                _wait(pause)
+    tmp.unlink(missing_ok=True)
+    if not required:
+        return
+    if errors is None:
+        raise refused
+    errors.append(refused)
 
 
 def _read_state(path: Path) -> dict[str, Any] | None:
@@ -518,8 +609,13 @@ class _CsvFile:
 
 
 def _shown(value: Any) -> Any:
-    """A value as the CSV files and report.md show it: strings and numbers as they are, anything else as its
-    text without memory addresses (see metahpo.space._without_addresses)."""
+    """A value as the CSV files and report.md show it: strings and numbers as they are, numpy scalars as the
+    Python values they hold, numpy arrays as lists, anything else as its text without memory addresses (see
+    metahpo.space._without_addresses)."""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, np.ndarray):
+        value = value.tolist()
     return value if isinstance(value, (str, int, float)) else _without_addresses(str(value))
 
 
@@ -678,7 +774,10 @@ def _config_problem(config: Any) -> str:
         "max_evals": lambda v: _whole(v, 1),
         "seeds": lambda v: isinstance(v, list) and len(v) <= config["runs"],
         "optimizer": lambda v: (
-            isinstance(v, dict) and isinstance(v.get("name"), str) and isinstance(v.get("settings"), dict)
+            isinstance(v, dict)
+            and isinstance(v.get("name"), str)
+            and isinstance(v.get("settings"), dict)
+            and isinstance(v.get("module", ""), str)
         ),
         "space": lambda v: isinstance(v, list) and all(_parameter_record(p) for p in v),
         "cache": lambda v: isinstance(v, bool),
@@ -717,6 +816,8 @@ class ResultWriter(Callback):
         self._resumes: list[dict[str, Any]] = []
         self._synced = 0.0
         self._existing = False
+        self._run_failures: list[str] = []
+        self._comparison_failures: list[str] = []
 
     @classmethod
     def _continuing(cls, folder: Path, config: dict[str, Any], entry: dict[str, Any]) -> ResultWriter:
@@ -730,18 +831,30 @@ class ResultWriter(Callback):
         return writer
 
     def _make_folder(self, state: RunState) -> Path:
+        """Creates the time-stamped folder of a search below `root`, which becomes an absolute path here, when
+        the search starts, so an objective that changes the working directory later does not move it. The
+        name is claimed with one mkdir, which fails when it exists; a taken name gets the suffix _2, _3, ...,
+        so searches that start in the same second, in threads or processes, each get their own folder."""
+        self.root = self.root.absolute()
         stamp = dt.datetime.fromtimestamp(state.started).strftime("%Y-%m-%d_%H-%M-%S")
         base = self.root / f"{stamp}_{state.optimizer_name.replace('Optimizer', '').lower()}"
-        folder, n = base, 1
-        while folder.exists():
-            n += 1
-            folder = base.with_name(f"{base.name}_{n}")
-        folder.mkdir(parents=True)
-        return folder
+        self.root.mkdir(parents=True, exist_ok=True)
+        n = 1
+        while True:
+            folder = base if n == 1 else base.with_name(f"{base.name}_{n}")
+            try:
+                folder.mkdir()
+            except FileExistsError:
+                n += 1
+                continue
+            return folder
 
     def on_run_start(self, state: RunState) -> None:
         if self.folder is None:
             self.folder = self._make_folder(state)
+        if state.run == 1:
+            self._run_failures = []
+            self._comparison_failures = []
         self._files = {}
         self._jsonl = None
         self._pop_header = None
@@ -826,7 +939,11 @@ class ResultWriter(Callback):
             "python": sys.version.split()[0],
             "numpy": np.__version__,
             "platform": platform.platform(),
-            "optimizer": {"name": state.optimizer_name, "settings": state.optimizer.settings()},
+            "optimizer": {
+                "name": state.optimizer_name,
+                "module": type(state.optimizer).__module__,
+                "settings": state.optimizer.settings(),
+            },
             "direction": state.direction,
             "max_evals": state.max_evals,
             "runs": state.runs,
@@ -840,17 +957,21 @@ class ResultWriter(Callback):
             "resumes": self._resumes,
         }
         config.update(self._kept)
-        _write_json(self.folder / "config.json", config, sync=True)
-        _write_json(
-            self.run_dir / "state.json",
-            {
-                "started": state.started,
-                "generator": state.optimizer.rng.bit_generator.state,
-                "pauses": state.pauses,
-            },
-            sync=True,
-        )
-        _write_json(self.run_dir / "best.json", {"status": "running", "best": None})
+        try:
+            _write_json(self.folder / "config.json", config, sync=True)
+            _write_json(
+                self.run_dir / "state.json",
+                {
+                    "started": state.started,
+                    "generator": state.optimizer.rng.bit_generator.state,
+                    "pauses": state.pauses,
+                },
+                sync=True,
+            )
+        except BaseException:
+            self.close()
+            raise
+        _write_json(self.run_dir / "best.json", {"status": "running", "best": None}, required=False)
 
     def on_trial(self, state: RunState, trial: Trial, new_best: bool) -> None:
         assert self.run_dir is not None and self._jsonl is not None
@@ -861,7 +982,7 @@ class ResultWriter(Callback):
             meta.pop("phase", ""),
             meta.pop("individual", ""),
         )
-        detail = json.dumps(meta) if meta else ""
+        detail = json.dumps(_jsonable(meta)) if meta else ""
         end = trial.start_time + trial.duration if math.isfinite(trial.start_time) else math.nan
         elapsed = state.elapsed(end, trial.number) if math.isfinite(end) else state.elapsed()
         best_score = state.best.score if state.best is not None else math.nan
@@ -918,7 +1039,7 @@ class ResultWriter(Callback):
                     *params,
                 ]
             )
-            _write_json(self.run_dir / "best.json", {"status": "running", "best": entry})
+            _write_json(self.run_dir / "best.json", {"status": "running", "best": entry}, required=False)
 
     def _log(
         self,
@@ -1045,14 +1166,19 @@ class ResultWriter(Callback):
             self._jsonl.close()
 
     def on_run_end(self, state: RunState) -> None:
+        """Closes the files of the run and writes best.json, the parameter analysis, the plots, summary.json
+        and report.md. A JSON file that cannot be replaced (see _write_json) does not stop the others; its
+        error is raised once every file was written."""
         assert self.folder is not None and self.run_dir is not None
         self.close()
         study = state.study
         ended = state.now()
         summary = _run_summary(state, ended)
+        errors: list[BaseException] = []
         _write_json(
             self.run_dir / "best.json",
             {"status": "finished", "stop_reason": study.stop_reason, "best": summary["best"]},
+            errors=errors,
         )
         _write_parameter_analysis(state, self.run_dir)
         plot_files: list[str] = []
@@ -1063,19 +1189,21 @@ class ResultWriter(Callback):
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     plot_files = plots.make_plots(
-                        state, self.run_dir, self._generation_rows, self._best_history
+                        state, self.run_dir, self._generation_rows, self._best_history, self._notes
                     )
             except Exception as exc:
                 self._notes.append(f"Plots failed: {type(exc).__name__}: {exc}")
+        self._run_failures.extend(self._notes)
         summary["plots"] = plot_files
         summary["notes"] = self._notes
         summary["folder"] = str(self.folder)
         if state.runs == 1:
-            _write_json(self.folder / "summary.json", summary)
+            _write_json(self.folder / "summary.json", summary, errors=errors)
             _write_report(self.folder, self.run_dir, state, summary, self._generation_rows)
+            _raise_first(errors)
             return
         summary["run"] = state.run
-        _write_json(self.run_dir / "summary.json", summary)
+        _write_json(self.run_dir / "summary.json", summary, errors=errors)
         score = summary["best"]["score"] if summary["best"] is not None else math.nan
         self._runs.append(
             {
@@ -1086,9 +1214,10 @@ class ResultWriter(Callback):
                 "score": score,
             }
         )
-        self._write_runs(state)
+        self._write_runs(state, errors)
+        _raise_first(errors)
 
-    def _write_runs(self, state: RunState) -> None:
+    def _write_runs(self, state: RunState, errors: list[BaseException]) -> None:
         """summary.json, report.md and the run comparison plots of all runs so far."""
         assert self.folder is not None
         entries = [(r["summary"]["run"], r["score"]) for r in self._runs]
@@ -1102,9 +1231,10 @@ class ResultWriter(Callback):
 
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    run_plots = plots.make_run_plots(self._runs, self.folder, state.direction)
+                    run_plots = plots.make_run_plots(self._runs, self.folder, state.direction, notes)
             except Exception as exc:
                 notes.append(f"Run plots failed: {type(exc).__name__}: {exc}")
+        self._comparison_failures = notes
         runs = [
             {
                 "run": r["summary"]["run"],
@@ -1125,8 +1255,20 @@ class ResultWriter(Callback):
             "run_plots": run_plots,
             "notes": [*shown["summary"]["notes"], *notes],
         }
-        _write_json(self.folder / "summary.json", summary)
+        _write_json(self.folder / "summary.json", summary, errors=errors)
         _write_report(self.folder, shown["run_dir"], state, summary, shown["generations"])
+
+    def _failed_plots(self) -> list[str]:
+        """The notes of every plot that could not be drawn since the first run of the current search started:
+        those of each run, then those of the last drawing of the run comparison plots, which is the one in
+        the folder. optimize() and resume() read them for their warning when the call has finished."""
+        return [*self._run_failures, *self._comparison_failures]
+
+
+def _raise_first(errors: list[BaseException]) -> None:
+    """Raises the first of the errors collected while the end-of-run files were written, if any."""
+    if errors:
+        raise errors[0]
 
 
 def _version() -> str:
@@ -1185,13 +1327,19 @@ def _rank(values: np.ndarray[Any, np.dtype[np.float64]]) -> np.ndarray[Any, np.d
 
 
 def _corr(a: np.ndarray[Any, np.dtype[np.float64]], b: np.ndarray[Any, np.dtype[np.float64]]) -> float:
-    if len(a) < 3 or np.std(a) == 0 or np.std(b) == 0:
-        return math.nan
-    return float(np.corrcoef(a, b)[0, 1])
+    """Pearson correlation of a and b; NaN for fewer than three values, a constant one, or values whose
+    variance does not fit a float, without a numpy warning."""
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        if len(a) < 3 or np.std(a) == 0 or np.std(b) == 0:
+            return math.nan
+        return float(np.corrcoef(a, b)[0, 1])
 
 
 def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
-    """parameters.csv (one row per parameter) and categories.csv (one row per category of a Categorical)."""
+    """parameters.csv (one row per parameter) and categories.csv (one row per category of a Categorical).
+
+    The choice of a trial is found from its x (_choice_index), never by comparing values, so any object can
+    be a choice and choices that compare equal across types are counted apart."""
     real = [t for t in state.study.trials if not t.cached and not t.failed]
     scores = np.array([t.score for t in real], dtype=np.float64)
     best = state.best
@@ -1217,10 +1365,11 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
         run_dir / "categories.csv",
         ["parameter", "choice", "trials", "mean_score", "best_score", "worst_score"],
     )
-    for name, p in zip(state.space.names, state.space.parameters, strict=True):
+    for j, (name, p) in enumerate(zip(state.space.names, state.space.parameters, strict=True)):
         values = [t.params[name] for t in real]
         best_value = best.params[name] if best is not None else ""
         if isinstance(p, Categorical):
+            picked = np.array([_choice_index(p, float(t.x[j])) for t in real], dtype=np.int64)
             params_file.row(
                 [
                     name,
@@ -1229,7 +1378,7 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
                     "",
                     "",
                     best_value,
-                    len({repr(v) for v in values}),
+                    len(set(picked.tolist())),
                     "",
                     "",
                     "",
@@ -1238,8 +1387,8 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
                     "",
                 ]
             )
-            for choice in p.choices:
-                chosen = np.array([s for v, s in zip(values, scores, strict=True) if v == choice])
+            for i, choice in enumerate(p.choices):
+                chosen = scores[picked == i]
                 st = _stats(chosen.tolist(), state.direction)
                 cats_file.row(
                     [name, choice, len(chosen), _cell(st["mean"]), _cell(st["best"]), _cell(st["worst"])]
@@ -1270,6 +1419,15 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
         )
     params_file.close()
     cats_file.close()
+
+
+def _written(run_dir: Path, stem: str) -> str:
+    """The name under which the table `stem` was written in run_dir: <stem>.csv.gz for a large run,
+    <stem>.csv otherwise, or '' when it was not written (population.csv of an optimizer without one)."""
+    for name in (f"{stem}.csv.gz", f"{stem}.csv"):
+        if (run_dir / name).is_file():
+            return name
+    return ""
 
 
 def _write_report(
@@ -1331,7 +1489,10 @@ def _write_report(
         "|---|---|---|---|---|---|---|",
     ]
     step = max(1, len(generations) // 25)
-    for row in generations[::step]:
+    shown = generations[::step]
+    if generations and shown[-1] is not generations[-1]:
+        shown.append(generations[-1])
+    for row in shown:
         lines.append(
             f"| {row['generation']} | {row['calls']} | {_fmt(row['best_so_far'])} | "
             f"{_fmt(row['gen_best'])} | {_fmt(row['gen_mean'])} | {_fmt(row['gen_std'])} | "
@@ -1341,11 +1502,15 @@ def _write_report(
         "",
         "## Files",
         "",
-        f"- `{rel}/trials.csv`: every trial (phase, generation, individual, parameters, unit-cube x, score, "
-        "start and end time, duration)",
+        f"- `{rel}/{_written(run_dir, 'trials')}`: every trial (phase, generation, individual, parameters, "
+        "unit-cube x, score, start and end time, duration)",
         f"- `{rel}/generations.csv`: statistics per generation (scores, population, diversity, parameter "
         "means)",
-        f"- `{rel}/population.csv`: the population at the end of every generation",
+        *(
+            [f"- `{rel}/{_written(run_dir, 'population')}`: the population at the end of every generation"]
+            if _written(run_dir, "population")
+            else []
+        ),
         f"- `{rel}/best_history.csv`, `{rel}/best.json`: every improvement and the best result",
         f"- `{rel}/parameters.csv`, `{rel}/categories.csv`: parameter analysis",
         "- `config.json`, `summary.json`: configuration and summary",

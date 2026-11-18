@@ -55,6 +55,8 @@ import pytest
 
 from metahpo import ABCOptimizer, Categorical, Float, Int, Space, optimize
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 MIN_LEN = 0
 SPECIAL = " -!@#$%^&*()_+=[]{};:\\'\"|,.<>/?`~\t\r\n\x00"
 ALPHABET = string.ascii_lowercase + string.ascii_uppercase + string.digits + SPECIAL
@@ -303,7 +305,8 @@ def _quadratic_seeds(n_cases, max_dim):
 def _run_quadratic(case_seed, max_dim):
     """Target: optimize the freshly built case once; returns the case data, recorded calls and the study."""
     space, objective, calls, direction, optimizer, max_evals, sn = _quadratic_case(case_seed, max_dim)
-    study = optimize(objective, space, direction, max_evals, optimizer=optimizer, seed=int(case_seed[-1]))
+    seed = int(case_seed[-1]) if optimizer is None else None
+    study = optimize(objective, space, direction, max_evals, optimizer=optimizer, seed=seed)
     return space, calls, direction, max_evals, sn, study
 
 
