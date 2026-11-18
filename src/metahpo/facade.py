@@ -247,7 +247,7 @@ def resume(
     """
     verbose = 1 if verbose is None else _verbose(verbose)
     log_every = _integer("log_every", log_every, 1)
-    root = Path(folder)
+    root = Path(folder).absolute()
     config = _read_config(root)
     runs = int(config["runs"])
     direction = cast(Direction, config["direction"])
@@ -394,19 +394,21 @@ def _search(
             state.rules,
             start.cut_first,
         )
-        for listener in listeners:
-            listener.on_run_start(state)
         try:
+            run.start()
             run.loop()
         except KeyboardInterrupt:
             run.abandon("interrupted")
-            run.finish()
+            run.finish(quiet=True)
             break
         except BaseException:
             run.abandon("error")
-            run.finish()
+            run.finish(quiet=True)
             raise
-        run.finish()
+        try:
+            run.finish()
+        except KeyboardInterrupt:
+            break
     return studies
 
 
@@ -815,8 +817,7 @@ class _Run:
         if new_best:
             state.best = trial
         self.generation_trials.append(trial)
-        for listener in self.listeners:
-            listener.on_trial(state, trial, new_best)
+        self._notify("on_trial", trial, new_best)
         self._ask_rules()
 
     def _ask_rules(self) -> None:
@@ -840,9 +841,30 @@ class _Run:
         self.generation = now
 
     def _emit_generation(self, generation: int, trials: list[Trial]) -> None:
-        population = self.opt.population()
+        self._notify("on_generation", generation, trials, self.opt.population())
+
+    def start(self) -> None:
+        """Sends on_run_start to the listeners in order. When one raises, the later ones are not started
+        and only the listeners that started receive the rest of the run's events, on_run_end included."""
+        started: list[Callback] = []
+        try:
+            for listener in self.listeners:
+                listener.on_run_start(self.state)
+                started.append(listener)
+        finally:
+            self.listeners = started
+
+    def _notify(self, event: str, *args: Any) -> None:
+        """Sends an event to every listener in order. A listener that raises does not keep the event from the
+        others; the first exception is raised once all of them received it."""
+        first: BaseException | None = None
         for listener in self.listeners:
-            listener.on_generation(self.state, generation, trials, population)
+            try:
+                getattr(listener, event)(self.state, *args)
+            except BaseException as exc:
+                first = exc if first is None else first
+        if first is not None:
+            raise first
 
     def _withdraw(self, keep: int) -> None:
         """Keeps the first `keep` candidates of the batch and withdraws the rest with cancel()."""
@@ -869,10 +891,21 @@ class _Run:
             pass
         self.batch, self.scores = [], []
 
-    def finish(self) -> None:
-        """Emits the last, possibly unfinished generation and the end of the run."""
+    def finish(self, quiet: bool = False) -> None:
+        """Emits the last, possibly unfinished generation and the end of the run to every listener, also
+        when some of them raise, so the results writer always finishes. The first exception of a listener is
+        raised afterwards, unless `quiet`: after an error or an interrupt the original exception is the one
+        that counts, and a later one must not hide it."""
+        first: BaseException | None = None
         if self.generation_trials:
-            self._emit_generation(self.generation, self.generation_trials)
-            self.generation_trials = []
-        for listener in self.listeners:
-            listener.on_run_end(self.state)
+            trials, self.generation_trials = self.generation_trials, []
+            try:
+                self._emit_generation(self.generation, trials)
+            except BaseException as exc:
+                first = exc
+        try:
+            self._notify("on_run_end")
+        except BaseException as exc:
+            first = exc if first is None else first
+        if first is not None and not quiet:
+            raise first

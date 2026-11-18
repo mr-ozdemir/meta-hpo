@@ -40,7 +40,8 @@ kind, and with a space, settings or seed that do not build; a log line whose tri
 Categorical of numpy arrays resumed with the space passed. log_every and verbose that are no integers,
 False as verbose, and a numpy integer max_evals. The integer settings of ABC and PSO recorded as
 whole floats, as 0.6.0 and 0.7.0 stored them. Custom optimizers whose class is called ABCOptimizer,
-PSOOptimizer or BBPSOOptimizer, and library optimizers in folders without the optimizer's module.
+PSOOptimizer or BBPSOOptimizer, and library optimizers in folders without the optimizer's module. A
+relative folder resumed by an objective that changes the working directory.
 """
 
 import csv
@@ -1530,3 +1531,32 @@ def test_resume_should_rebuild_a_library_optimizer_of_a_folder_that_records_no_m
     study = resume(_score, folder, verbose=0)
 
     assert _trajectory(study) == _trajectory(_reference(make))
+
+
+def test_resume_should_keep_writing_into_a_relative_folder_when_the_objective_changes_directory(
+    tmp_path, no_plots, monkeypatch
+):
+    """Given a run interrupted on its 10th call and resumed through a relative path from tmp_path with an
+    objective that moves into tmp_path/elsewhere on its 3rd call, when resume() continues, then the study
+    equals the uninterrupted run and summary.json is written in the folder, nothing below elsewhere.
+
+    Oracle: resume docstring (resume writes into the same folder) and the stage brief (resume(folder)
+    resolves the folder once when it starts). Decisive: the relative path was opened after the chdir.
+    """
+    _, folder = _start(tmp_path, MAKERS[0].values[0], _interrupting(9))
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path)
+    calls = [0]
+
+    def moving(params):
+        calls[0] += 1
+        calls[0] == 3 and monkeypatch.chdir(tmp_path / "elsewhere")
+        return _score(params)
+
+    study = resume(moving, folder.relative_to(tmp_path), verbose=0)
+
+    assert _trajectory(study) == _trajectory(_reference(MAKERS[0].values[0]))
+    assert (_json(folder / "summary.json")["stop_reason"], list((tmp_path / "elsewhere").iterdir())) == (
+        "budget",
+        [],
+    )

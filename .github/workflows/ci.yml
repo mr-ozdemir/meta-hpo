@@ -55,6 +55,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - if: env.SKIP != 'true'
         run: pip install -e ".[dev]"
+      - if: env.SKIP != 'true' && runner.os == 'macOS'
+        name: Build the matplotlib font cache before the hang guard of the tests applies
+        run: python -c "import io, matplotlib.font_manager; from matplotlib.figure import Figure; f = Figure(); f.text(0.5, 0.5, 'warm-up'); f.savefig(io.BytesIO())"
       - if: env.SKIP != 'true'
         run: pytest
 

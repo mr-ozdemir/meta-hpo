@@ -23,13 +23,24 @@ and a custom optimizer; choices of every JSON type, of Python types and NaN; sco
 trials 0.5 s and 2 s apart on a fake clock; no stopping rule, one rule, and the three built-in rules in a
 given order, with one and two runs; bounds given as numpy scalars; Categoricals of numpy arrays and of
 0, False, 1, True and 1.0; numpy integer and float settings of every optimizer and stopping rule; a
-custom optimizer with numpy scalars and arrays in its candidate meta and its population.
+custom optimizer with numpy scalars and arrays in its candidate meta and its population; an objective
+that changes the working directory with a relative output, METAHPO_OUTPUT and the default folder; a
+replace of best.json, config.json, state.json and summary.json refused for a while or for good (a
+simulated reader that holds the file); callbacks that raise RuntimeError or KeyboardInterrupt in
+on_run_start, on_trial, on_generation and on_run_end; a folder name taken by another search after the
+check for it; penalty scores near 1e300 and the largest float; report.md of a compressed run, of a
+custom optimizer without population and of a run whose last generation the table step skips; the
+generation events of ABC, PSO and BBPSO with budgets that end inside and at the end of a generation;
+console streams of cp1254, ascii and cp1254 with surrogateescape, a StringIO and a stream whose
+encoding is None, with a parameter name and a choice they cannot all encode.
 """
 
 import csv
 import gzip
+import io
 import json
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -1630,3 +1641,799 @@ def test_config_json_should_record_the_module_of_the_optimizer_class(tmp_path, m
     record = _json(folder / "config.json")["optimizer"]
 
     assert (record["name"], record["module"]) == (type(optimizer).__name__, module)
+
+
+def _moving(where, function=_score, at=3):
+    """`function` as an objective that changes the working directory to `where` on call `at`, as a trainer
+    that moves into its data folder does."""
+    calls = [0]
+
+    def objective(params):
+        calls[0] += 1
+        if calls[0] == at:
+            where[0].chdir(where[1])
+        return function(params)
+
+    return objective
+
+
+@pytest.mark.parametrize(
+    ("output", "env", "below"),
+    [
+        pytest.param("rel_out", None, "rel_out", id="relative-output"),
+        pytest.param(metahpo.report.DEFAULT_OUTPUT, "env_out", "env_out", id="metahpo-output-path"),
+        pytest.param(
+            metahpo.report.DEFAULT_OUTPUT, metahpo.report.DEFAULT_OUTPUT, "hpo_results", id="default"
+        ),
+    ],
+)
+def test_results_folder_should_stay_where_the_search_started_when_the_objective_changes_directory(
+    tmp_path, monkeypatch, output, env, below
+):
+    """Given the working directory tmp_path, a relative results folder (an output argument, METAHPO_OUTPUT
+    or the default 'hpo_results') and an objective that moves into tmp_path/elsewhere on its 3rd call, when
+    optimize() runs 20 evaluations, then the run finishes, every file is written below tmp_path/<folder>,
+    nothing below elsewhere, and config.json records the folder as an absolute path.
+
+    Oracle: report module docstring (a time-stamped folder below `output`, default 'hpo_results' in the
+    working directory) and the ResultWriter._make_folder docstring (the folder becomes an absolute path when
+    the search starts). Decisive: the writer kept the relative path, so the next file it opened after the
+    chdir raised FileNotFoundError and four files stayed open.
+    """
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("METAHPO_OUTPUT", env or "none")
+    objective = _moving((monkeypatch, tmp_path / "elsewhere"))
+
+    study = optimize(objective, _space(), "max", 20, seed=ANY_SEED, verbose=0, output=output)
+
+    folder = _folder(tmp_path / below)
+    config = _json(folder / "config.json")
+    assert (study.stop_reason, (folder / "summary.json").is_file()) == ("budget", True)
+    assert list((tmp_path / "elsewhere").iterdir()) == []
+    assert config["folder"] == str(folder.absolute())
+
+
+class _Refusing:
+    """A stand-in for metahpo.report._os_replace that refuses, with PermissionError, the replace of the file
+    named `name` while `refuse(text)` is true for the new content, or the first `times` attempts when given;
+    other files are replaced as usual."""
+
+    def __init__(self, name, refuse=None, times=None):
+        self.name = name
+        self.refuse = refuse
+        self.times = times
+        self.refused = 0
+
+    def __call__(self, source, target):
+        text = source.read_text(encoding="utf-8")
+        hit = target.name == self.name and (
+            self.refuse(text) if self.refuse is not None else self.refused < self.times
+        )
+        self.refused += hit
+        hit and _raise_permission(target)
+        source.replace(target)
+
+
+def _raise_permission(target):
+    raise PermissionError(13, "another process holds the file", str(target))
+
+
+def _refused_run(tmp_path, monkeypatch, refusing):
+    """A run with plots off whose JSON replaces go through `refusing`; returns the recorded waits."""
+    waits = []
+    monkeypatch.setattr(metahpo.report, "_os_replace", refusing)
+    monkeypatch.setattr(metahpo.report, "_wait", waits.append)
+    return waits
+
+
+def _temporary_files(root):
+    return [p for p in root.rglob("*.tmp")]
+
+
+def test_best_json_should_be_skipped_while_another_process_holds_it_and_written_when_the_run_ends(
+    tmp_path, monkeypatch
+):
+    """Given a reader that holds best.json for every 'running' update, so its replace is always refused,
+    when a run of 30 evaluations goes on, then the search is not stopped, every refused update is tried
+    PROGRESS_TRIES times PROGRESS_WAIT seconds apart and then left out, the final best.json is written with
+    status 'finished', and no temporary file is left.
+
+    Oracle: _write_json docstring (a file that is not required, best.json while the run goes on, is left as
+    it was after PROGRESS_TRIES attempts and written again at the next update and when the run ends; the
+    temporary file is removed). Decisive: os.replace raised PermissionError and ended the search.
+    """
+    refusing = _Refusing("best.json", refuse=lambda text: '"running"' in text)
+    waits = _refused_run(tmp_path, monkeypatch, refusing)
+
+    study, folder = _run(tmp_path, max_evals=30)
+
+    best = _json(folder / "run_001" / "best.json")
+    tries = metahpo.report.PROGRESS_TRIES
+    assert (study.stop_reason, best["status"], best["best"]["trial"]) == (
+        "budget",
+        "finished",
+        study.best_trial.number,
+    )
+    assert refusing.refused > 0 and refusing.refused % tries == 0
+    assert waits == [metahpo.report.PROGRESS_WAIT] * (refusing.refused // tries * (tries - 1))
+    assert _temporary_files(tmp_path) == []
+
+
+@pytest.mark.parametrize("name", ["config.json", "state.json", "best.json", "summary.json"])
+def test_a_json_file_should_be_written_when_a_reader_releases_it_within_the_retries(
+    tmp_path, monkeypatch, name
+):
+    """Given a reader that holds config.json, state.json, best.json or summary.json for the first 3 attempts
+    of its replace, when the run of 12 evaluations ends, then the file is written and the search waited
+    between the refused attempts.
+
+    Oracle: _write_json docstring (a refused replace is tried REPLACE_TRIES times, REPLACE_WAIT seconds apart,
+    or PROGRESS_TRIES times for best.json while the run goes on).
+    """
+    refusing = _Refusing(name, times=3)
+    waits = _refused_run(tmp_path, monkeypatch, refusing)
+
+    study, folder = _run(tmp_path, max_evals=12)
+
+    written = [p.name for p in folder.rglob(name)]
+    assert (study.stop_reason, written, refusing.refused) == ("budget", [name], 3)
+    assert len(waits) >= 2 and _temporary_files(tmp_path) == []
+
+
+@pytest.mark.parametrize("name", ["config.json", "state.json"])
+def test_a_file_resume_depends_on_should_stop_the_search_before_any_call_when_it_stays_held(
+    tmp_path, monkeypatch, name
+):
+    """Given a reader that holds config.json or state.json for good, when optimize() starts, then
+    PermissionError is raised after REPLACE_TRIES attempts, the objective is never called, no temporary file
+    is left and no file stays open.
+
+    Oracle: _write_json docstring (the error of a required file is raised after the attempts; the temporary
+    file is removed) and the report module docstring (config.json and state.json are what a resume needs).
+    """
+    refusing = _Refusing(name, refuse=lambda text: True)
+    waits = _refused_run(tmp_path, monkeypatch, refusing)
+    calls = []
+
+    with pytest.raises(PermissionError):
+        _run(tmp_path, max_evals=12, function=lambda p: calls.append(p) or 0.0)
+
+    assert (calls, refusing.refused, len(waits)) == (
+        [],
+        metahpo.report.REPLACE_TRIES,
+        metahpo.report.REPLACE_TRIES - 1,
+    )
+    assert _temporary_files(tmp_path) == []
+
+
+def test_a_held_summary_json_should_raise_after_every_other_result_of_the_run_was_written(
+    tmp_path, monkeypatch
+):
+    """Given a reader that holds summary.json for good, when a run of 12 evaluations ends, then
+    PermissionError is raised, while best.json (finished), parameters.csv, categories.csv and report.md are
+    written and no temporary file is left.
+
+    Oracle: ResultWriter.on_run_end docstring (a JSON file that cannot be replaced does not stop the others;
+    its error is raised once every file was written).
+    """
+    refusing = _Refusing("summary.json", refuse=lambda text: True)
+    _refused_run(tmp_path, monkeypatch, refusing)
+
+    with pytest.raises(PermissionError):
+        _run(tmp_path, max_evals=12)
+
+    folder = _folder(tmp_path)
+    written = [
+        (folder / n).is_file() for n in ("report.md", "run_001/parameters.csv", "run_001/categories.csv")
+    ]
+    assert (written, _json(folder / "run_001" / "best.json")["status"]) == ([True, True, True], "finished")
+    assert (folder / "summary.json").exists() is False and _temporary_files(tmp_path) == []
+
+
+class _Raising(Callback):
+    """A callback that raises `error` in `event` at trial `at` (on_trial), generation `at` (on_generation)
+    or at once (on_run_start, on_run_end)."""
+
+    def __init__(self, event, error, at=7):
+        self.event = event
+        self.error = error
+        self.at = at
+
+    def on_run_start(self, state):
+        self._raise_for("on_run_start", 0)
+
+    def on_trial(self, state, trial, new_best):
+        self._raise_for("on_trial", trial.number)
+
+    def on_generation(self, state, generation, trials, population):
+        self._raise_for("on_generation", generation)
+
+    def on_run_end(self, state):
+        self._raise_for("on_run_end", self.at)
+
+    def _raise_for(self, event, number):
+        (event, number >= self.at) == (self.event, True) and self._throw()
+
+    def _throw(self):
+        raise self.error
+
+
+class _Ends(Callback):
+    """Records the runs whose end it received."""
+
+    def __init__(self):
+        self.ended = []
+
+    def on_run_end(self, state):
+        self.ended.append(state.study.stop_reason)
+
+
+def _callback_run(tmp_path, callbacks, max_evals=40):
+    """optimize() maximising _score with plots off and the given callbacks after the writer."""
+    return optimize(
+        _score,
+        _space(),
+        "max",
+        max_evals,
+        seed=ANY_SEED,
+        verbose=0,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False), *callbacks],
+    )
+
+
+@pytest.mark.parametrize(
+    ("event", "at", "ended"),
+    [
+        pytest.param("on_run_start", 0, [], id="on-run-start"),
+        pytest.param("on_trial", 7, ["error"], id="on-trial"),
+        pytest.param("on_generation", 1, ["error"], id="on-generation"),
+    ],
+)
+def test_a_raising_callback_should_end_the_run_like_an_error_of_the_objective_and_leave_a_resumable_folder(
+    tmp_path, event, at, ended
+):
+    """Given a callback that raises a RuntimeError in on_run_start, on_trial at trial 7 or on_generation at
+    generation 1, followed by a callback that records the end of the run, when optimize() runs, then the
+    same exception object is raised, best.json and summary.json record the stop reason 'error', the
+    recording callback received the end of the run (unless on_run_start failed before it was started), and
+    resume() of the folder gives the uninterrupted run.
+
+    Oracle: optimize docstring (an exception raised by `function` is re-raised after the results so far are
+    written) applied to callbacks by the _Run.finish docstring (every listener receives the end of the run,
+    the original exception counts), the _Run.start docstring (a listener after the one whose on_run_start
+    raised is not started) and the resume docstring (a run that stopped for an error continues).
+    Decisive: the library's writer never received on_run_end when the callback raised again for the last
+    generation, so the summary files were missing.
+    """
+    error = RuntimeError("bug in my callback")
+    ends = _Ends()
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Raising(event, error, at), ends])
+
+    folder = _folder(tmp_path)
+    reasons = (
+        _json(folder / "run_001" / "best.json")["stop_reason"],
+        _json(folder / "summary.json")["stop_reason"],
+    )
+    resumed = metahpo.resume(_score, folder, verbose=0)
+    reference = optimize(_score, _space(), "max", 40, seed=ANY_SEED, verbose=0, output=None)
+    assert raised.value is error
+    assert reasons == ("error", "error")
+    assert ends.ended == ended
+    assert [t.x.tolist() for t in resumed.trials] == [t.x.tolist() for t in reference.trials]
+
+
+def test_a_keyboard_interrupt_in_a_callback_should_end_the_run_as_interrupted_with_its_results(tmp_path):
+    """Given a callback that raises KeyboardInterrupt in every on_generation from generation 1 on, also in the
+    one for the last unfinished generation, when optimize() runs, then it returns the study with stop_reason
+    'interrupted' and best.json and summary.json record it.
+
+    Oracle: optimize docstring (a KeyboardInterrupt stops the search and returns the study so far with
+    stop_reason 'interrupted'; the results are written). Decisive: the interrupt raised again while the
+    last generation was sent, so the writer never finished and the interrupt escaped optimize().
+    """
+    study = _callback_run(tmp_path, [_Raising("on_generation", KeyboardInterrupt(), at=1)])
+
+    folder = _folder(tmp_path)
+    assert (study.stop_reason, _json(folder / "summary.json")["stop_reason"]) == (
+        "interrupted",
+        "interrupted",
+    )
+    assert _json(folder / "run_001" / "best.json")["status"] == "finished"
+
+
+def test_an_on_run_end_that_raises_should_not_hide_the_first_error_or_stop_the_writer(tmp_path):
+    """Given a callback that raises 'first' in on_trial at trial 7 and 'second' in its own on_run_end, and a
+    callback after it that records the end of the run, when optimize() runs, then 'first' is raised, the
+    writer finished (summary.json records 'error') and the recording callback received the end.
+
+    Oracle: _Run.finish docstring (every listener receives the end of the run also when some raise; after
+    an error the original exception is the one that counts). Decisive: the error of on_run_end replaced the
+    original one.
+    """
+    first, second = RuntimeError("first"), RuntimeError("second")
+
+    class _Both(Callback):
+        def on_trial(self, state, trial, new_best):
+            trial.number == 7 and _Raising("x", first)._throw()
+
+        def on_run_end(self, state):
+            raise second
+
+    ends = _Ends()
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Both(), ends])
+
+    assert (raised.value, ends.ended) == (first, ["error"])
+    assert _json(_folder(tmp_path) / "summary.json")["stop_reason"] == "error"
+
+
+def test_an_on_run_end_that_raises_in_a_finished_run_should_raise_after_the_writer_finished(tmp_path):
+    """Given a callback whose on_run_end raises when a run of 20 evaluations ends by its budget, when
+    optimize() runs, then that exception is raised and summary.json records the stop reason 'budget'.
+
+    Oracle: _Run.finish docstring (the first exception of a listener is raised once every listener received
+    the end of the run).
+    """
+    error = RuntimeError("bug at the end")
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Raising("on_run_end", error, at=0)], max_evals=20)
+
+    assert raised.value is error
+    assert _json(_folder(tmp_path) / "summary.json")["stop_reason"] == "budget"
+
+
+def test_a_writer_should_claim_the_next_free_name_when_another_search_takes_its_name_after_a_check(
+    tmp_path, monkeypatch
+):
+    """Given a folder name of this second already created by another search, and an exists() check that
+    still answers False, as it does for a search that checked a moment before the other one created the
+    folder, when a writer claims its folder, then it takes the name with the suffix _2 and raises nothing.
+
+    Oracle: ResultWriter._make_folder docstring (the name is claimed with one mkdir, which fails when it
+    exists; a taken name gets the suffix _2, _3, ...). Decisive: checking for the name and creating it were
+    two steps, so searches that started in the same second in threads or processes raised FileExistsError.
+    """
+    space = _space()
+    first = _start(ResultWriter(tmp_path, plots=False), space, 1_800_000_000.0)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(tmp_path), "exists", lambda self, **kwargs: False)
+        second = _start(ResultWriter(tmp_path, plots=False), space, 1_800_000_000.0)
+
+    assert second.name == first.name + "_2"
+
+
+class _Sleeps:
+    """A stand-in for the time module of metahpo.report that records the seconds asked to sleep."""
+
+    def __init__(self):
+        self.slept = []
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+
+
+def test_wait_between_two_replace_attempts_should_sleep_the_given_seconds(monkeypatch):
+    """Given the time module of metahpo.report replaced by a recorder, when _wait(REPLACE_WAIT) runs, then it
+    sleeps REPLACE_WAIT seconds once.
+
+    Oracle: the _wait docstring (sleeps between two attempts to replace a JSON file) and REPLACE_WAIT.
+    """
+    recorder = _Sleeps()
+    monkeypatch.setattr(metahpo.report, "time", recorder)
+
+    metahpo.report._wait(metahpo.report.REPLACE_WAIT)
+
+    assert recorder.slept == [metahpo.report.REPLACE_WAIT]
+
+
+def test_a_keyboard_interrupt_in_on_run_end_of_a_finished_run_should_return_the_runs_so_far(tmp_path):
+    """Given runs=2 and a callback whose on_run_end raises KeyboardInterrupt when the first run ended by its
+    budget, when optimize() runs, then it returns the first study with stop_reason 'budget' and does not
+    start the second run.
+
+    Oracle: optimize docstring (a KeyboardInterrupt stops the remaining runs as well and the studies so far
+    are returned) and the _Run.finish docstring (every listener receives the end of the run first).
+    """
+    studies = optimize(
+        _score,
+        _space(),
+        "max",
+        12,
+        seed=ANY_SEED,
+        verbose=0,
+        runs=2,
+        output=None,
+        callbacks=[ResultWriter(tmp_path, plots=False), _Raising("on_run_end", KeyboardInterrupt(), at=0)],
+    )
+
+    assert [s.stop_reason for s in studies] == ["budget"]
+    assert (_folder(tmp_path) / "run_002").exists() is False
+
+
+def _penalised(penalty):
+    """_score, with `penalty` as the score of every trial whose drop-out is above 0.3."""
+
+    def objective(params):
+        return penalty if params["dropout"] > 0.3 else _score(params)
+
+    return objective
+
+
+@pytest.mark.parametrize(
+    "penalty",
+    [
+        pytest.param(1e160, id="1e160"),
+        pytest.param(1e300, id="1e300"),
+        pytest.param(-1e300, id="minus-1e300"),
+        pytest.param(1.7976931348623157e308, id="largest-float"),
+    ],
+)
+def test_statistics_files_should_be_written_without_numpy_warnings_for_huge_penalty_scores(tmp_path, penalty):
+    """Given a penalty score of 1e160, 1e300, -1e300 or the largest float among ordinary scores, with every
+    warning turned into an error, when a run of 40 evaluations writes its statistics (generations.csv,
+    parameters.csv, categories.csv, summary.json), then nothing raises and the score columns hold the
+    penalty, while a statistic that does not fit a float is inf or nan.
+
+    Oracle: _stats and _corr docstrings (a mean, std or correlation that does not fit a float is inf or NaN,
+    without a numpy warning). Decisive: the squares of the variance overflowed with 'overflow encountered'
+    RuntimeWarnings.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        study, folder = _run(tmp_path, max_evals=40, function=_penalised(penalty))
+
+    summary = _json(folder / "summary.json")
+    assert summary["trials"] == len(study.trials)
+    assert penalty in [t.score for t in study.trials]
+    assert len(_rows(folder / "run_001" / "parameters.csv")) == 4
+
+
+def test_report_md_should_name_the_compressed_tables_of_a_large_run(tmp_path, monkeypatch):
+    """Given COMPRESS_FROM lowered to 10 and a run of 30 evaluations, when report.md is read, then it names
+    run_001/trials.csv.gz and run_001/population.csv.gz, and every file it names exists.
+
+    Oracle: report module docstring (max_evals >= COMPRESS_FROM writes trials.csv and population.csv
+    gzip-compressed). Decisive: report.md named trials.csv and population.csv, which do not exist then.
+    """
+    monkeypatch.setattr(metahpo.report, "COMPRESS_FROM", 10)
+    _, folder = _run(tmp_path, max_evals=30)
+
+    text = (folder / "report.md").read_text(encoding="utf-8")
+
+    named = [name for name in text.split("`") if name.endswith((".csv", ".csv.gz", ".json"))]
+    assert "run_001/trials.csv.gz" in named and "run_001/population.csv.gz" in named
+    assert [(folder / name).is_file() for name in named] == [True] * len(named)
+
+
+def test_report_md_should_not_name_a_population_file_an_optimizer_without_population_never_wrote(tmp_path):
+    """Given a custom optimizer without population snapshots, when report.md is read, then it does not name
+    population.csv, which the run did not write, and names trials.csv.
+
+    Oracle: report module docstring (population.csv holds the optimizer's snapshots) and the _written
+    docstring ('' when a table was not written).
+    """
+    _, folder = _run(tmp_path, _RandomSearch(_space(), "max", ANY_SEED), max_evals=12)
+
+    text = (folder / "report.md").read_text(encoding="utf-8")
+
+    assert ("population.csv" in text, "run_001/trials.csv" in text) == (False, True)
+    assert (folder / "run_001" / "population.csv").exists() is False
+
+
+def test_report_md_should_end_its_generation_table_with_the_last_generation(tmp_path):
+    """Given a PSO run (swarm 7) of 60 generations, whose table shows every second generation, when report.md
+    is read, then the last row of the generation table is generation 59, the last row of generations.csv.
+
+    Oracle: report.md is a summary of the run with a table of the progress by generation; the last
+    generation is where the run ended. Decisive: the rows were generations[::step], which ends at 58 when
+    the step is 2 and the count is 60.
+    """
+    space = Space({"x": Float(0.0, 1.0), "y": Float(0.0, 1.0), "z": Float(0.0, 1.0)})
+    _, folder = _run(
+        tmp_path,
+        PSOOptimizer(space, "max", swarm_size=7, seed=ANY_SEED),
+        max_evals=427,
+        cache=False,
+        function=lambda p: p["x"],
+    )
+
+    table = (
+        (folder / "report.md")
+        .read_text(encoding="utf-8")
+        .split("## Progress by generation")[1]
+        .split("## Files")[0]
+    )
+
+    rows = [
+        line.split("|")[1].strip()
+        for line in table.splitlines()
+        if line.startswith("| ") and line[2].isdigit()
+    ]
+    last = _rows(folder / "run_001" / "generations.csv")[-1]["generation"]
+    assert (rows[-1], last) == ("59", "59")
+    assert len(rows) == 31
+
+
+class _Generations(Callback):
+    """Records, for every generation event, the trials and calls when it fired and when the generation's last
+    trial was recorded, and the population passed. on_trial comes before the optimizer is told the trial,
+    so the population seen at the next trial is the one right after the last trial of the generation was
+    told."""
+
+    def __init__(self):
+        self.seen = {}
+        self.events = []
+
+    def on_trial(self, state, trial, new_best):
+        self.seen[trial.number] = (len(state.study.trials), state.calls, state.optimizer.population())
+
+    def on_generation(self, state, generation, trials, population):
+        last = trials[-1].number
+        self.events.append(((len(state.study.trials), state.calls), self.seen[last][:2], last, population))
+
+    def populations_match(self):
+        """For every event followed by a further trial: whether its population equals the one seen at that
+        trial."""
+        return [
+            all(np.array_equal(np.asarray(self.seen[last + 1][2][k]), np.asarray(pop[k])) for k in pop)
+            for _, _, last, pop in self.events
+            if last + 1 in self.seen
+        ]
+
+
+GENERATION_OPTIMIZERS = [
+    pytest.param(lambda s: ABCOptimizer(s, "max", seed=ANY_SEED), 45, id="abc-ending-at-a-cycle-end"),
+    pytest.param(lambda s: ABCOptimizer(s, "max", seed=ANY_SEED), 61, id="abc-ending-inside-a-cycle"),
+    pytest.param(lambda s: PSOOptimizer(s, "max", swarm_size=5, seed=ANY_SEED), 47, id="pso"),
+    pytest.param(lambda s: BBPSOOptimizer(s, "max", swarm_size=6, seed=ANY_SEED), 61, id="bbpso"),
+]
+
+
+@pytest.mark.parametrize(("make", "budget"), GENERATION_OPTIMIZERS)
+def test_generation_event_should_fire_after_the_last_trial_of_its_generation_and_before_the_next(
+    make, budget
+):
+    """Given ABC (budgets ending at the end of a cycle and inside one), PSO and BBPSO runs, when every
+    on_generation event is compared with the moment the last trial of its generation was recorded, then
+    the study held the same trials and state.calls was the same, and the population passed equals the
+    optimizer's population right after that last trial was told (as the next trial sees it).
+
+    Oracle: Callback.on_generation docstring (when the optimizer's generation counter moves past
+    `generation`; `population` is the optimizer's snapshot) and the generation docstrings of the optimizers
+    (a generation is complete once its last candidate was told). Decisive: ABC and BBPSO moved their counter
+    only at the next ask, so the event came after the first trial of the next generation, with its calls and
+    its population.
+    """
+    recorder = _Generations()
+    optimizer = make(_space())
+
+    optimize(
+        _score,
+        optimizer.space,
+        "max",
+        budget,
+        optimizer=optimizer,
+        verbose=0,
+        output=None,
+        callbacks=[recorder],
+    )
+
+    matches = recorder.populations_match()
+    assert [at for at, _, _, _ in recorder.events] == [then for _, then, _, _ in recorder.events]
+    assert matches == [True] * len(recorder.events[:-1])
+
+
+@pytest.mark.parametrize(("make", "budget"), GENERATION_OPTIMIZERS)
+def test_console_evals_should_equal_the_calls_column_of_generations_csv_for_every_generation(
+    tmp_path, make, budget
+):
+    """Given the same runs with a console at verbose=1 and a results folder, when each 'gen' line is read,
+    then its evals count equals the calls column of the generations.csv row of that generation, and each
+    generation has one row and one line.
+
+    Oracle: ConsoleReporter docstring (one line per generation with the evaluations used) and the report
+    module docstring (generations.csv holds statistics per generation). Decisive: for ABC and BBPSO the line
+    counted the first call of the next generation (evals 16 for the 15 calls of ABC's generation 0).
+    """
+    stream = io.StringIO()
+    optimizer = make(_space())
+
+    _run(tmp_path, optimizer, max_evals=budget, callbacks=[ConsoleReporter(1, stream=stream)])
+
+    lines = [line for line in stream.getvalue().splitlines() if line.startswith("gen ")]
+    evals = [line.split("evals")[1].split("/")[0].strip() for line in lines]
+    calls = [row["calls"] for row in _rows(_folder(tmp_path) / "run_001" / "generations.csv")]
+    assert evals == calls
+
+
+def test_summary_should_count_a_cycle_that_ended_with_the_run_as_a_completed_generation(tmp_path):
+    """Given an ABC run (colony 10) whose budget of 45 ends with the last onlooker of cycle 3, which has no
+    scout, when summary.json and generations.csv are read, then the summary counts 4 generations and
+    generations.csv has the 4 rows of cycles 0 to 3, the last one once.
+
+    Oracle: Optimizer.generation docstring (completed generations) and the ABCOptimizer.generation docstring
+    (a cycle without a scout is complete after its last onlooker); the report module docstring (the last,
+    possibly unfinished generation is reported once when the run ends).
+    """
+    _, folder = _run(tmp_path, ABCOptimizer(_space(), "max", seed=ANY_SEED), max_evals=45)
+
+    rows = _rows(folder / "run_001" / "generations.csv")
+
+    assert (_json(folder / "summary.json")["generations"], [r["generation"] for r in rows]) == (
+        4,
+        ["0", "1", "2", "3"],
+    )
+
+
+class _NoEncoding(io.StringIO):
+    """A text stream whose encoding attribute is None, as some wrapped or captured streams have."""
+
+    encoding = None
+
+
+CONSOLE_STREAMS = [
+    pytest.param(lambda: io.TextIOWrapper(io.BytesIO(), encoding="cp1254"), "cp1254", id="cp1254-strict"),
+    pytest.param(
+        lambda: io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict"), "ascii", id="ascii"
+    ),
+    pytest.param(
+        lambda: io.TextIOWrapper(io.BytesIO(), encoding="cp1254", errors="surrogateescape"),
+        "cp1254",
+        id="cp1254-surrogateescape",
+    ),
+]
+
+
+def _wide_space():
+    """A parameter name and a choice with characters outside cp1254 and ascii."""
+    return Space({"öğrenme_学习": Float(0.0, 1.0), "act": Categorical(["doğrusal", "🙂", "x"])})
+
+
+def _wide_score(params):
+    return params["öğrenme_学习"]
+
+
+def _console_lines(stream, tmp_path):
+    """The console lines of two seeded runs of 12 evaluations at verbose=2 on _wide_space, written to
+    `stream` with a results folder below tmp_path."""
+    optimize(
+        _wide_score,
+        _wide_space(),
+        max_evals=12,
+        seed=[1, 2],
+        runs=2,
+        verbose=0,
+        output=tmp_path,
+        callbacks=[ConsoleReporter(2, stream=stream)],
+    )
+    stream.flush()
+    return stream
+
+
+@pytest.mark.parametrize(("make", "encoding"), CONSOLE_STREAMS)
+def test_console_should_print_every_line_with_escapes_when_its_encoding_cannot_show_a_name_or_choice(
+    tmp_path, make, encoding
+):
+    """Given a console stream of cp1254 or ascii (strict, or cp1254 with surrogateescape) and a parameter
+    name and a choice it cannot encode (学习, 🙂), when two runs print at verbose=2, then the stream gets all
+    31 lines (two headers, 24 trial lines, two generation lines, two end lines and the runs line), with the
+    characters it cannot encode as backslash escapes, the stream's error handler is unchanged, and the
+    results folder holds the names in UTF-8.
+
+    Oracle: ConsoleReporter docstring (a character the stream's encoding cannot represent is printed as a
+    backslash escape, and the line is still printed; the search goes on). Decisive: print raised
+    UnicodeEncodeError at the first such line, which silenced the console for the rest of the search.
+    """
+    stream = make()
+    errors = stream.errors
+
+    text = _console_lines(stream, tmp_path).buffer.getvalue().decode(encoding)
+
+    folder = _folder(tmp_path)
+    assert len(text.splitlines()) == 31
+    assert "\\u5b66\\u4e60" in text and stream.errors == errors
+    assert "öğrenme_学习" in (folder / "run_001" / "trials.csv").read_text(encoding="utf-8")
+
+
+def test_console_should_print_to_a_stream_whose_encoding_is_none(tmp_path):
+    """Given a text stream whose encoding attribute is None, when two runs print at verbose=2 on the same
+    space, then it gets the lines unchanged, the wide characters included.
+
+    Oracle: ConsoleReporter docstring (characters are escaped only for an encoding that cannot represent
+    them; a stream without an encoding gets the text as it is).
+    """
+    stream = _console_lines(_NoEncoding(), tmp_path)
+
+    lines = stream.getvalue().splitlines()
+
+    assert len(lines) == 31
+    assert "öğrenme_学习" in stream.getvalue()
+
+
+def test_console_should_print_the_text_as_it_is_for_an_encoding_python_does_not_know():
+    """Given a stream that names an encoding Python has no codec for, when ConsoleReporter prints a line with
+    wide characters, then the stream gets the line unchanged.
+
+    Oracle: ConsoleReporter docstring (only an encoding that cannot represent a character changes it); an
+    unknown encoding cannot be checked, so the text is left to the stream.
+    """
+
+    class _Unknown(io.StringIO):
+        encoding = "no-such-codec"
+
+    stream = _Unknown()
+
+    ConsoleReporter(1, stream=stream)._print("öğrenme 学习")
+
+    assert stream.getvalue() == "öğrenme 学习\n"
+
+
+def test_an_error_in_the_event_of_the_last_unfinished_generation_should_raise_after_the_writer_finished(
+    tmp_path,
+):
+    """Given an ABC run of 61 evaluations, which ends inside generation 5, and a callback that raises in the
+    event of generation 5, sent when the run ends, when optimize() runs, then that exception is raised and
+    summary.json records the stop reason 'budget' with the six rows of generations.csv written.
+
+    Oracle: _Run.finish docstring (the last, possibly unfinished generation and the end of the run reach
+    every listener, also when some raise; the first exception is raised afterwards).
+    """
+    error = RuntimeError("bug in the last generation")
+
+    with pytest.raises(RuntimeError) as raised:
+        _callback_run(tmp_path, [_Raising("on_generation", error, at=5)], max_evals=61)
+
+    folder = _folder(tmp_path)
+    assert raised.value is error
+    assert (
+        _json(folder / "summary.json")["stop_reason"],
+        len(_rows(folder / "run_001" / "generations.csv")),
+    ) == ("budget", 6)
+
+
+class _RaisingEncoding(io.StringIO):
+    """A text stream whose encoding attribute raises when it is read."""
+
+    @property
+    def encoding(self):
+        raise RuntimeError("no encoding here")
+
+
+def _odd_stream(encoding):
+    """A StringIO whose encoding attribute is `encoding`, which is not a usable str."""
+    return type("_Odd", (io.StringIO,), {"encoding": encoding})()
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(lambda: _odd_stream(1254), id="int"),
+        pytest.param(lambda: _odd_stream(b"cp1254"), id="bytes"),
+        pytest.param(lambda: _odd_stream(object()), id="object"),
+        pytest.param(lambda: _odd_stream("rot13"), id="text-to-text-codec"),
+        pytest.param(_RaisingEncoding, id="raising-property"),
+    ],
+)
+def test_console_should_leave_the_search_and_the_lines_alone_for_an_encoding_it_cannot_use(tmp_path, make):
+    """Given a console stream whose encoding attribute is an int, bytes, an object, the name of a
+    text-to-text codec or a property that raises, when two runs print at verbose=2, then both runs finish
+    and the stream gets all 31 lines unchanged, the wide characters included.
+
+    Oracle: ConsoleReporter docstring (the search goes on whatever the console can show) and the _encodable
+    docstring (whenever the encoding cannot be used, the text is given back as it is). Decisive: an encoding
+    that is not a str made str.encode raise TypeError, and a raising attribute escaped as well, both out of
+    optimize().
+    """
+    stream = _console_lines(make(), tmp_path)
+
+    text = stream.getvalue()
+
+    assert len(text.splitlines()) == 31
+    assert "öğrenme_学习" in text

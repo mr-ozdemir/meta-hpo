@@ -18,7 +18,7 @@ Input space: Every space, configuration, seed and ask/tell sequence, which is un
 Subset: One- to four-dimensional spaces of every parameter kind; defaults and the boundary values of every
 constructor check; scripted constant, improving, worse and NaN scores that force each branch of the move and
 refinement rules; seeded runs on the sphere and Rastrigin functions; the sphere scaled by 2**-550,
-where the scores are near 1e-166.
+where the scores are near 1e-166; the generation counter after the last refinement slot.
 """
 
 import math
@@ -1004,3 +1004,33 @@ def test_bbpso_should_search_scores_near_1e_minus_166_exactly_as_the_same_scores
 
     identity = [[(t.x.tolist(), t.cached, t.meta) for t in s.trials] for s in (scaled, plain)]
     assert identity[0] == identity[1]
+
+
+def _through_the_first_iteration(opt):
+    """Asks and tells `opt` the sphere until its generation counter moves; returns the trials told."""
+    told = 0
+    while opt.generation == 0:
+        batch = opt.ask()
+        opt.tell(batch, [_sphere(c.params) for c in batch])
+        told += len(batch)
+    return told
+
+
+def test_bbpso_generation_should_count_an_iteration_as_complete_once_its_last_refinement_slot_is_finished():
+    """Given a BBPSO swarm of 6 asked and told the sphere until its generation counter moves, when iteration,
+    generation and the next candidate are read, then the iteration counts as complete (generation 1) while
+    `iteration` stays 0 until the next ask, whose candidate is the first move of iteration 1, and more than
+    the 12 trials of the initial batch and the moves were told.
+
+    Oracle: BBPSOOptimizer.generation docstring (an iteration is complete as soon as its last refinement slot
+    is finished; `iteration` moves on at the next ask). Decisive: generation stayed 0 until the next ask, so
+    optimize() saw the end of the iteration only after the first move of the next one.
+    """
+    opt = BBPSOOptimizer(_box(2), seed=ANY_SEED, swarm_size=6)
+    told = _through_the_first_iteration(opt)
+    reading = (opt.iteration, opt.generation)
+
+    (cand,) = opt.ask()
+
+    assert (*reading, cand.meta["phase"], cand.meta["generation"]) == (0, 1, "move", 1)
+    assert told > 12

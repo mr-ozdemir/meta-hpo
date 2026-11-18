@@ -425,8 +425,10 @@ class BBPSOOptimizer(Optimizer):
 
     @property
     def generation(self) -> int:
-        """Completed iterations: every particle has moved once and the refinement has run."""
-        return self.iteration
+        """Completed iterations: every particle has moved once and the refinement has run. An iteration is
+        complete as soon as its last refinement slot is finished; `iteration` itself moves on at the next
+        ask, which starts the moves of the next iteration."""
+        return self.iteration + int(self.phase == "enhance" and self._slot_i >= len(self._slots))
 
     def population(self) -> dict[str, Any] | None:
         """Particles: positions, current scores and the operation index (1-5) each particle uses next."""
