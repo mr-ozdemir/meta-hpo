@@ -34,6 +34,11 @@ from metahpo import (
     optimize,
 )
 
+pytestmark = [
+    pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning"),
+    pytest.mark.filterwarnings("ignore:.*plot failures? (was|were) noted:metahpo.MetaHpoWarning"),
+]
+
 ANY_SEED = 0
 
 

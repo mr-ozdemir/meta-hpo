@@ -10,8 +10,9 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 - `MetaHpoWarning`, a `UserWarning`, is the category of every warning meta-hpo emits, once per condition
   and call; `optimize()` warns before the search starts, when nothing is written yet, that a `seed` given
-  together with an optimizer object has no effect, and a condition that depends on the outcome is warned
-  about when the call has finished and every result file is written.
+  together with an optimizer object has no effect, and `optimize()` and `resume()` warn when the call has
+  finished and every result file is written about runs that ended without a finite score and about plots
+  that could not be drawn.
 
 ### Fixed
 

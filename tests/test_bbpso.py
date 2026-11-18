@@ -28,6 +28,8 @@ import pytest
 
 from metahpo import BBPSOOptimizer, Categorical, Float, Int, Space, operators, optimize
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 ANY_SEED = 0
 
 

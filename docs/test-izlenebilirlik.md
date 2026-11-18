@@ -5,9 +5,9 @@ Bu belge meta-hpo test paketinin hangi test yazma kuralını hangi testlerle kar
 ## Özet
 
 - Test dosyası: 69 (`test_<birim>.py` veya `test_<birim>_<yön>.py`, ayrıca 9 kesişen dosya).
-- Toplanan test: 5152, hepsi geçiyor; tüm paket yaklaşık 95 saniyede koşuyor.
+- Toplanan test: 5188, hepsi geçiyor; tüm paket yaklaşık 95 saniyede koşuyor.
 - Her dosya tek başına ve ters sırada (`METAHPO_TEST_REVERSE=1`) da geçiyor.
-- Satır kapsamı %99 (2619 satırdan 2615'i), dal kapsamı 728/728. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 102, 106, 110, 113).
+- Satır kapsamı %99 (2645 satırdan 2641'i), dal kapsamı 734/734. Kapsanmayan dört satır `Parameter` taban sınıfının `NotImplementedError` gövdeleridir (space.py 102, 106, 110, 113).
 - `ruff check`, `ruff format --check` ve `mypy` temiz; testlerde `#` yorum satırı yok.
 - Bağımlılık: yalnız pytest, numpy ve standart kütüphane.
 
@@ -470,14 +470,17 @@ Gereksinim: `optimize(stop=...)` (issue #71): aramayı bütçeden önce bitiren 
 
 ### warnings
 
-Gereksinim: `MetaHpoWarning(UserWarning)` meta-hpo'nun her uyarısının kategorisidir; her durum çağrı başına bir kez, `optimize()`/`resume()`'u çağıran satırı göstererek `warnings.warn` ile verilir. Argümanlardan bilinen durum tüm argüman kontrolleri geçtikten sonra ve arama başlamadan, henüz hiçbir şey yazılmamış ve hedef fonksiyon çağrılmamışken; sonuca bağlı durum çağrı bittiğinde, tüm sonuç dosyaları yazıldıktan sonra verilir; standart filtreler geçerlidir. `optimize()`, optimizer nesnesiyle birlikte verilen ve etkisiz kalan `seed` için arama başlamadan uyarır.
+Gereksinim: `MetaHpoWarning(UserWarning)` meta-hpo'nun her uyarısının kategorisidir; her durum çağrı başına bir kez, `optimize()`/`resume()`'u çağıran satırı göstererek `warnings.warn` ile verilir. Argümanlardan bilinen durum (optimizer nesnesiyle birlikte verilen ve etkisiz kalan `seed`) tüm argüman kontrolleri geçtikten sonra ve arama başlamadan, henüz hiçbir şey yazılmamış ve hedef fonksiyon çağrılmamışken; sonuca bağlı durumlar (sonlu skoru olmayan koşu, sonra çizilemeyen grafikler) çağrı bittiğinde, tüm sonuç dosyaları yazıldıktan sonra, bu sırayla verilir; standart filtreler geçerlidir.
 
 | Konu | Testler |
 |---|---|
 | Kategori ve dışa aktarım | **test_facade_warnings.py**: `metahpo.MetaHpoWarning`'in `UserWarning` alt sınıfı ve `metahpo.report` içindeki sınıf olması; **test_api_contract.py**: `__all__` ve sınıf olarak dışa aktarım |
 | Etkisiz seed | **test_facade_warnings.py**: ABC, PSO ve BBPSO nesnesiyle int, liste ve numpy tamsayısı seed'de tam bir uyarı, metnin seed'in etkisiz olduğunu ve seed'li aramanın yolunu söylemesi, uyarının `optimize()`'ı çağıran test satırını göstermesi (`filename`), Study'nin seed'siz aynı nesneyle koşuya eşitliği; fonksiyon optimizer'la seed, öntanımlı optimizer'la seed ve seed'siz nesnede uyarı olmaması |
 | Arama başlamadan | **test_facade_warnings.py**: `simplefilter("error")` altında MetaHpoWarning yükselirken çıktı klasörünün boş kalması, konsolun bir şey basmaması, hiçbir koşunun başlamaması ve hedef fonksiyonun hiç çağrılmaması; başka yönde ya da başka uzayda optimizer, iki koşu için tek nesne, sıfır bütçe ve Stopper olmayan kuralda argüman hatasının öncesinde uyarı olmadan gelmesi |
-| Çağrı bitince | **test_facade_warnings.py**: sonuca bağlı bir bildirimin (iki kez bildirilse de) `optimize()` ve `resume()` çağrısında bir kez ve çağıran test satırını göstererek verilmesi; `simplefilter("error")` altında yükselirken klasörde bitmiş best.json, `budget` nedenli summary.json, report.md ve deneme başına bir trials.jsonl satırı olması ve klasörün `resume()` ile çağrısız dönmesi; `filterwarnings("ignore", category=MetaHpoWarning)` ile uyarının susması |
+| Sonlu skoru olmayan koşu | **test_facade_warnings.py**: yalnız NaN, +inf, -inf döndüren ve Patience'ın durdurduğu NaN koşusunda tek uyarı ve çağıran satır; `runs=3`'te yalnız 2. koşu ve üç koşu NaN iken sayının (1 of the 3, all 3) tek uyarıda verilmesi; her koşuda sonlu skor varken ve ilk sonlu skordan sonra kesilen koşuda uyarı olmaması; ilk çağrıda KeyboardInterrupt ile denemesiz dönen koşuda uyarı; hata fırlatan hedef fonksiyonda uyarısız hata; `resume()`'un kesilmiş NaN klasörünü bitirirken ve bitmiş klasörü çağrısız geri yüklerken uyarması ve çağıran satırı göstermesi; **test_facade_boundaries.py**: NaN koşusunda tek uyarının bu MetaHpoWarning olması (numpy uyarısı olmaması) |
+| Çizilemeyen grafikler | **test_facade_warnings.py**: make_plots'un ImportError'unda (bir ve üç koşu, karşılaştırma grafikleri de) ve make_run_plots'un RuntimeError'unda hata sayısı, ilk hata ve summary.json'u adlandıran tek uyarı, notların summary.json'da kalması; Figure.colorbar bozukken iki grafiğin sayılması; sonuç klasörü yokken ve `plots=False` yazıcıda uyarı olmaması; `resume()`'un çizemediği grafik için uyarması |
+| Sıra, filtreler, dosyalar | **test_facade_warnings.py**: NaN koşusu ve bozuk grafikte iki uyarının sabit sırası; `simplefilter("error")` altında grafik bloğunun üçüncü taraf uyarısını susturmaya devam etmesi, MetaHpoWarning'in iki koşu bitip best.json, summary.json ve report.md yazıldıktan sonra yükselmesi ve klasörün `resume()` ile çağrısız dönmesi; `filterwarnings("ignore", category=MetaHpoWarning)` ile üç uyarının da susması |
+| Bilerek tetikleyen modüller | NaN koşusu ya da bozuk grafik kuran modüller (test_bbpso, test_end_to_end, test_facade_boundaries, test_facade_doubles, test_facade_fuzz, test_facade_integration, test_facade_stop, test_fuzz, test_plots, test_report) yalnız o uyarının metnine uyan bir modül düzeyi `pytestmark` filtresiyle bu uyarıyı yok sayar; diğer MetaHpoWarning'ler `-W error::metahpo.MetaHpoWarning` altında hâlâ hatadır |
 
 ## Stil kontrol listesi
 

@@ -66,6 +66,8 @@ import pytest
 from metahpo import ABCOptimizer, Candidate, Categorical, Float, Int, Space, optimize
 from metahpo.operators import fitness, fitness_scalar, onlooker_probabilities
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 SEEDS = (0, 1, 2, 3, 5, 8, 13, 21)
 NAN_FIRST_SEEDS = SEEDS[::2]
 N_CASES = 40

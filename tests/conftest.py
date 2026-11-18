@@ -123,7 +123,8 @@ hand-written cache=False example behind the grammar property; direction 'max' at
 trajectory level; repeated runs with one seed per run and optimizer functions; resuming a stopped, killed,
 finished or extended search from its results folder; stopping rules ending a run inside a batch, in order,
 with fresh copies per run; resuming with the recorded or replaced stopping rules; MetaHpoWarning emitted once
-per condition at the end of a call, pointing at the caller and obeying the warning filters
+per condition, the ignored seed before the search and runs without a finite score and failed plots at the end
+of a call, pointing at the caller and obeying the warning filters
     test_facade.py | unit | optimize() argument checks, budget and cache bookkeeping
     test_facade_budget.py | unit | exact trial and call counts of the evaluation budget
     test_facade_doubles.py | integration | scripted optimizer, objective stubs, spies and mocks

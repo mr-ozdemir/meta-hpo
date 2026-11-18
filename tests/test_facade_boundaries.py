@@ -25,11 +25,14 @@ Subset: Budgets at the edges of the initial batch, extreme scores and an all-NaN
 
 import math
 import sys
+import warnings
 
 import numpy as np
 import pytest
 
-from metahpo import ABCOptimizer, Float, Space, optimize
+from metahpo import ABCOptimizer, Float, MetaHpoWarning, Space, optimize
+
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
 
 ANY_SEED = 0
 FOOD_NUMBER = 10 // 2
@@ -192,10 +195,10 @@ def test_optimize_should_mark_trials_failed_when_the_objective_returns_a_non_fin
     assert _failed_flags(study) == [True] * 3
 
 
-@pytest.mark.filterwarnings("error")
 def test_optimize_should_finish_the_budget_without_warnings_when_every_score_is_nan():
-    """Given a NaN objective, when optimize runs 30 evaluations with warnings turned into errors, then all 30
-    trials exist and are failed.
+    """Given a NaN objective, when optimize runs 30 evaluations with every warning recorded, then all 30
+    trials exist and are failed, and the only warning is the MetaHpoWarning about the run without a finite
+    score (no numpy warning from a division by a zero maximum).
 
     Oracle: task specification (exactly max_evals trials), Trial.failed docstring, onlooker_probabilities
     docstring 'all-zero fitness gives equal probabilities' (so no division by a zero maximum happens). 30 is
@@ -204,9 +207,14 @@ def test_optimize_should_finish_the_budget_without_warnings_when_every_score_is_
     """
     objective = _stub_objective(math.nan)
 
-    study = optimize(objective, _unit_space_3d(), max_evals=30, seed=ANY_SEED)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        study = optimize(objective, _unit_space_3d(), max_evals=30, seed=ANY_SEED)
 
     assert _failed_flags(study) == [True] * 30
+    assert [(w.category, "ended without a finite score" in str(w.message)) for w in record] == [
+        (MetaHpoWarning, True)
+    ]
 
 
 @pytest.mark.parametrize("attribute", ["best_trial", "best_params", "best_score"])

@@ -52,6 +52,8 @@ from metahpo import (
     optimize,
 )
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 ANY_SEED = 0
 
 PSO_SEED = 3

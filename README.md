@@ -262,6 +262,19 @@ Optimizers do not hand out a parameter set twice: a repeat is drawn again, up to
 by default), before it may come back. So candidates follow a different distribution than in the textbook
 algorithms, most visibly in small discrete spaces.
 
+## Warnings
+
+meta-hpo warns with `mh.MetaHpoWarning`, a `UserWarning`, once per condition and call:
+
+- `seed=` given together with an optimizer object, which ignores it, before the search starts.
+- Runs that ended without a finite score (only NaN or infinite scores), when the call has finished.
+- Plots that could not be drawn (`notes` in `summary.json` lists them), when the call has finished.
+
+The warnings after the search come once every result file is written, so turning them into errors costs no
+result. `warnings.filterwarnings("ignore", category=mh.MetaHpoWarning)` silences them;
+`warnings.simplefilter("error", mh.MetaHpoWarning)` or `python -W error::metahpo.MetaHpoWarning` turns them
+into errors. Deprecations will use `FutureWarning`.
+
 ## Contributing
 
 See [CONTRIBUTING.md](https://github.com/mr-ozdemir/meta-hpo/blob/master/CONTRIBUTING.md); changes are

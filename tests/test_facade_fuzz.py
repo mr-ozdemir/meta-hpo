@@ -55,6 +55,8 @@ import pytest
 
 from metahpo import ABCOptimizer, Categorical, Float, Int, Space, optimize
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 MIN_LEN = 0
 SPECIAL = " -!@#$%^&*()_+=[]{};:\\'\"|,.<>/?`~\t\r\n\x00"
 ALPHABET = string.ascii_lowercase + string.ascii_uppercase + string.digits + SPECIAL
