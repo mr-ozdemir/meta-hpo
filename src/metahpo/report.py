@@ -92,6 +92,20 @@ from metahpo.optimizers.base import Optimizer, _integer
 from metahpo.space import Categorical, Float, Int, Space, _choice_index, _choice_text, _without_addresses
 from metahpo.study import Study, Trial
 
+
+class MetaHpoWarning(UserWarning):
+    """The category of every warning meta-hpo emits: something about a search the user should know that does
+    not stop it. optimize() and resume() emit each condition once per call with warnings.warn, pointing at
+    the line that called them: a condition the arguments show after every argument check has passed and
+    before the search starts, when nothing is written and the objective was not called (a seed given
+    together with an optimizer object, which ignores it), and a condition that depends on the outcome when
+    the call has finished and every result file was written (a run that ended without a finite score, then
+    plots that could not be drawn). So a warning turned into an exception (`-W error`,
+    warnings.simplefilter('error')) costs no result; of two outcome warnings the first is the one raised.
+    The standard filters apply: warnings.filterwarnings('ignore', category=MetaHpoWarning) silences them.
+    Deprecations will use FutureWarning, as Optuna and scikit-learn do."""
+
+
 DEFAULT_OUTPUT = "hpo_results"
 COMPRESS_FROM = 50_000
 FSYNC_EVERY = 1.0
@@ -802,6 +816,8 @@ class ResultWriter(Callback):
         self._resumes: list[dict[str, Any]] = []
         self._synced = 0.0
         self._existing = False
+        self._run_failures: list[str] = []
+        self._comparison_failures: list[str] = []
 
     @classmethod
     def _continuing(cls, folder: Path, config: dict[str, Any], entry: dict[str, Any]) -> ResultWriter:
@@ -836,6 +852,9 @@ class ResultWriter(Callback):
     def on_run_start(self, state: RunState) -> None:
         if self.folder is None:
             self.folder = self._make_folder(state)
+        if state.run == 1:
+            self._run_failures = []
+            self._comparison_failures = []
         self._files = {}
         self._jsonl = None
         self._pop_header = None
@@ -1174,6 +1193,7 @@ class ResultWriter(Callback):
                     )
             except Exception as exc:
                 self._notes.append(f"Plots failed: {type(exc).__name__}: {exc}")
+        self._run_failures.extend(self._notes)
         summary["plots"] = plot_files
         summary["notes"] = self._notes
         summary["folder"] = str(self.folder)
@@ -1214,6 +1234,7 @@ class ResultWriter(Callback):
                     run_plots = plots.make_run_plots(self._runs, self.folder, state.direction, notes)
             except Exception as exc:
                 notes.append(f"Run plots failed: {type(exc).__name__}: {exc}")
+        self._comparison_failures = notes
         runs = [
             {
                 "run": r["summary"]["run"],
@@ -1236,6 +1257,12 @@ class ResultWriter(Callback):
         }
         _write_json(self.folder / "summary.json", summary, errors=errors)
         _write_report(self.folder, shown["run_dir"], state, summary, shown["generations"])
+
+    def _failed_plots(self) -> list[str]:
+        """The notes of every plot that could not be drawn since the first run of the current search started:
+        those of each run, then those of the last drawing of the run comparison plots, which is the one in
+        the folder. optimize() and resume() read them for their warning when the call has finished."""
+        return [*self._run_failures, *self._comparison_failures]
 
 
 def _raise_first(errors: list[BaseException]) -> None:

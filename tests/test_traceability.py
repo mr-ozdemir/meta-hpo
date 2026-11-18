@@ -154,6 +154,7 @@ REQUIRED_IDS = frozenset(
         "R-FACADE-DEFAULT-AND-CUSTOM-OPT",
         "R-FUNCTION-RECEIVES-DICT",
         "R-USER-EXC-PROPAGATES",
+        "R-WARNINGS",
     }
 )
 
@@ -814,6 +815,61 @@ REQUIREMENTS = {
             "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
         ],
     },
+    "R-WARNINGS": {
+        "source": [
+            "CHANGELOG.md | `MetaHpoWarning`, a `UserWarning`, is the category of every warning meta-hpo "
+            "emits, once per condition and call; `optimize()` warns before the search starts, when nothing "
+            "is written yet, that a `seed` given together with an optimizer object has no effect, and "
+            "`optimize()` and `resume()` warn when the call has finished and every result file is written "
+            "about runs that ended without a finite score and about plots that could not be drawn.",
+            "README.md | meta-hpo warns with `mh.MetaHpoWarning`, a `UserWarning`, once per condition and "
+            "call:",
+            "README.md | `seed=` given together with an optimizer object, which ignores it, before the "
+            "search starts.",
+            "README.md | Runs that ended without a finite score (only NaN or infinite scores), when the call "
+            "has finished.",
+            "README.md | Plots that could not be drawn (`notes` in `summary.json` lists them), when the call "
+            "has finished.",
+            "README.md | The warnings after the search come once every result file is written, so turning "
+            "them into errors costs no result.",
+            "README.md | Deprecations will use `FutureWarning`.",
+            "metahpo.facade.optimize | A condition the arguments show is warned about after every argument "
+            "check has passed and before the search starts: nothing is written and the objective is not "
+            "called yet, and an argument that raises comes without a warning.",
+            "metahpo.facade.optimize | optimize() warns so when `seed` is given together with an optimizer "
+            "object, which already holds its random generator, so the seed has no effect.",
+            "metahpo.facade.optimize | They are, in this order: a run that ended without a finite score (the "
+            "objective returned only NaN or infinite scores, or none before the run was interrupted), so its "
+            "Study has no best trial; and plots that a ResultWriter of the call could not draw, which "
+            "summary.json notes.",
+            "metahpo.facade.resume | a run without a finite score, judged on every trial of the run when the "
+            "call returns (also when every run was restored and nothing was evaluated), and plots that could "
+            "not be drawn.",
+            "metahpo.report.MetaHpoWarning | The standard filters apply:",
+        ],
+        "tests": [
+            "test_facade_warnings::test_meta_hpo_warning_should_be_a_user_warning_exported_by_the_package",
+            "test_facade_warnings::test_optimize_should_warn_once_that_the_seed_has_no_effect_on_an_optimizer_object",
+            "test_facade_warnings::test_optimize_should_not_warn_when_the_seed_takes_effect_or_none_is_given",
+            "test_facade_warnings::test_optimize_should_raise_the_seed_warning_turned_into_an_error_before_anything_is_written_or_called",
+            "test_facade_warnings::test_optimize_should_raise_an_argument_error_without_a_warning_before_it",
+            "test_facade_warnings::test_optimize_should_warn_once_when_the_run_ended_without_a_finite_score",
+            "test_facade_warnings::test_optimize_should_count_the_runs_without_a_finite_score_in_one_warning",
+            "test_facade_warnings::test_optimize_should_not_warn_when_every_run_has_a_finite_score",
+            "test_facade_warnings::test_optimize_should_warn_about_a_run_interrupted_before_its_first_trial",
+            "test_facade_warnings::test_optimize_should_raise_the_objective_error_without_a_warning",
+            "test_facade_warnings::test_resume_should_warn_by_the_same_rule_when_it_evaluates_and_when_it_restores_everything",
+            "test_facade_warnings::test_optimize_should_warn_once_with_the_number_of_failed_plots_and_the_first_failure",
+            "test_facade_warnings::test_optimize_should_count_each_plot_that_failed_by_name",
+            "test_facade_warnings::test_optimize_should_not_warn_about_plots_without_a_results_folder_or_with_plots_off",
+            "test_facade_warnings::test_resume_should_warn_about_the_plots_it_could_not_draw",
+            "test_facade_warnings::test_the_plot_block_should_silence_third_party_warnings_and_our_warning_should_come_after_every_file",
+            "test_facade_warnings::test_optimize_should_emit_both_outcome_warnings_in_a_fixed_order",
+            "test_facade_warnings::test_the_ignore_filter_should_silence_every_meta_hpo_warning",
+            "test_facade_boundaries::test_optimize_should_finish_the_budget_without_warnings_when_every_score_is_nan",
+            "test_api_contract::test_metahpo_should_export_exactly_the_documented_names",
+        ],
+    },
 }
 
 
@@ -1402,7 +1458,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 23}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 24}
 
 
 @pytest.mark.parametrize(

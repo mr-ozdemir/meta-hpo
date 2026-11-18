@@ -34,6 +34,11 @@ from metahpo import (
     optimize,
 )
 
+pytestmark = [
+    pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning"),
+    pytest.mark.filterwarnings("ignore:.*plot failures? (was|were) noted:metahpo.MetaHpoWarning"),
+]
+
 ANY_SEED = 0
 
 
@@ -78,7 +83,6 @@ def _plots(tmp_path, optimizer, function=_score):
         direction="max",
         max_evals=80,
         optimizer=optimizer,
-        seed=ANY_SEED,
         verbose=0,
         output=None,
         callbacks=[ResultWriter(tmp_path)],

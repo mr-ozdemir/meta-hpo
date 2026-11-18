@@ -114,9 +114,7 @@ def test_bbpso_optimize_should_reproduce_a_manual_ask_tell_loop_that_slices_batc
     first refinement.
     """
     space = _mixed()
-    study = optimize(
-        _score, space, max_evals=55, optimizer=BBPSOOptimizer(space, seed=ANY_SEED), seed=ANY_SEED
-    )
+    study = optimize(_score, space, max_evals=55, optimizer=BBPSOOptimizer(space, seed=ANY_SEED))
 
     manual = _manual_loop(BBPSOOptimizer(space, seed=ANY_SEED), 55)
 
@@ -240,7 +238,7 @@ def test_bbpso_should_stay_usable_for_ask_and_tell_after_optimize_with_one_evalu
     """
     space = _mixed()
     opt = BBPSOOptimizer(space, seed=ANY_SEED)
-    optimize(_score, space, max_evals=1, optimizer=opt, seed=ANY_SEED)
+    optimize(_score, space, max_evals=1, optimizer=opt)
 
     first = opt.ask()
     opt.tell(first, [_score(c.params) for c in first])

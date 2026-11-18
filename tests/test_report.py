@@ -63,6 +63,8 @@ from metahpo import (
     optimize,
 )
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 ANY_SEED = 0
 
 
@@ -98,7 +100,7 @@ def _run(tmp_path, optimizer=None, max_evals=BUDGET, function=_score, **kwargs):
         direction="max",
         max_evals=max_evals,
         optimizer=optimizer,
-        seed=ANY_SEED,
+        seed=ANY_SEED if optimizer is None else None,
         verbose=0,
         output=None,
         callbacks=[ResultWriter(tmp_path, plots=False), *kwargs.pop("callbacks", [])],
@@ -639,9 +641,7 @@ def test_candidates_should_carry_their_phase_generation_and_individual(make, pha
     """
     space = _space()
 
-    study = optimize(
-        _score, space, max_evals=120, optimizer=make(space), seed=ANY_SEED, verbose=0, output=None
-    )
+    study = optimize(_score, space, max_evals=120, optimizer=make(space), verbose=0, output=None)
 
     seen = {t.meta["phase"] for t in study.trials}
     assert all({"phase", "generation", "individual"} <= set(t.meta) for t in study.trials)
@@ -664,7 +664,7 @@ def test_population_should_hold_positions_and_scores_of_equal_length(make):
     """
     space = _space()
     opt = make(space)
-    optimize(_score, space, max_evals=BUDGET, optimizer=opt, seed=ANY_SEED, verbose=0, output=None)
+    optimize(_score, space, max_evals=BUDGET, optimizer=opt, verbose=0, output=None)
 
     population = opt.population()
 

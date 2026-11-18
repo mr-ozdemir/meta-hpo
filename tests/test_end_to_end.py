@@ -71,6 +71,8 @@ import pytest
 
 import metahpo as mh
 
+pytestmark = pytest.mark.filterwarnings("ignore:.*ended without a finite score:metahpo.MetaHpoWarning")
+
 README_SEED = 1
 README_MAX_EVALS = 300
 README_COLONY_SIZE = 10

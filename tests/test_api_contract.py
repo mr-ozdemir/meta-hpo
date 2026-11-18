@@ -93,6 +93,7 @@ DOCUMENTED_EXPORTS = (
     "Float",
     "Int",
     "MaxTime",
+    "MetaHpoWarning",
     "Optimizer",
     "PSOOptimizer",
     "Patience",
@@ -140,13 +141,13 @@ def _params_of(candidates):
 
 
 def test_metahpo_should_export_exactly_the_documented_names():
-    """Given the package, when __all__ is read, then it holds exactly the twenty-one documented names once
+    """Given the package, when __all__ is read, then it holds exactly the twenty-two documented names once
     each.
 
     Oracle: README Quick start (Space, Float, Int, Categorical, optimize, ABCOptimizer), CHANGELOG 'Added'
-    (Study, resume, Stopper, Patience, MaxTime, TargetScore), the __init__ export list (Candidate,
-    Optimizer, Trial) and the README optimizer list (PSOOptimizer). Set equality is decisive: an added
-    name and a removed name both fail, and the length check catches a duplicated entry.
+    (Study, resume, Stopper, Patience, MaxTime, TargetScore, MetaHpoWarning), the __init__ export list
+    (Candidate, Optimizer, Trial) and the README optimizer list (PSOOptimizer). Set equality is decisive:
+    an added name and a removed name both fail, and the length check catches a duplicated entry.
     """
     expected = set(DOCUMENTED_EXPORTS)
 
@@ -170,6 +171,7 @@ def test_metahpo_should_export_exactly_the_documented_names():
         pytest.param("Float", inspect.isclass, id="Float"),
         pytest.param("Int", inspect.isclass, id="Int"),
         pytest.param("MaxTime", inspect.isclass, id="MaxTime"),
+        pytest.param("MetaHpoWarning", inspect.isclass, id="MetaHpoWarning"),
         pytest.param("Patience", inspect.isclass, id="Patience"),
         pytest.param("Stopper", inspect.isclass, id="Stopper"),
         pytest.param("TargetScore", inspect.isclass, id="TargetScore"),
@@ -886,7 +888,6 @@ def _median_scaled_best(make_optimizer, scale):
             space,
             max_evals=SPHERE_EVALS,
             optimizer=make_optimizer(space, seed),
-            seed=seed,
         )
         bests.append(study.best_score / scale)
         calls.append(study.n_calls)
@@ -1009,7 +1010,7 @@ def test_optimize_should_leave_the_passed_optimizer_usable_for_ask_and_tell_when
     """
     space = _contract_space()
     opt = make_optimizer(space, CONTRACT_SEED)
-    study = metahpo.optimize(_sphere, space, max_evals=1, optimizer=opt, seed=CONTRACT_SEED)
+    study = metahpo.optimize(_sphere, space, max_evals=1, optimizer=opt)
 
     keys, _, best_score = _run_rounds(opt, CONTRACT_ROUNDS)
 
