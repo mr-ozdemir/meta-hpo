@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-18
+
 ### Added
 
 - `MetaHpoWarning`, a `UserWarning`, is the category of every warning meta-hpo emits, once per condition
@@ -49,7 +51,6 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - A console whose encoding cannot show a parameter name, a choice or a value (cp1254, ascii) prints the
   character as a backslash escape and keeps printing, instead of going silent for the rest of the search;
   a stream whose `encoding` is missing, None or not usable gets the lines unchanged.
-
 - `Int` and `Float` bounds given as numpy scalars or 0-d arrays are stored as the Python numbers they hold:
   `Int(np.uint8(0), np.uint8(255))` no longer overflows into an empty, "exhausted" run, and `float32`
   bounds give the same search as the same Python floats.
