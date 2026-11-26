@@ -51,13 +51,16 @@ pytest
 
 - `master` holds released code and `develop` collects finished work.
   Neither receives direct pushes, and force pushes are never used.
-- Work happens on a personal branch, kept up to date with `git merge --ff-only origin/develop`.
-- Open the pull request against `develop` and ask the other maintainer for review.
-  Describe what changed, which tests were added, and the related decisions.
-- Pull requests are merged with a merge commit only, by a maintainer other than the author.
+- Every task starts with an issue and has one owner: one issue, one branch, one pull request.
+- The branch starts from `develop` and is named after the kind of work: `feat/<name>`, `fix/<name>` or
+  `docs/<name>`. It is deleted when its pull request is merged.
+- The owner opens the pull request against `develop`, describes what changed and ends the description
+  with `Part of #N`, the number of the issue.
+- A pull request is merged when every CI check is green and the other maintainer has approved it.
+  The owner merges it, with a merge commit only; squash and rebase merges are turned off.
+- Changes asked for in a review are new commits on the same branch; commits are never amended.
 - CI runs on every pull request and on pushes to `develop`. A pull request from `develop` to `master` skips
   the CI steps, because the same commit was already tested on `develop`.
-- One topic per pull request.
 
 ## Commits
 
@@ -72,8 +75,11 @@ that fits: Added, Changed, Deprecated, Removed, Fixed or Security.
 ## Releases
 
 - Releases are made from `master` by the repository owner.
-- The version in `pyproject.toml` and `metahpo.__version__` is set, and `## [Unreleased]` in the changelog
-  gets a dated version heading, through the usual pull requests.
+- A `release/x.y.z` branch sets the version in `pyproject.toml` and `metahpo.__version__` and gives
+  `## [Unreleased]` in the changelog a dated version heading; it reaches `develop` through a pull request
+  like any other task.
+- The pull request from `develop` to `master` lists the pull requests it covers and closes their issues
+  with `Closes #N`.
 - Pushing a tag `vX.Y.Z` on `master` runs the release workflow: it checks that the tag matches the package
   version, builds the sdist and wheel, and publishes them to PyPI with trusted publishing, without tokens.
 
