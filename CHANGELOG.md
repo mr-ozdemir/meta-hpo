@@ -6,6 +6,8 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
 ### Added
 
 - Pruning, as in Optuna: an objective with a parameter named `trial` receives a `RunningTrial`, reports
