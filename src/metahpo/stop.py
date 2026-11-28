@@ -55,8 +55,8 @@ class Patience(Stopper):
 
     Calls count as for max_evals: a cached repeat is no call. An improvement is a finite score better than
     the reference, in the run's direction, by more than `min_delta`; the first finite score of a run is
-    always one, and only an improvement moves the reference. A NaN or infinite score is a call without
-    improvement. `evals` is an integer of at least 1 and `min_delta` a finite number >= 0.
+    always one, and only an improvement moves the reference. A NaN or infinite score and a pruned trial are
+    calls without improvement. `evals` is an integer of at least 1 and `min_delta` a finite number >= 0.
     """
 
     reason = "patience"
@@ -68,8 +68,9 @@ class Patience(Stopper):
         self._improved_at = 0
 
     def should_stop(self, state: RunState) -> bool:
-        score = state.study.trials[-1].score
-        if self._improves(score, state.direction):
+        trial = state.study.trials[-1]
+        score = trial.score
+        if not trial.pruned and self._improves(score, state.direction):
             self._reference = score
             self._improved_at = state.calls
         return state.calls - self._improved_at >= self.evals

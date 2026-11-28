@@ -41,6 +41,12 @@ class Trial:
     seconds since the epoch when the evaluation started (NaN when unknown) and `duration` the seconds it took
     (0 for a cached repeat). The two timing fields are measurements, not part of a trial's identity: they are
     left out of == and repr, so the same seed still gives equal trials.
+
+    `pruned` is True for a trial that the objective ended by raising metahpo.TrialPruned; its score is then
+    its last reported intermediate value (NaN when it reported none), as in Optuna, and it is never the best
+    trial. `intermediate_values` maps each step the objective reported (see metahpo.prune) to its value; it
+    is empty for an objective that reports nothing. A cached repeat carries the outcome of the trial it
+    repeats.
     """
 
     number: int
@@ -51,16 +57,27 @@ class Trial:
     meta: dict[str, Any] = field(default_factory=dict)
     start_time: float = field(default=math.nan, repr=False, compare=False)
     duration: float = field(default=0.0, repr=False, compare=False)
+    pruned: bool = False
+    intermediate_values: dict[int, float] = field(default_factory=dict, repr=False)
 
     @property
     def failed(self) -> bool:
-        """True when the user's function returned NaN or an infinite value."""
-        return not math.isfinite(self.score)
+        """True when the user's function returned NaN or an infinite value; a pruned trial is not failed."""
+        return not self.pruned and not math.isfinite(self.score)
+
+    @property
+    def state(self) -> str:
+        """'complete' for a finite score, 'pruned' for a pruned trial and 'failed' for a NaN or infinite
+        score."""
+        if self.pruned:
+            return "pruned"
+        return "failed" if self.failed else "complete"
 
     def __eq__(self, other: object) -> bool:
-        """True when number, params, score, cached flag, x and meta are equal: x element by element, two NaN
-        scores (failed trials) count as equal, and params and meta may hold numpy arrays. The timing fields
-        are left out. A value of another class gives NotImplemented."""
+        """True when number, params, score, cached flag, x, meta, the pruned flag and the intermediate
+        values are equal: x element by element, two NaN scores (failed trials) count as equal, and params and
+        meta may hold numpy arrays. The timing fields are left out. A value of another class gives
+        NotImplemented."""
         if other.__class__ is not self.__class__:
             return NotImplemented
         assert isinstance(other, Trial)
@@ -71,6 +88,8 @@ class Trial:
             and bool(np.array_equal(self.x, other.x))
             and _same(self.params, other.params)
             and _same(self.meta, other.meta)
+            and self.pruned == other.pruned
+            and _same(self.intermediate_values, other.intermediate_values)
         )
 
 
@@ -108,7 +127,7 @@ class Study:
 
     @property
     def best_trial(self) -> Trial:
-        finite = [t for t in self.trials if not t.failed]
+        finite = [t for t in self.trials if t.state == "complete"]
         if not finite:
             raise ValueError("no trial returned a finite score")
         pick = min if self.direction == "min" else max
