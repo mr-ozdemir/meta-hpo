@@ -5,7 +5,8 @@ ship with the library and are switched on by default:
 
 - ConsoleReporter prints one line per generation (`verbose=1`, every `log_every` generations) or one line
   per trial as well (`verbose=2`): evaluations used, the best score so far, the generation's best, mean and
-  standard deviation, failed and cached trials, elapsed time and an estimate of the remaining time.
+  standard deviation, failed, pruned (when there are any) and cached trials, elapsed time and an estimate of
+  the remaining time; a pruned trial's line names the step it was pruned at.
 - ResultWriter writes a time-stamped folder below `output` (default `hpo_results` in the working directory).
   Trials, the best result, generations and population snapshots are appended while the search runs and
   flushed after every write, so the best result is on disk even if the process is killed. Summaries,
@@ -26,14 +27,23 @@ Folder layout (one `run_NNN` folder per run; `optimize(runs=...)` writes all run
         run_001/
             trials.csv, trials.jsonl, state.json, best.json, best_history.csv, generations.csv,
             population.csv, parameters.csv, categories.csv, plots/*.png
+            intermediate.csv                                  (only when trials reported values)
             summary.json                                      (only with several runs)
 
 With several runs, summary.json holds the summary of the best run plus `runs` (one entry per run),
 `best_run` and `run_scores` (best, mean, median, std and worst of the runs' best scores), and report.md
 starts with a table of the runs. Both are rewritten after every run, so they cover the runs so far.
 
-Large searches (max_evals >= COMPRESS_FROM) write trials.csv and population.csv gzip-compressed
-(.csv.gz), which pandas and most tools read directly.
+Large searches (max_evals >= COMPRESS_FROM) write trials.csv, population.csv and intermediate.csv
+gzip-compressed (.csv.gz), which pandas and most tools read directly.
+
+Pruned trials (see metahpo.prune): trials.csv marks them in the column `pruned`, generations.csv counts
+them per generation, and summary.json and report.md count the completed, pruned and failed trials and the
+intermediate values reported (`reported_steps`, cached repeats not counted). intermediate.csv holds one row
+per reported value (run, trial, step, value, pruned) of every evaluated trial, cached repeats left out, and
+the plot 12_learning_curves draws them, pruned trials apart. A pruned trial's score is its last reported
+value, which is no final score, so the score statistics, the score plots and the parameter analysis leave
+pruned trials out, as they leave out failed ones.
 
 What a resume needs (see metahpo.resume). config.json records the space, the direction, the budget, the
 runs and their seeds, the cache flag and the optimizer with every constructor setting
@@ -41,7 +51,8 @@ runs and their seeds, the cache flag and the optimizer with every constructor se
 optimizers; `stop` lists the stopping rules of the runs in order, each with its class name and
 `settings` (Stopper.settings()), and is empty for a search without rules (a folder written by an older
 version has no `stop`, which counts as no rules); each rule also records the `module` of its class, so
-resume() builds again only the library's own rules. A Categorical whose choices are all strings, integers,
+resume() builds again only the library's own rules. `pruner` records the pruner the same way (a folder
+without it counts as MedianPruner()). A Categorical whose choices are all strings, integers,
 finite floats, booleans or None stores them as JSON values; any other Categorical stores the repr() of each
 choice and is marked `"repr": true`, and resume() then needs the space passed in. That text, and every other
 text the files show for such a value, leaves out the memory address (' at 0x...') of a function, lambda,
@@ -58,9 +69,10 @@ synced to disk (os.fsync) once FSYNC_EVERY seconds have passed since the last sy
 at most the trials of the last second while cheap objectives are not slowed down; a training that takes
 longer than that is synced after every trial. Each line holds the trial's `score` (a NaN or infinite score
 as the string 'nan', 'inf' or '-inf'), `x`, `params`, its meta, `cached`, `start_epoch` (the exact start in
-seconds since the epoch) and `duration_s`. resume() never rewrites a logged line: it drops a line cut short
-by a kill and appends the new trials. Every other file of a run folder is derived from the trials and is
-written again from the start when a run is resumed.
+seconds since the epoch) and `duration_s`; a pruned trial adds `"state": "pruned"`, and a trial that
+reported intermediate values adds `intermediate_values` (step -> value). resume() never rewrites a logged
+line: it drops a line cut short by a kill and appends the new trials. Every other file of a run folder is
+derived from the trials and is written again from the start when a run is resumed.
 
 Time: `elapsed_s`, `found_after_s`, the `duration_s` of a generation or a run, the console clock and the
 convergence-by-time plot count search time, the wall-clock time since the run started minus the time the
@@ -150,7 +162,8 @@ class RunState:
     every resume of the run, see elapsed().
 
     `rules` holds the run's own copies of the stopping rules (metahpo.stop.Stopper objects) that optimize()
-    or resume() asks after every trial; it is empty for a run without rules.
+    or resume() asks after every trial; it is empty for a run without rules. `pruner` is the run's own copy
+    of the pruner (a metahpo.prune.Pruner), None for a state built without one.
     """
 
     space: Space
@@ -170,6 +183,7 @@ class RunState:
     replaying: bool = False
     pauses: list[tuple[int, float]] = field(default_factory=list)
     rules: list[Any] = field(default_factory=list)
+    pruner: Any = None
 
     def __post_init__(self) -> None:
         self._replayed_until = self.started
@@ -351,7 +365,7 @@ class ConsoleReporter(Callback):
             return
         self._resumed_due = False
         restored = state.study.trials[: state.restored]
-        best = _stats([t.score for t in restored], state.direction)["best"]
+        best = _stats([t.score for t in restored if not t.pruned], state.direction)["best"]
         self._print(
             f"[meta-hpo] run {_run_label(state)} | resumed | {len(restored)} trials restored "
             f"({sum(not t.cached for t in restored)} calls) | best "
@@ -369,7 +383,7 @@ class ConsoleReporter(Callback):
         meta = trial.meta
         self._print(
             f"  trial {trial.number:5d} | gen {meta.get('generation', '-')} {meta.get('phase', '')} "
-            f"#{meta.get('individual', '-')} | score {_fmt(trial.score)}{cached} | "
+            f"#{meta.get('individual', '-')} | score {_fmt(trial.score)}{_pruned_mark(trial)}{cached} | "
             f"{trial.duration:.3f}s{mark} | {trial.params}"
         )
 
@@ -379,18 +393,20 @@ class ConsoleReporter(Callback):
         self._resumed(state)
         if (generation + 1) % self.log_every and state.study.stop_reason == "":
             return
-        gen = _stats([t.score for t in trials], state.direction)
+        gen = _stats([t.score for t in trials if not t.pruned], state.direction)
         elapsed = state.elapsed()
         eta = elapsed / state.calls * (state.max_evals - state.calls) if state.calls else math.nan
         eta_txt = _clock(eta) if math.isfinite(eta) else "--"
         best = state.best
         best_txt = "none" if best is None else f"{_fmt(best.score)} (trial {best.number})"
         failed = sum(t.failed for t in trials)
+        pruned = sum(t.pruned for t in trials)
         cached = sum(t.cached for t in trials)
+        pruned_txt = f" pruned {pruned}" if pruned else ""
         self._print(
             f"gen {generation:4d} | evals {state.calls:6d}/{state.max_evals} | best {best_txt} | "
             f"gen best {_fmt(gen['best'])} mean {_fmt(gen['mean'])} std {_fmt(gen['std'])} | "
-            f"failed {failed} cached {cached} | {_clock(elapsed)} ETA {eta_txt}"
+            f"failed {failed}{pruned_txt} cached {cached} | {_clock(elapsed)} ETA {eta_txt}"
         )
 
     def on_run_end(self, state: RunState) -> None:
@@ -412,6 +428,14 @@ class ConsoleReporter(Callback):
             self._print(_runs_line(self._run_bests, state.direction))
 
 
+def _pruned_mark(trial: Trial) -> str:
+    """' (pruned at step <s>)' for a pruned trial, ' (pruned)' when it reported no step, else ''."""
+    if not trial.pruned:
+        return ""
+    values = trial.intermediate_values
+    return f" (pruned at step {max(values)})" if values else " (pruned)"
+
+
 def _describe_rules(rules: Sequence[Any]) -> list[dict[str, Any]]:
     """The stopping rules as config.json records them: the class name, the module of the class and
     settings() of each, in order."""
@@ -419,6 +443,14 @@ def _describe_rules(rules: Sequence[Any]) -> list[dict[str, Any]]:
         {"name": type(rule).__name__, "module": type(rule).__module__, "settings": rule.settings()}
         for rule in rules
     ]
+
+
+def _describe_pruner(pruner: Any) -> dict[str, Any] | None:
+    """The pruner as config.json records it: the class name, the module of the class and settings(); None
+    for no pruner."""
+    if pruner is None:
+        return None
+    return {"name": type(pruner).__name__, "module": type(pruner).__module__, "settings": pruner.settings()}
 
 
 def _rules_label(rules: Sequence[Any]) -> str:
@@ -630,6 +662,20 @@ def _exact_score(score: float) -> float | str:
     return score if math.isfinite(score) else repr(score)
 
 
+def _pruning_record(trial: Trial) -> dict[str, Any]:
+    """The pruning fields of a trials.jsonl line: 'state' for a pruned trial and 'intermediate_values'
+    (step -> value, 'nan', 'inf' or '-inf' as for the score) for a trial that reported any; empty for a trial
+    without either, so the line of a search without pruning keeps the keys of 0.8.0."""
+    record: dict[str, Any] = {}
+    if trial.pruned:
+        record["state"] = "pruned"
+    if trial.intermediate_values:
+        record["intermediate_values"] = {
+            str(step): _exact_score(value) for step, value in trial.intermediate_values.items()
+        }
+    return record
+
+
 def _number(value: Any) -> float:
     """A float written by ResultWriter: a number, 'nan', 'inf' or '-inf', or null (NaN, as 0.5.x wrote)."""
     return math.nan if value is None else float(value)
@@ -650,6 +696,8 @@ class _Logged:
     score: float
     start: float
     duration: float
+    pruned: bool = False
+    values: dict[int, float] = field(default_factory=dict)
 
     @property
     def end(self) -> float:
@@ -666,7 +714,25 @@ def _logged(record: dict[str, Any]) -> _Logged:
         _number(record["score"]),
         start,
         float(record["duration_s"]),
+        _pruned_state(record.get("state", "complete")),
+        {_step(step): _number(value) for step, value in record.get("intermediate_values", {}).items()},
     )
+
+
+def _pruned_state(state: Any) -> bool:
+    """True for the state 'pruned' of a trials.jsonl line, False for 'complete' or a line without a state;
+    ValueError for anything else."""
+    if state not in ("complete", "pruned"):
+        raise ValueError(f"unknown trial state {state!r}")
+    return bool(state == "pruned")
+
+
+def _step(text: str) -> int:
+    """A step of trials.jsonl, a key such as '3'; ValueError for anything but an integer >= 0."""
+    step = int(text)
+    if step < 0 or str(step) != text:
+        raise ValueError(f"{text!r} is not a step")
+    return step
 
 
 @dataclass
@@ -782,9 +848,10 @@ def _config_problem(config: Any) -> str:
         "space": lambda v: isinstance(v, list) and all(_parameter_record(p) for p in v),
         "cache": lambda v: isinstance(v, bool),
         "stop": lambda v: isinstance(v, list) and all(_rule_record(r) for r in v),
+        "pruner": lambda v: v is None or _rule_record(v),
         "resumes": lambda v: isinstance(v, list),
     }
-    optional = ("cache", "stop", "resumes")
+    optional = ("cache", "stop", "pruner", "resumes")
     for key, valid in checks.items():
         if key in config:
             if not valid(config[key]):
@@ -866,7 +933,14 @@ class ResultWriter(Callback):
         self._seeds.append(state.seed)
         self.run_dir = self.folder / f"run_{state.run:03d}"
         (self.run_dir / "plots").mkdir(parents=True, exist_ok=self._existing)
-        for stale in ("trials.csv", "trials.csv.gz", "population.csv", "population.csv.gz"):
+        for stale in (
+            "trials.csv",
+            "trials.csv.gz",
+            "population.csv",
+            "population.csv.gz",
+            "intermediate.csv",
+            "intermediate.csv.gz",
+        ):
             (self.run_dir / stale).unlink(missing_ok=True)
         compressed = state.max_evals >= COMPRESS_FROM
         names = list(state.space.names)
@@ -883,6 +957,7 @@ class ResultWriter(Callback):
                 *[f"x_{n}" for n in names],
                 "score",
                 "failed",
+                "pruned",
                 "cached",
                 "best_so_far",
                 "is_new_best",
@@ -918,6 +993,7 @@ class ResultWriter(Callback):
             "gen_std",
             "gen_worst",
             "failed",
+            "pruned",
             "cached",
             "pop_best",
             "pop_mean",
@@ -951,6 +1027,7 @@ class ResultWriter(Callback):
             "seeds": seeds,
             "cache": state.cache,
             "stop": _describe_rules(state.rules),
+            "pruner": _describe_pruner(state.pruner),
             "space": _describe_space(state.space),
             "started": _iso(state.started),
             "folder": str(self.folder),
@@ -1002,6 +1079,7 @@ class ResultWriter(Callback):
                 *[_cell(v) for v in xs],
                 _cell(trial.score),
                 int(trial.failed),
+                int(trial.pruned),
                 int(trial.cached),
                 _cell(best_score),
                 int(new_best),
@@ -1011,6 +1089,8 @@ class ResultWriter(Callback):
                 f"{elapsed:.6f}",
             ]
         )
+        if trial.intermediate_values and not trial.cached:
+            self._intermediate(state, trial)
         if not state.replaying:
             self._log(state, trial, generation, phase, individual, meta, xs, best_score, new_best, end)
         if new_best:
@@ -1069,6 +1149,7 @@ class ResultWriter(Callback):
             "score": _exact_score(trial.score),
             "failed": trial.failed,
             "cached": trial.cached,
+            **_pruning_record(trial),
             "best_so_far": best_score,
             "is_new_best": new_best,
             "start_time": _iso(trial.start_time),
@@ -1083,10 +1164,24 @@ class ResultWriter(Callback):
             os.fsync(self._jsonl.fileno())
             self._synced = now
 
+    def _intermediate(self, state: RunState, trial: Trial) -> None:
+        """Appends the intermediate values of an evaluated trial to intermediate.csv, which is opened at the
+        first trial that reported any."""
+        assert self.run_dir is not None
+        if "intermediate" not in self._files:
+            self._files["intermediate"] = _CsvFile(
+                self.run_dir / "intermediate.csv",
+                ["run", "trial", "step", "value", "pruned"],
+                self._compressed,
+            )
+        table = self._files["intermediate"]
+        for step, value in trial.intermediate_values.items():
+            table.row([state.run, trial.number, step, _cell(value), int(trial.pruned)])
+
     def on_generation(self, state: RunState, generation: int, trials: list[Trial], population: Any) -> None:
         assert self.run_dir is not None
         now = state.now()
-        gen = _stats([t.score for t in trials], state.direction)
+        gen = _stats([t.score for t in trials if not t.pruned], state.direction)
         last = trials[-1].number if trials else -1
         row: dict[str, Any] = {
             "run": state.run,
@@ -1100,6 +1195,7 @@ class ResultWriter(Callback):
             "gen_std": gen["std"],
             "gen_worst": gen["worst"],
             "failed": sum(t.failed for t in trials),
+            "pruned": sum(t.pruned for t in trials),
             "cached": sum(t.cached for t in trials),
         }
         if population is not None:
@@ -1305,6 +1401,9 @@ def _run_summary(state: RunState, ended: float) -> dict[str, Any]:
         "trials": len(study.trials),
         "cached_trials": sum(t.cached for t in study.trials),
         "failed_trials": sum(t.failed for t in study.trials),
+        "pruned_trials": sum(t.pruned for t in study.trials),
+        "complete_trials": sum(t.state == "complete" for t in study.trials),
+        "reported_steps": sum(len(t.intermediate_values) for t in study.trials if not t.cached),
         "generations": state.optimizer.generation,
         "started": _iso(state.started),
         "ended": _iso(ended),
@@ -1340,7 +1439,7 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
 
     The choice of a trial is found from its x (_choice_index), never by comparing values, so any object can
     be a choice and choices that compare equal across types are counted apart."""
-    real = [t for t in state.study.trials if not t.cached and not t.failed]
+    real = [t for t in state.study.trials if not t.cached and t.state == "complete"]
     scores = np.array([t.score for t in real], dtype=np.float64)
     best = state.best
     params_file = _CsvFile(
@@ -1421,6 +1520,14 @@ def _write_parameter_analysis(state: RunState, run_dir: Path) -> None:
     cats_file.close()
 
 
+def _pruned_text(summary: dict[str, Any]) -> str:
+    """', pruned <n>; <m> intermediate values reported' for report.md when the run reported intermediate
+    values, else ''."""
+    if not summary["reported_steps"]:
+        return ""
+    return f", pruned {summary['pruned_trials']}; {summary['reported_steps']} intermediate values reported"
+
+
 def _written(run_dir: Path, stem: str) -> str:
     """The name under which the table `stem` was written in run_dir: <stem>.csv.gz for a large run,
     <stem>.csv otherwise, or '' when it was not written (population.csv of an optimizer without one)."""
@@ -1442,10 +1549,11 @@ def _write_report(
         f"- Started: {summary['started']}, ended: {summary['ended']} ({_clock(summary['duration_s'])})",
         f"- Stop reason: **{summary['stop_reason']}**",
         f"- Real calls: {summary['calls']} of max_evals={summary['max_evals']}; trials {summary['trials']} "
-        f"(cached {summary['cached_trials']}, failed {summary['failed_trials']}); generations "
-        f"{summary['generations']}",
+        f"(cached {summary['cached_trials']}, failed {summary['failed_trials']}{_pruned_text(summary)}); "
+        f"generations {summary['generations']}",
         f"- Direction: {summary['direction']}; seed: {summary['seed']}",
         *([f"- Stopping rules: {_rules_label(state.rules)}"] if state.rules else []),
+        *([f"- Pruner: {_rules_label([state.pruner])}"] if summary["reported_steps"] else []),
         "",
     ]
     if "runs" in summary:
@@ -1509,6 +1617,11 @@ def _write_report(
         *(
             [f"- `{rel}/{_written(run_dir, 'population')}`: the population at the end of every generation"]
             if _written(run_dir, "population")
+            else []
+        ),
+        *(
+            [f"- `{rel}/{_written(run_dir, 'intermediate')}`: every intermediate value, by trial and step"]
+            if _written(run_dir, "intermediate")
             else []
         ),
         f"- `{rel}/best_history.csv`, `{rel}/best.json`: every improvement and the best result",

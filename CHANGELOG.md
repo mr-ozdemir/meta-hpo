@@ -6,6 +6,30 @@ and the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-28
+
+### Added
+
+- Pruning, as in Optuna: an objective with a parameter named `trial` receives a `RunningTrial`, reports
+  intermediate values with `trial.report(value, step)`, asks `trial.should_prune()` and ends a trial early
+  by raising `TrialPruned`; a pruned trial counts toward `max_evals`, its score is its last reported value,
+  `Trial.state` is `pruned` and `Trial.intermediate_values` holds what it reported, and it is never the best
+  trial.
+- `optimize(pruner=...)` decides with `MedianPruner`, the default, or `PercentilePruner`, which take
+  Optuna's settings `n_startup_trials`, `n_warmup_steps`, `interval_steps` and `n_min_trials`, with
+  `NopPruner` to switch pruning off, or with a `Pruner` of your own that overrides `prune(study, trial)`;
+  the initial population of an optimizer is never pruned, and `MetaHpoWarning` names a given pruner that
+  cannot act and steps reported twice.
+- The optimizers rank a pruned candidate below every finite score and above a NaN or infinite one, through
+  the `pruned` argument of `tell()`; `BBPSOOptimizer` keeps a particle in place when its move is pruned.
+- `trials.jsonl` records the state and the intermediate values of the trials that reported any and
+  `config.json` records the pruner; `resume()` restores pruned trials without asking the pruner again and
+  goes on with the recorded pruner or with `resume(pruner=...)`.
+- The results folder shows pruned trials: a `pruned` column in `trials.csv` and `generations.csv`, the
+  counts `complete_trials`, `pruned_trials` and `reported_steps` in `summary.json` and report.md,
+  `intermediate.csv` with every reported value and the plot `12_learning_curves`; the console marks pruned
+  trials, and the score statistics, the score plots and the parameter analysis leave them out.
+
 ## [0.8.0] - 2026-11-18
 
 ### Added

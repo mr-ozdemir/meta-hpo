@@ -4,9 +4,9 @@ Suite
 -----
 The suite under tests/ checks the metahpo package: the search space, the ABC operators, the ask/tell optimizer
 base, the ABC optimizer, the PSO optimizer, the BBPSO optimizer, the study results, the optimize() facade, the
-results reporting, the result plots and the stopping rules. It is built top-down: the system is first split
-into features, each feature gets one plan, and each plan lists its scenario groups and the test files that
-hold them. Every file under tests/ belongs to exactly one plan.
+results reporting, the result plots, the stopping rules and pruning. It is built top-down: the system is
+first split into features, each feature gets one plan, and each plan lists its scenario groups and the test
+files that hold them. Every file under tests/ belongs to exactly one plan.
 
 Features
 --------
@@ -21,7 +21,8 @@ Features
 9. results reporting (metahpo.report)
 10. result plots (metahpo.plots)
 11. stopping rules (metahpo.stop)
-12. cross-cutting (the whole package)
+12. pruning (metahpo.prune)
+13. cross-cutting (the whole package)
 
 Plans
 -----
@@ -64,12 +65,14 @@ velocity, absorbing walls and constriction; BBPSO samplers, correlation, repair 
 Plan: optimizer base protocol
 Scenario groups: direction handling and the worst-score mapping of NaN and inf; best_params and best_score
 bookkeeping; constructor errors; reproducible random stream across a refill of the uniform block; branches
-found unreached; specification gaps; resolved ambiguities
+found unreached; specification gaps; resolved ambiguities; the rank of pruned candidates in tell() of the
+three optimizers
     test_base.py | unit | Optimizer and Candidate through the public ask/tell interface
     test_base_rng.py | unit | reproducibility of the random stream across block refills
     test_base_coverage.py | unit | direction check and reported best found by the coverage measurement
     test_base_spec.py | unit | specification gaps of the common optimizer interface
     test_base_specified.py | unit | resolved ambiguities and unspecified behaviour of the optimizer contract
+    test_base_pruned.py | unit | pruned candidates in tell() of ABC, PSO and BBPSO and their ranking
 
 Plan: ABC optimizer
 Scenario groups: init batch and partial tell; employed sweep; onlooker roulette; scout and limit; greedy
@@ -124,7 +127,9 @@ trajectory level; repeated runs with one seed per run and optimizer functions; r
 finished or extended search from its results folder; stopping rules ending a run inside a batch, in order,
 with fresh copies per run; resuming with the recorded or replaced stopping rules; MetaHpoWarning emitted once
 per condition, the ignored seed before the search and runs without a finite score and failed plots at the end
-of a call, pointing at the caller and obeying the warning filters
+of a call, pointing at the caller and obeying the warning filters; pruning through optimize() and resume():
+the trial handle, the initial population, pruned trials in the budget, the cache, the stopping rules and the
+optimizers, the pruner warnings, the results folder records and resuming a pruned run
     test_facade.py | unit | optimize() argument checks, budget and cache bookkeeping
     test_facade_budget.py | unit | exact trial and call counts of the evaluation budget
     test_facade_doubles.py | integration | scripted optimizer, objective stubs, spies and mocks
@@ -141,6 +146,7 @@ of a call, pointing at the caller and obeying the warning filters
     test_facade_stop.py | integration | optimize(stop=...) ending runs early through the stopping rules
     test_facade_resume_stop.py | integration | resume() with the recorded stopping rules or with stop=
     test_facade_warnings.py | integration | MetaHpoWarning of optimize() and resume() and the warning filters
+    test_facade_prune.py | integration | optimize(pruner=...) and resume(pruner=...) with pruning objectives
 
 Plan: results reporting
 Scenario groups: console lines per generation and per trial; environment overrides of output and verbose;
@@ -148,8 +154,10 @@ results folder layout and file contents; live best.json and incremental files; g
 statistics; parameter analysis; stop reasons, interrupt and error handling; compression of large runs;
 several runs in one folder with a summary over the runs; what a resume needs (state.json, every optimizer
 setting, JSON choices, exact scores in trials.jsonl and its throttled sync to disk); the stopping rules in
-config.json, the console header and report.md
+config.json, the console header and report.md; pruned trials in the console, trials.csv, generations.csv,
+intermediate.csv, summary.json, report.md, the parameter analysis and the learning-curve plot
     test_report.py | unit | ConsoleReporter, ResultWriter and the run events through optimize()
+    test_report_pruned.py | unit | pruned trials and intermediate values in the console and the results folder
 
 Plan: result plots
 Scenario groups: every plot file written for each optimizer; plots skipped with a note when they fail
@@ -160,6 +168,13 @@ Scenario groups: Patience counting calls without improvement with min_delta, cac
 scores; MaxTime against the run's search time; TargetScore per direction; constructor validation; the
 Stopper base, its settings and the check of the rules optimize() receives
     test_stop.py | unit | Stopper, Patience, MaxTime and TargetScore on hand-built run states
+
+Plan: pruning
+Scenario groups: MedianPruner and PercentilePruner against hand-computed thresholds in both directions; the
+reference set of completed trials at the exact step; startup, warm-up, interval and minimum-count limits; NaN
+values; constructor validation and settings; NopPruner and the Pruner base; RunningTrial reports, repeats,
+protection and closing
+    test_prune.py | unit | pruners and RunningTrial on hand-built studies
 
 Plan: cross-cutting
 Scenario groups: README examples end to end; seeded determinism and order independence; pinned
@@ -179,7 +194,7 @@ and this plan; requirement-test traceability matrix
 
 The cross-cutting files are end_to_end, determinism, regression, fuzz, fuzz_grammar, api_contract, static,
 suite_layout and traceability. Every other file is named test_<module>.py or test_<module>_<aspect>.py after
-its unit (space, operators, base, abc, study, facade, stop).
+its unit (space, operators, base, abc, study, facade, stop, prune).
 
 Layers
 ------
@@ -217,6 +232,7 @@ One strategy and one coverage target per unit:
     study | code-based (white box) | branch coverage
     facade | code-based (white box) | branch coverage
     stop | code-based (white box) | branch coverage
+    prune | code-based (white box) | branch coverage
 The spec names no strategy for base; code-based (white box) is chosen to match the other small units.
 No numeric coverage level is claimed.
 
@@ -264,35 +280,38 @@ Import graph of src/metahpo (module <- the modules that import it; both package 
 __init__):
     space <- base, abc, pso, bbpso, facade, report, plots, __init__
     operators <- abc, pso, bbpso
-    base <- abc, pso, bbpso, study, facade, report, stop, __init__
+    base <- abc, pso, bbpso, study, facade, report, stop, prune, __init__
     abc <- facade, __init__
     pso <- facade, __init__
     bbpso <- facade, __init__
-    study <- facade, report, __init__
+    study <- facade, report, prune, __init__
     facade <- __init__
     report <- facade, stop, __init__
     plots <- report
     stop <- facade, __init__
+    prune <- facade, __init__
 Each row below contains the rows of all modules that import it, so the selection is closed over the import
 graph: a test that uses a module's public names, or the names of a module that imports it, is selected. The
 package __init__ files, which import every module, are not followed as a path from a test to a module,
 otherwise every row would be the whole suite. The rows are a module-level superset of the
 modification-traversing tests (P-T6-32).
     space: test_space*.py, test_report*.py, test_plots*.py, test_base*.py, test_abc*.py, test_pso*.py,
-        test_bbpso*.py, test_study*.py, test_facade*.py, test_stop*.py, test_end_to_end.py,
+        test_bbpso*.py, test_study*.py, test_facade*.py, test_stop*.py, test_prune*.py, test_end_to_end.py,
         test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
     operators: test_operators*.py, test_report*.py, test_plots*.py, test_abc*.py, test_pso*.py,
         test_bbpso*.py, test_facade*.py, test_base*.py, test_space_partition.py, test_end_to_end.py,
         test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
     base: test_base*.py, test_report*.py, test_plots*.py, test_abc*.py, test_pso*.py, test_bbpso*.py,
-        test_study*.py, test_facade*.py, test_stop*.py, test_space_partition.py, test_end_to_end.py,
-        test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+        test_study*.py, test_facade*.py, test_stop*.py, test_prune*.py, test_space_partition.py,
+        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
+        test_api_contract.py
     abc: test_abc*.py, test_report*.py, test_plots*.py, test_facade*.py, test_base*.py, test_pso*.py,
         test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py, test_regression.py,
         test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
-    study: test_study*.py, test_report*.py, test_plots*.py, test_facade*.py, test_stop*.py, test_abc.py,
-        test_abc_acceptance.py, test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py,
-        test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    study: test_study*.py, test_report*.py, test_plots*.py, test_facade*.py, test_stop*.py, test_prune*.py,
+        test_abc.py, test_abc_acceptance.py, test_pso*.py, test_bbpso*.py, test_space_partition.py,
+        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
+        test_api_contract.py
     facade: test_facade*.py, test_report*.py, test_plots*.py, test_abc.py, test_abc_acceptance.py,
         test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py,
         test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
@@ -303,12 +322,16 @@ modification-traversing tests (P-T6-32).
         test_abc_acceptance.py, test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py,
         test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
     pso: test_pso*.py, test_report*.py, test_plots*.py, test_facade*.py, test_abc.py, test_abc_acceptance.py,
-        test_bbpso*.py, test_space_partition.py, test_end_to_end.py, test_determinism.py, test_regression.py,
-        test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+        test_bbpso*.py, test_base_pruned.py, test_space_partition.py, test_end_to_end.py, test_determinism.py,
+        test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
     bbpso: test_bbpso*.py, test_report*.py, test_plots*.py, test_facade*.py, test_abc.py,
-        test_abc_acceptance.py, test_pso*.py, test_space_partition.py, test_end_to_end.py,
-        test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+        test_abc_acceptance.py, test_pso*.py, test_base_pruned.py, test_space_partition.py,
+        test_end_to_end.py, test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py,
+        test_api_contract.py
     stop: test_stop*.py, test_facade*.py, test_report*.py, test_plots*.py, test_abc.py,
+        test_abc_acceptance.py, test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py,
+        test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
+    prune: test_prune*.py, test_facade*.py, test_report*.py, test_plots*.py, test_abc.py,
         test_abc_acceptance.py, test_pso*.py, test_bbpso*.py, test_space_partition.py, test_end_to_end.py,
         test_determinism.py, test_regression.py, test_fuzz.py, test_fuzz_grammar.py, test_api_contract.py
     __init__: test_api_contract.py

@@ -20,6 +20,15 @@ from metahpo.optimizers.abc import ABCOptimizer
 from metahpo.optimizers.base import Candidate, Direction, Optimizer, _integer
 from metahpo.optimizers.bbpso import BBPSOOptimizer
 from metahpo.optimizers.pso import PSOOptimizer
+from metahpo.prune import (
+    MedianPruner,
+    NopPruner,
+    PercentilePruner,
+    Pruner,
+    RunningTrial,
+    TrialPruned,
+    _pruner,
+)
 from metahpo.report import (
     DEFAULT_OUTPUT,
     Callback,
@@ -44,7 +53,7 @@ from metahpo.space import Space
 from metahpo.stop import MaxTime, Patience, Stopper, TargetScore, _rules
 from metahpo.study import Study, Trial
 
-Objective = Callable[[dict[str, Any]], float]
+Objective = Callable[..., float]
 OptimizerFactory = Callable[[Any], Optimizer]
 Seed = int | Sequence[int | None] | None
 
@@ -66,6 +75,7 @@ def optimize(
     callbacks: Sequence[Callback] | None = None,
     stop: Stopper | Sequence[Stopper] | None = None,
     runs: Literal[1] = 1,
+    pruner: Pruner | None = None,
 ) -> Study: ...
 
 
@@ -84,6 +94,7 @@ def optimize(
     callbacks: Sequence[Callback] | None = None,
     stop: Stopper | Sequence[Stopper] | None = None,
     runs: int = 1,
+    pruner: Pruner | None = None,
 ) -> Study | list[Study]: ...
 
 
@@ -101,6 +112,7 @@ def optimize(
     callbacks: Sequence[Callback] | None = None,
     stop: Stopper | Sequence[Stopper] | None = None,
     runs: int = 1,
+    pruner: Pruner | None = None,
 ) -> Study | list[Study]:
     """Search `space` for the parameters that minimise or maximise `function(params) -> score`.
 
@@ -146,18 +158,33 @@ def optimize(
     `reason` is empty or one of the reasons above that the search gives itself raises ValueError. config.json
     records the rules, and resume() applies them again.
 
+    Pruning (see metahpo.prune), as in Optuna: when `function` has a parameter named `trial`, it is called
+    as function(params, trial=...) with a metahpo.RunningTrial; it reports intermediate values with
+    trial.report(value, step), asks trial.should_prune() and ends a trial that should stop by raising
+    metahpo.TrialPruned. `pruner` decides: MedianPruner() for None (Optuna's default), PercentilePruner,
+    NopPruner (never prunes) or a Pruner of your own; anything else raises TypeError. Every run gets its own
+    copy (copy.deepcopy) of the pruner, and config.json records it. A trial of the optimizer's initial
+    population (meta phase 'init') is never pruned. A pruned trial counts as a call toward max_evals, its
+    score is its last reported value (NaN when it reported none) and it never becomes the best trial; the
+    optimizers rank it below every finite score (see metahpo.Optimizer). A cached repeat of a pruned trial is
+    pruned again without a call. An objective without a `trial` parameter is called as before, and may raise
+    TrialPruned as well.
+
     A run that stopped, for any reason, continues from its results folder with resume().
 
     Warnings: a condition the user should know about that does not stop the search is emitted once per call
     as a metahpo.MetaHpoWarning. A condition the arguments show is warned about after every argument check
     has passed and before the search starts: nothing is written and the objective is not called yet, and an
     argument that raises comes without a warning. optimize() warns so when `seed` is given together with an
-    optimizer object, which already holds its random generator, so the seed has no effect. A condition that
+    optimizer object, which already holds its random generator, so the seed has no effect, and when a
+    pruner other than NopPruner is given while `function` has no parameter named `trial`. A condition that
     depends on the outcome of the search is warned about when the call has finished and every result file
     is written, also when a KeyboardInterrupt ended it; a call that raises during the search emits none of
     these. They are, in this order: a run that ended without a finite score (the objective returned only
-    NaN or infinite scores, or none before the run was interrupted), so its Study has no best trial; and
-    plots that a ResultWriter of the call could not draw, which summary.json notes. Under
+    NaN or infinite scores, its trials were pruned, or it returned none before the run was interrupted), so
+    its Study has no best trial; a given pruner other than NopPruner that had no effect because no trial
+    reported an intermediate value; steps that a trial reported more than once, of which only the first value
+    is kept; and plots that a ResultWriter of the call could not draw, which summary.json notes. Under
     warnings.simplefilter('error') the first warning of the call is the one raised.
 
     The integer arguments (max_evals, runs, log_every, verbose and every seed) take Python or numpy
@@ -175,16 +202,17 @@ def optimize(
     folder = resolve_output(output)
     writer = None if folder is None else ResultWriter(folder)
     listeners = _listeners(verbose, log_every, writer, callbacks)
+    pruning = _Pruning(_pruner(pruner), pruner is not None, _trial_style(function))
     if isinstance(optimizer, Optimizer):
         _matching(optimizer, space, direction)
-    _warn(_ignored_seed(optimizer, seed, seeds))
+    _warn([*_ignored_seed(optimizer, seed, seeds), *pruning.unused()])
 
     def starts() -> Iterator[_Start]:
         for number, run_seed in enumerate(seeds, start=1):
             yield _Start(number, run_seed, _matching(make(run_seed), space, direction))
 
-    studies = _search(function, starts(), direction, max_evals, cache, runs, seeds, listeners, rules)
-    _warn(_finished_notices(studies, listeners))
+    studies = _search(function, starts(), direction, max_evals, cache, runs, seeds, listeners, rules, pruning)
+    _warn(_finished_notices(studies, listeners, pruning))
     return studies[0] if runs == 1 else studies
 
 
@@ -196,6 +224,7 @@ def resume(
     space: Space | None = None,
     max_evals: int | None = None,
     stop: Stopper | Sequence[Stopper] | None = None,
+    pruner: Pruner | None = None,
     verbose: int | None = None,
     log_every: int = 1,
     callbacks: Sequence[Callback] | None = None,
@@ -254,6 +283,13 @@ def resume(
     session of a run (the time it was stopped is left out), so `stop=MaxTime(hours=16)` gives a run that
     MaxTime(hours=8) ended eight more hours. A folder written before stopping rules existed has none.
 
+    Pruning: the trials a resume restores keep the state and the intermediate values trials.jsonl records,
+    and the pruner is not asked again for them. By default the pruner config.json records goes on: the
+    pruners of the library are built again from their settings, a folder written with a pruner of another
+    class needs `pruner=`, else ValueError, and a folder written before pruning existed uses MedianPruner().
+    `pruner=` (checked as in optimize()) replaces it for the trials still to come, and config.json then
+    records it.
+
     `verbose`, `log_every` and `callbacks` work as in optimize() (verbose None is the default level 1,
     which METAHPO_VERBOSE replaces). The console prints one 'resumed' line for the restored trials of a run
     instead of their usual lines; callbacks receive the events of the restored trials too, with
@@ -263,7 +299,8 @@ def resume(
     Warnings: as in optimize(), each condition is emitted once per call as a metahpo.MetaHpoWarning when the
     call has finished and every result file is written, and none when the call raises: a run without a
     finite score, judged on every trial of the run when the call returns (also when every run was restored
-    and nothing was evaluated), and plots that could not be drawn.
+    and nothing was evaluated), a pruner given with `pruner=` that had no effect, steps reported more than
+    once by the trials this call evaluated, and plots that could not be drawn.
     """
     verbose = 1 if verbose is None else _verbose(verbose)
     log_every = _integer("log_every", log_every, 1)
@@ -276,6 +313,11 @@ def resume(
     logs = [_read_run(root / f"run_{number:03d}") for number in range(1, runs + 1)]
     budget = _resume_budget(max_evals, config["max_evals"], logs)
     rules = _resume_rules(stop, config.get("stop", []), root / "config.json")
+    pruning = _Pruning(
+        _resume_pruner(pruner, config.get("pruner"), root / "config.json"),
+        pruner is not None,
+        _trial_style(function),
+    )
     make = _rebuild(optimizer, space, config, direction, runs, root / "config.json")
     starts = [
         _resume_start(number, seed, log, make, config, cache, budget, optimizer is not None, root)
@@ -293,8 +335,8 @@ def resume(
     }
     writer = ResultWriter._continuing(root, config, entry)
     listeners = _listeners(verbose, log_every, writer, callbacks)
-    studies = _search(function, starts, direction, budget, cache, runs, seeds, listeners, rules)
-    _warn(_finished_notices(studies, listeners))
+    studies = _search(function, starts, direction, budget, cache, runs, seeds, listeners, rules, pruning)
+    _warn(_finished_notices(studies, listeners, pruning))
     return studies[0] if runs == 1 else studies
 
 
@@ -309,18 +351,22 @@ def _warn(notices: Sequence[str]) -> None:
         warnings.warn(notice, MetaHpoWarning, stacklevel=3)
 
 
-def _finished_notices(studies: Sequence[Study], listeners: Sequence[Callback]) -> list[str]:
+def _finished_notices(
+    studies: Sequence[Study], listeners: Sequence[Callback], pruning: _Pruning | None = None
+) -> list[str]:
     """The notices that depend on the outcome of a finished optimize() or resume() call, in a fixed order:
-    runs without a finite score, then the plots that the call's ResultWriters could not draw."""
+    runs without a finite score, a given pruner that had no effect, repeated steps, then the plots that the
+    call's ResultWriters could not draw."""
     writers = [listener for listener in listeners if isinstance(listener, ResultWriter)]
-    return [*_no_finite_score(studies), *_failed_plots(writers)]
+    pruned = [] if pruning is None else [*pruning.ineffective(studies), *pruning.repeats()]
+    return [*_no_finite_score(studies), *pruned, *_failed_plots(writers)]
 
 
 def _no_finite_score(studies: Sequence[Study]) -> list[str]:
-    """The notice for the runs whose every trial has a NaN or infinite score, or that have no trial at all
-    (interrupted before the first one), so that their Study has no best trial; empty when every run has a
-    finite score."""
-    empty = [study for study in studies if all(trial.failed for trial in study.trials)]
+    """The notice for the runs without a completed trial: every trial has a NaN or infinite score or was
+    pruned, or there is no trial at all (interrupted before the first one), so that their Study has no best
+    trial; empty when every run has a finite score."""
+    empty = [study for study in studies if all(trial.state != "complete" for trial in study.trials)]
     if not empty:
         return []
     runs, count = len(studies), len(empty)
@@ -328,8 +374,14 @@ def _no_finite_score(studies: Sequence[Study]) -> list[str]:
     whose = "its Study has" if count == 1 else "their studies have"
     record = "its best.json records" if count == 1 else "their best.json files record"
     none = ", or none before an interrupt" if any(not study.trials for study in empty) else ""
+    pruned = any(trial.pruned for study in empty for trial in study.trials)
+    cause = (
+        "every trial was pruned or returned a NaN or infinite score"
+        if pruned
+        else "the objective returned only NaN or infinite scores"
+    )
     return [
-        f"{which} ended without a finite score: the objective returned only NaN or infinite scores{none}, so "
+        f"{which} ended without a finite score: {cause}{none}, so "
         f"{whose} no best trial (best_trial raises ValueError) and {record} none; check that the objective "
         f"returns a finite number, for example that a training that fails or diverges does not come back as "
         f"NaN or inf"
@@ -348,6 +400,96 @@ def _failed_plots(writers: Sequence[ResultWriter]) -> list[str]:
         f"{count} noted, the first: {failures[0]}; every other result file was written, and the notes of "
         f"summary.json (and of run_<n>/summary.json with several runs) list each failure"
     ]
+
+
+def _trial_style(function: Any) -> str:
+    """How the objective receives the RunningTrial: 'keyword' when it has a parameter named `trial` that
+    takes a keyword, 'positional' when that parameter is positional-only and the second one, else '' (no
+    trial; also when the signature cannot be read)."""
+    try:
+        parameters = list(inspect.signature(function).parameters.values())
+    except (TypeError, ValueError):
+        return ""
+    for index, parameter in enumerate(parameters):
+        if parameter.name != "trial":
+            continue
+        if parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+            return "keyword"
+        if parameter.kind is inspect.Parameter.POSITIONAL_ONLY and index == 1:
+            return "positional"
+    return ""
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    """What one evaluation gave: the score, whether the trial was pruned and its intermediate values. A
+    cached repeat takes the outcome of the trial it repeats."""
+
+    score: float
+    pruned: bool = False
+    values: dict[int, float] = field(default_factory=dict)
+
+    @property
+    def step(self) -> int | None:
+        """The `pruned` entry of tell() for this outcome: None unless pruned, else the last step reported,
+        -1 when none was."""
+        if not self.pruned:
+            return None
+        return max(self.values) if self.values else -1
+
+
+@dataclass
+class _Pruning:
+    """The pruning of an optimize() or resume() call: the pruner every run copies, whether it was given,
+    how the objective receives the trial, and the steps the evaluated trials reported twice, for the
+    warnings."""
+
+    pruner: Pruner
+    given: bool
+    style: str
+    repeated: list[tuple[int, int, int]] = field(default_factory=list)
+
+    def note(self, run: int, handle: RunningTrial) -> None:
+        """Takes in the steps a finished trial reported more than once."""
+        self.repeated.extend((run, handle.number, step) for step in handle._repeated)
+
+    def _effective(self) -> bool:
+        return self.given and not isinstance(self.pruner, NopPruner)
+
+    def unused(self) -> list[str]:
+        """The notice for a given pruner that cannot act because the objective has no `trial` parameter."""
+        if not self._effective() or self.style:
+            return []
+        return [
+            f"pruner={type(self.pruner).__name__}() has no effect because the objective has no parameter "
+            "named trial; give it one, as in def objective(params, trial), and call trial.report(value, step)"
+            " and trial.should_prune() in it"
+        ]
+
+    def ineffective(self, studies: Sequence[Study]) -> list[str]:
+        """The notice for a given pruner that never acted because no trial of `studies`, restored ones
+        included, reported an intermediate value."""
+        reported = any(trial.intermediate_values for study in studies for trial in study.trials)
+        if not self._effective() or not self.style or reported:
+            return []
+        return [
+            f"pruner={type(self.pruner).__name__}() had no effect because no trial reported an intermediate "
+            "value; call trial.report(value, step) in the objective before trial.should_prune()"
+        ]
+
+    def repeats(self) -> list[str]:
+        """The notice for steps that trials reported more than once; only the first value of a step counts."""
+        if not self.repeated:
+            return []
+        run, trial, step = self.repeated[0]
+        count = "1 report repeated" if len(self.repeated) == 1 else f"{len(self.repeated)} reports repeated"
+        where = (
+            f"trial {trial}" if all(r == 1 for r, _, _ in self.repeated) else f"trial {trial} of run {run}"
+        )
+        return [
+            f"{count} a step that was already reported, the first: {where} reported step {step} again; only "
+            "the first value reported at a step is kept"
+        ]
 
 
 def _ignored_seed(optimizer: Any, seed: Seed, seeds: list[Any]) -> list[str]:
@@ -452,9 +594,11 @@ def _search(
     seeds: list[Any],
     listeners: list[Callback],
     rules: Sequence[Stopper] = (),
+    pruning: _Pruning | None = None,
 ) -> list[Study]:
     """The runs of optimize() and resume(), one after the other, each with its own copy of the stopping
-    rules; a KeyboardInterrupt ends the rest."""
+    rules and the pruner; a KeyboardInterrupt ends the rest."""
+    pruning = _Pruning(MedianPruner(), False, "") if pruning is None else pruning
     studies: list[Study] = []
     for start in starts:
         study = Study(direction)
@@ -473,6 +617,7 @@ def _search(
             cache=cache,
             restored=len(start.log.trials),
             rules=copy.deepcopy(list(rules)),
+            pruner=copy.deepcopy(pruning.pruner),
         )
         if start.started is not None:
             state.started = state._replayed_until = start.started
@@ -489,6 +634,7 @@ def _search(
             start.log,
             state.rules,
             start.cut_first,
+            pruning,
         )
         try:
             run.start()
@@ -529,6 +675,38 @@ def _resume_budget(max_evals: int | None, recorded: int, logs: list[_RunLog | No
 _BUILT_IN_RULES: dict[str, Callable[..., Stopper]] = {
     cls.__name__: cls for cls in (Patience, MaxTime, TargetScore)
 }
+
+
+_BUILT_IN_PRUNERS: dict[str, Callable[..., Pruner]] = {
+    cls.__name__: cls for cls in (MedianPruner, PercentilePruner, NopPruner)
+}
+
+
+def _resume_pruner(pruner: Pruner | None, recorded: dict[str, Any] | None, path: Path) -> Pruner:
+    """The pruner of a resume: `pruner` checked as in optimize(), or else the pruner config.json records,
+    built again from its settings, or MedianPruner() for a folder that records none. Only a pruner of a class
+    built into the library is built again, as for the stopping rules; ValueError for any other pruner and for
+    settings the class rejects."""
+    if pruner is not None or recorded is None:
+        return _pruner(pruner)
+    name, settings = recorded["name"], recorded["settings"]
+    build = _BUILT_IN_PRUNERS.get(name)
+    if (
+        build is None
+        or recorded.get("module", build.__module__) != build.__module__
+        or set(settings) != set(inspect.signature(build).parameters)
+    ):
+        raise ValueError(
+            f"the folder was written with the pruner {name}, which resume() cannot build again; pass "
+            "pruner=, the pruner to go on with"
+        )
+    try:
+        return build(**_recorded_settings(build, settings))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{path} records settings of the pruner {name} that it rejects ({exc}); pass pruner=, the pruner "
+            "to go on with"
+        ) from exc
 
 
 def _resume_rules(
@@ -835,8 +1013,11 @@ class _Run:
         log: _Log,
         rules: Sequence[Stopper] = (),
         cut_first: bool = False,
+        pruning: _Pruning | None = None,
     ) -> None:
         self.function = function
+        self.pruning = _Pruning(NopPruner(), False, "") if pruning is None else pruning
+        self.pruner = state.pruner if isinstance(state.pruner, Pruner) else NopPruner()
         self.cut_first = cut_first
         self.space = space
         self.opt = opt
@@ -847,10 +1028,11 @@ class _Run:
         self.log = log
         self.rules = list(rules)
         self.stopping = ""
-        self.seen: dict[tuple[Any, ...], float] = {}
+        self.seen: dict[tuple[Any, ...], _Outcome] = {}
         self.repeats = 0
         self.batch: list[Candidate] = []
         self.scores: list[float] = []
+        self.pruned: list[int | None] = []
         self.generation = opt.generation
         self.generation_trials: list[Trial] = []
 
@@ -864,7 +1046,7 @@ class _Run:
         while (
             state.calls < self.max_evals and self.repeats < _MAX_REPEATS and len(self.seen) < self.space.size
         ):
-            self.batch, self.scores = self.opt.ask(), []
+            self.batch, self.scores, self.pruned = self.opt.ask(), [], []
             if self.cut_first:
                 self._withdraw(self.max_evals - state.calls)
             for cand in self.batch:
@@ -875,8 +1057,8 @@ class _Run:
                     self.abandon(self.stopping)
                     return
             self._withdraw(len(self.scores))
-            self.opt.tell(self.batch, self.scores)
-            self.batch, self.scores = [], []
+            self._tell(self.batch, self.scores, self.pruned)
+            self.batch, self.scores, self.pruned = [], [], []
             self._check_generation()
         if state.calls >= self.max_evals:
             study.stop_reason = "budget"
@@ -890,31 +1072,87 @@ class _Run:
         cached = self.cache and cand.key in self.seen
         logged = self.log.take(cand, cached, len(state.study.trials))
         if logged is not None:
-            score = self.seen[cand.key] if cached else logged.score
+            outcome = (
+                self.seen[cand.key] if cached else _Outcome(logged.score, logged.pruned, dict(logged.values))
+            )
             start, duration = logged.start, logged.duration
             state._replayed_until = logged.end
         else:
             state.replaying = False
             start = time.time()
             clock = time.perf_counter()
-            score = self.seen[cand.key] if cached else float(self.function(dict(cand.params)))
+            outcome = self.seen[cand.key] if cached else self._call(cand)
             duration = 0.0 if cached else time.perf_counter() - clock
         if self.cache:
-            self.seen.setdefault(cand.key, score)
+            self.seen.setdefault(cand.key, outcome)
         state.calls += not cached
         self.repeats = self.repeats + 1 if cached else 0
+        score = outcome.score
         self.scores.append(score)
+        self.pruned.append(outcome.step)
         trial = Trial(
-            len(state.study.trials), cand.params, score, cached, cand.x, dict(cand.meta), start, duration
+            len(state.study.trials),
+            cand.params,
+            score,
+            cached,
+            cand.x,
+            dict(cand.meta),
+            start,
+            duration,
+            outcome.pruned,
+            dict(outcome.values),
         )
         state.study.trials.append(trial)
         best = state.best
-        new_best = state.better(score, best.score if best is not None else float("nan"))
+        new_best = not outcome.pruned and state.better(
+            score, best.score if best is not None else float("nan")
+        )
         if new_best:
             state.best = trial
         self.generation_trials.append(trial)
         self._notify("on_trial", trial, new_best)
         self._ask_rules()
+
+    def _call(self, cand: Candidate) -> _Outcome:
+        """Calls the objective for `cand`: with a RunningTrial when it takes one, else with the params alone.
+        TrialPruned ends the trial as pruned, with its last reported value as the score; any other exception
+        propagates."""
+        style = self.pruning.style
+        if not style:
+            try:
+                return _Outcome(float(self.function(dict(cand.params))))
+            except TrialPruned:
+                return _Outcome(math.nan, True)
+        number = len(self.state.study.trials)
+        handle = RunningTrial(
+            number, cand.params, self.state.study, self.pruner, protected=cand.meta.get("phase") == "init"
+        )
+        try:
+            if style == "keyword":
+                score = float(self.function(dict(cand.params), trial=handle))
+            else:
+                score = float(self.function(dict(cand.params), handle))
+        except TrialPruned:
+            values = handle.intermediate_values
+            return _Outcome(values[max(values)] if values else math.nan, True, values)
+        finally:
+            handle._close()
+            self.pruning.note(self.state.run, handle)
+        return _Outcome(score, False, handle.intermediate_values)
+
+    def _tell(
+        self, batch: Sequence[Candidate], scores: Sequence[float], pruned: Sequence[int | None]
+    ) -> None:
+        """Tells the optimizer the scores of `batch`: with `pruned` when its tell() takes that parameter and a
+        candidate was pruned, else with NaN as the score of a pruned candidate."""
+        if all(step is None for step in pruned):
+            self.opt.tell(batch, scores)
+        elif "pruned" in inspect.signature(self.opt.tell).parameters:
+            self.opt.tell(batch, scores, pruned=pruned)
+        else:
+            self.opt.tell(
+                batch, [math.nan if step is not None else s for s, step in zip(scores, pruned, strict=True)]
+            )
 
     def _ask_rules(self) -> None:
         """Asks every rule once about the trial just recorded, in order, and keeps the reason of the first
@@ -980,12 +1218,12 @@ class _Run:
         done, rest = self.batch[: len(self.scores)], self.batch[len(self.scores) :]
         try:
             if done:
-                self.opt.tell(done, self.scores)
+                self._tell(done, self.scores, self.pruned)
             if rest:
                 self._cancel(rest)
         except Exception:
             pass
-        self.batch, self.scores = [], []
+        self.batch, self.scores, self.pruned = [], [], []
 
     def finish(self, quiet: bool = False) -> None:
         """Emits the last, possibly unfinished generation and the end of the run to every listener, also

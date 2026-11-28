@@ -20,7 +20,9 @@ towards (S + G) / 2; (2) Cauchy step towards c; (3) Gaussian around c with stand
 |neighbour - G|; (4) per coordinate (2) or (3); (5) c plus a Levy step along the difference of two random
 particles, crossed with the current position at rate `crossover`. Every particle starts with operation 1 and
 moves on to the next operation (5 wraps to 1) whenever its move does not give a strictly better score. A
-move always replaces the particle's position (there is no acceptance test in bare-bones PSO).
+move always replaces the particle's position (there is no acceptance test in bare-bones PSO), except a
+pruned move (see Optimizer): the particle keeps its position and score, as the move was stopped before its
+score was known, and moves on to the next operation. A pruned probe or root trial counts as a NaN score.
 
 Refinement: each refined particle keeps a 4 x 4 Q-table (state = last method, action = next method, initial
 state IQI) and picks the action with the highest Q, ties at random. The actions are inverse quadratic
@@ -198,8 +200,14 @@ class BBPSOOptimizer(Optimizer):
             self._slot_stage = "trial"
             return self._issue(self._candidates(trial), "root", [particle])
 
-    def tell(self, candidates: Sequence[Candidate], scores: Sequence[float]) -> None:
-        """Applies the scores of pending candidates of this optimizer.
+    def tell(
+        self,
+        candidates: Sequence[Candidate],
+        scores: Sequence[float],
+        pruned: Sequence[int | None] | None = None,
+    ) -> None:
+        """Applies the scores of pending candidates of this optimizer; `pruned` marks pruned candidates, as
+        Optimizer describes.
 
         The whole batch is checked first: every candidate must be pending, issued by this optimizer (same
         id, key and x) and told once, and every score must convert with float(). A failing batch raises
@@ -208,8 +216,8 @@ class BBPSOOptimizer(Optimizer):
         if len(candidates) != len(scores):
             raise ValueError("candidates and scores must have the same length")
         entries = self._claim(candidates)
-        values = [self._internal(float(score)) for score in scores]
-        for cand, entry, f in zip(candidates, entries, values, strict=True):
+        ranked = self._ranked(scores, pruned)
+        for cand, entry, (f, rank) in zip(candidates, entries, ranked, strict=True):
             del self._pending[cand.id]
             if f < self.best_f or self.best_x is None:
                 self.best_f, self.best_x = f, entry.x.copy()
@@ -225,7 +233,8 @@ class BBPSOOptimizer(Optimizer):
                     self.phase = "move"
             elif entry.kind == "move":
                 old = self.f[i]
-                self.positions[i], self.f[i] = entry.x, f
+                if rank[0] != 1.0:
+                    self.positions[i], self.f[i] = entry.x, f
                 if not f < old:
                     self.flags[i] = self.flags[i] % 5 + 1
                 self._move_i += 1

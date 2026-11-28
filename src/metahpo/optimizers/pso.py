@@ -19,7 +19,10 @@ of the iteration is told, so the swarm's next flight does not depend on the orde
 told; only best_params may differ between orders when two candidates tie on the best score.
 
 A coordinate that leaves the unit cube is placed on the wall and its velocity is set to 0 (absorbing walls,
-Robinson & Rahmat-Samii 2004). A personal best is replaced only by a strictly lower internal score.
+Robinson & Rahmat-Samii 2004). A personal best is replaced only by a strictly lower internal score. A
+pruned flight (see Optimizer) moves the particle like any other but replaces its personal best only when
+that best has a NaN or infinite score or came from a lower-ranked pruned flight; the guide is the personal
+best of the highest rank, which for finite scores is the lowest one.
 
 A flight whose parameter set was already handed out is drawn again with new r1 and r2, up to `max_tries`
 attempts; only then may a repeat come back, which the cache of optimize() answers without a new evaluation.
@@ -95,6 +98,7 @@ class PSOOptimizer(Optimizer):
         self.velocities = np.zeros((n, d))
         self.pbest = np.zeros((n, d))
         self.pbest_f = [math.inf] * n
+        self._pbest_rank: list[tuple[float, ...]] = [(2.0, 0.0)] * n
         self.f = [math.inf] * n
         self.phase = "init"
         self.iteration = 0
@@ -121,7 +125,7 @@ class PSOOptimizer(Optimizer):
         if not todo:
             raise RuntimeError("tell the pending candidates before asking again")
         if self._guide is None:
-            best = min(range(self.swarm_size), key=self.pbest_f.__getitem__)
+            best = min(range(self.swarm_size), key=self._pbest_rank.__getitem__)
             self._guide = self.pbest[best].copy()
         taken = set(self._seen)
         xs, vs = [], []
@@ -132,8 +136,14 @@ class PSOOptimizer(Optimizer):
             vs.append(v)
         return self._issue(self._candidates(np.array(xs)), "fly", todo, vs)
 
-    def tell(self, candidates: Sequence[Candidate], scores: Sequence[float]) -> None:
-        """Applies the scores of pending candidates of this optimizer.
+    def tell(
+        self,
+        candidates: Sequence[Candidate],
+        scores: Sequence[float],
+        pruned: Sequence[int | None] | None = None,
+    ) -> None:
+        """Applies the scores of pending candidates of this optimizer; `pruned` marks pruned candidates, as
+        Optimizer describes.
 
         The whole batch is checked first: every candidate must be pending, issued by this optimizer (same
         id, key and x) and told once, and every score must convert with float(). A failing batch raises
@@ -142,8 +152,8 @@ class PSOOptimizer(Optimizer):
         if len(candidates) != len(scores):
             raise ValueError("candidates and scores must have the same length")
         entries = self._claim(candidates)
-        values = [self._internal(float(score)) for score in scores]
-        for cand, entry, f in zip(candidates, entries, values, strict=True):
+        ranked = self._ranked(scores, pruned)
+        for cand, entry, (f, rank) in zip(candidates, entries, ranked, strict=True):
             del self._pending[cand.id]
             if f < self.best_f or self.best_x is None:
                 self.best_f, self.best_x = f, entry.x.copy()
@@ -155,13 +165,13 @@ class PSOOptimizer(Optimizer):
             self.velocities[i] = entry.velocity
             self.f[i] = f
             if entry.kind == "init":
-                self._set_pbest(i, entry, f)
+                self._set_pbest(i, entry, f, rank)
                 self._initialised[i] = True
                 if all(self._initialised):
                     self.phase = "fly"
             else:
-                if f < self.pbest_f[i]:
-                    self._set_pbest(i, entry, f)
+                if rank < self._pbest_rank[i]:
+                    self._set_pbest(i, entry, f, rank)
                 self._flown[i] = True
                 if all(self._flown):
                     self.iteration += 1
@@ -252,6 +262,7 @@ class PSOOptimizer(Optimizer):
             "speed": np.linalg.norm(self.velocities, axis=1).tolist(),
         }
 
-    def _set_pbest(self, i: int, entry: _Issued, f: float) -> None:
+    def _set_pbest(self, i: int, entry: _Issued, f: float, rank: tuple[float, ...]) -> None:
         self.pbest[i] = entry.x
         self.pbest_f[i] = f
+        self._pbest_rank[i] = rank

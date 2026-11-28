@@ -66,6 +66,15 @@ class Optimizer:
     checked first, so a failing batch raises and leaves the optimizer unchanged. The optimizer keeps its own
     copy of what it handed out, so changing `cand.params` does not change the search. cancel() withdraws
     pending candidates that will not be evaluated.
+
+    Pruned trials (see metahpo.prune): the optimizers of the library take a keyword `pruned` in tell(), one
+    entry per candidate: None for a candidate whose objective returned, else the last step its objective
+    reported before it was pruned (-1 when it reported none), with its last reported value as its score.
+    They rank a pruned candidate below every candidate with a finite score and above one with a NaN or
+    infinite score; of two pruned candidates the one that reported a later step ranks higher, and at the
+    same step the better last value. Otherwise a pruned candidate counts as a NaN score. optimize() passes
+    `pruned` only to an optimizer whose tell() has a parameter of that name; any other optimizer receives
+    NaN as the score of a pruned candidate.
     """
 
     def __init__(self, space: Space, direction: Direction = "min", seed: int | None = None) -> None:
@@ -124,7 +133,12 @@ class Optimizer:
             self._uniforms = self.rng.random(4096).tolist()[::-1]
         return self._uniforms.pop()
 
-    def tell(self, candidates: Sequence[Candidate], scores: Sequence[float]) -> None:
+    def tell(
+        self,
+        candidates: Sequence[Candidate],
+        scores: Sequence[float],
+        pruned: Sequence[int | None] | None = None,
+    ) -> None:
         raise NotImplementedError
 
     def cancel(self, candidates: Sequence[Candidate]) -> None:
@@ -148,6 +162,32 @@ class Optimizer:
         if not math.isfinite(score):
             return math.inf
         return score if self.direction == "min" else -score
+
+    def _ranked(
+        self, scores: Sequence[float], pruned: Sequence[int | None] | None
+    ) -> list[tuple[float, tuple[float, ...]]]:
+        """The internal value and the rank of every told score, checked before anything changes. The value
+        is the minimised score, +inf for a NaN, infinite or pruned one. Ranks compare as tuples, lower is
+        better: (0, value) for a finite score, (1, -last step, value of the last report) for a pruned
+        candidate and (2, 0) for a NaN or infinite score. Without pruned candidates the order of the ranks is
+        the order of the values. ValueError when `pruned` is not None and does not hold one entry per score,
+        each None or an integer of at least -1."""
+        steps = [None] * len(scores) if pruned is None else list(pruned)
+        if len(steps) != len(scores):
+            raise ValueError("pruned must hold one entry per candidate")
+        for step in steps:
+            if step is not None:
+                _integer("a pruned step", step, -1)
+        ranked: list[tuple[float, tuple[float, ...]]] = []
+        for score, step in zip(scores, steps, strict=True):
+            f = self._internal(float(score))
+            if step is not None:
+                ranked.append((math.inf, (1.0, -float(step), f)))
+            elif math.isfinite(f):
+                ranked.append((f, (0.0, f)))
+            else:
+                ranked.append((f, (2.0, 0.0)))
+        return ranked
 
     def _fresh(self, n: int) -> list[Candidate]:
         """n random candidates whose parameter sets are new, resampling a repeat up to `max_tries` times."""

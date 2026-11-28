@@ -429,7 +429,8 @@ REQUIREMENTS = {
     },
     "R-TRIAL-FAILED": {
         "source": [
-            "metahpo.study.Trial.failed | True when the user's function returned NaN or an infinite value."
+            "metahpo.study.Trial.failed | True when the user's function returned NaN or an infinite value; a "
+            "pruned trial is not failed."
         ],
         "tests": [
             "test_abc::test_direction_max_and_nan_handling",
@@ -815,6 +816,134 @@ REQUIREMENTS = {
             "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
         ],
     },
+    "R-PRUNE": {
+        "source": [
+            "CHANGELOG.md | Pruning, as in Optuna: an objective with a parameter named `trial` receives a "
+            "`RunningTrial`, reports intermediate values with `trial.report(value, step)`, asks "
+            "`trial.should_prune()` and ends a trial early by raising `TrialPruned`; a pruned trial counts "
+            "toward `max_evals`, its score is its last reported value, `Trial.state` is `pruned` and "
+            "`Trial.intermediate_values` holds what it reported, and it is never the best trial.",
+            "metahpo.study.Trial.failed | True when the user's function returned NaN or an infinite value; a "
+            "pruned trial is not failed.",
+        ],
+        "tests": [
+            "test_facade_prune::test_optimize_should_pass_a_running_trial_to_an_objective_with_a_trial_parameter",
+            "test_facade_prune::test_optimize_should_call_an_objective_without_a_trial_parameter_with_the_params_alone",
+            "test_facade_prune::test_trial_style_should_hand_the_trial_only_to_a_parameter_that_can_take_it",
+            "test_facade_prune::test_optimize_should_never_prune_the_initial_population_and_prune_every_later_trial_at_its_first_report",
+            "test_facade_prune::test_optimize_should_never_make_a_pruned_trial_the_best_even_with_a_better_value",
+            "test_facade_prune::test_optimize_should_record_a_trial_pruned_without_a_report_with_a_nan_score",
+            "test_facade_prune::test_optimize_should_prune_a_cached_repeat_of_a_pruned_trial_again_without_a_call",
+            "test_facade_prune::test_optimize_should_reraise_an_error_of_the_objective_that_takes_a_trial",
+            "test_facade_prune::test_patience_should_count_pruned_trials_as_calls_without_improvement",
+            "test_facade_prune::test_target_score_should_not_be_reached_by_a_pruned_trial",
+            "test_prune::test_trial_pruned_should_be_an_exception",
+            "test_prune::test_running_trial_should_keep_the_first_value_of_a_repeated_step_and_count_the_repeat",
+            "test_prune::test_running_trial_should_convert_values_with_float_and_accept_numpy_steps",
+            "test_prune::test_running_trial_should_reject_a_value_or_step_it_cannot_record",
+            "test_prune::test_running_trial_should_not_ask_the_pruner_before_a_report_or_for_a_protected_trial",
+            "test_prune::test_running_trial_should_refuse_to_be_used_after_it_finished",
+            "test_prune::test_running_trial_should_hand_out_copies_of_its_params_and_values",
+            "test_api_contract::test_running_trial_and_pruner_should_expose_the_documented_members",
+            "test_api_contract::test_trial_should_expose_documented_fields_in_order",
+        ],
+    },
+    "R-PRUNER": {
+        "source": [
+            "CHANGELOG.md | `optimize(pruner=...)` decides with `MedianPruner`, the default, or "
+            "`PercentilePruner`, which take Optuna's settings `n_startup_trials`, `n_warmup_steps`, "
+            "`interval_steps` and `n_min_trials`, with `NopPruner` to switch pruning off, or with a "
+            "`Pruner` of your own that overrides `prune(study, trial)`; the initial population of an "
+            "optimizer is never pruned, and `MetaHpoWarning` names a given pruner that cannot act and steps "
+            "reported twice.",
+        ],
+        "tests": [
+            "test_prune::test_median_pruner_should_prune_only_a_value_strictly_worse_than_the_median_at_the_step",
+            "test_prune::test_percentile_pruner_should_keep_only_the_best_quarter_with_percentile_25",
+            "test_prune::test_percentile_pruner_should_compare_the_best_value_so_far_not_the_last_one",
+            "test_prune::test_percentile_pruner_should_use_only_completed_trials_that_reported_exactly_the_last_step",
+            "test_prune::test_percentile_pruner_should_wait_for_n_startup_trials_completed_trials",
+            "test_prune::test_percentile_pruner_should_not_prune_before_n_warmup_steps",
+            "test_prune::test_percentile_pruner_should_judge_only_the_first_step_reported_in_each_interval",
+            "test_prune::test_percentile_pruner_should_need_n_min_trials_values_at_the_step",
+            "test_prune::test_percentile_pruner_should_prune_a_trial_whose_every_value_is_nan",
+            "test_prune::test_percentile_pruner_should_leave_nan_reference_values_out",
+            "test_prune::test_percentile_pruner_should_not_prune_without_a_completed_trial_or_a_report",
+            "test_prune::test_percentile_pruner_should_reject_a_percentile_outside_0_to_100",
+            "test_prune::test_median_pruner_should_reject_an_invalid_integer_setting",
+            "test_prune::test_pruners_should_accept_the_boundary_settings_and_numpy_numbers",
+            "test_prune::test_percentile_pruner_settings_should_hold_every_constructor_parameter",
+            "test_prune::test_nop_pruner_should_never_prune_and_the_base_class_should_leave_prune_to_subclasses",
+            "test_facade_prune::test_optimize_should_reject_a_pruner_that_is_not_a_pruner_before_any_call",
+            "test_facade_prune::test_optimize_should_give_every_run_its_own_copy_of_the_pruner_and_leave_the_given_one_unchanged",
+            "test_facade_prune::test_optimize_should_warn_before_the_search_when_a_given_pruner_cannot_act",
+            "test_facade_prune::test_optimize_should_not_warn_about_a_pruner_that_was_not_given_is_nop_or_could_act",
+            "test_facade_prune::test_optimize_should_warn_once_after_the_search_about_a_pruner_without_effect_or_repeated_steps",
+            "test_facade_prune::test_optimize_should_name_pruning_when_a_run_ended_without_a_finite_score_after_pruned_trials",
+            "test_api_contract::test_pruners_should_declare_their_constructor_parameters_and_defaults",
+            "test_api_contract::test_optimize_should_declare_parameters_in_documented_order",
+            "test_api_contract::test_metahpo_should_export_exactly_the_documented_names",
+        ],
+    },
+    "R-PRUNE-RANK": {
+        "source": [
+            "CHANGELOG.md | The optimizers rank a pruned candidate below every finite score and above a NaN "
+            "or infinite one, through the `pruned` argument of `tell()`; `BBPSOOptimizer` keeps a particle "
+            "in place when its move is pruned.",
+        ],
+        "tests": [
+            "test_base_pruned::test_abc_should_never_replace_a_finite_food_source_with_a_pruned_neighbour",
+            "test_base_pruned::test_abc_should_rank_a_pruned_neighbour_against_a_nan_or_pruned_food_source",
+            "test_base_pruned::test_abc_should_count_a_pruned_food_source_as_a_nan_score_for_the_onlooker_probabilities",
+            "test_base_pruned::test_pso_should_move_a_pruned_particle_but_keep_its_finite_personal_best",
+            "test_base_pruned::test_pso_should_replace_a_nan_personal_best_with_a_pruned_flight",
+            "test_base_pruned::test_bbpso_should_keep_a_particle_in_place_when_its_move_is_pruned_and_try_the_next_operation",
+            "test_base_pruned::test_tell_should_reject_invalid_pruned_entries_and_leave_the_optimizer_unchanged",
+            "test_base_pruned::test_ranked_should_give_finite_pruned_and_failed_scores_their_documented_ranks",
+            "test_facade_prune::test_optimize_should_pass_pruned_steps_only_to_a_tell_that_takes_them_and_nan_otherwise",
+        ],
+    },
+    "R-PRUNE-RESUME": {
+        "source": [
+            "CHANGELOG.md | `trials.jsonl` records the state and the intermediate values of the trials that "
+            "reported any and `config.json` records the pruner; `resume()` restores pruned trials without "
+            "asking the pruner again and goes on with the recorded pruner or with `resume(pruner=...)`.",
+        ],
+        "tests": [
+            "test_facade_prune::test_results_folder_should_record_the_pruner_and_the_state_and_values_of_each_trial",
+            "test_facade_prune::test_results_folder_of_a_search_without_reports_should_keep_the_trial_keys_of_0_8_0",
+            "test_facade_prune::test_resume_should_continue_an_interrupted_pruning_run_like_an_uninterrupted_one",
+            "test_facade_prune::test_resume_should_restore_a_finished_pruning_run_without_calling_the_objective_or_asking_the_pruner",
+            "test_facade_prune::test_resume_should_go_on_with_the_pruner_given_as_pruner_and_record_it",
+            "test_facade_prune::test_resume_should_ask_for_pruner_when_the_folder_records_a_pruner_of_ones_own",
+            "test_facade_prune::test_resume_should_use_median_pruner_for_a_folder_that_records_no_pruner",
+            "test_facade_prune::test_resume_should_reject_pruner_settings_that_the_class_rejects",
+            "test_facade_prune::test_resume_should_refuse_a_trials_line_with_an_unknown_state_or_step",
+            "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
+        ],
+    },
+    "R-PRUNE-RESULTS": {
+        "source": [
+            "CHANGELOG.md | The results folder shows pruned trials: a `pruned` column in `trials.csv` and "
+            "`generations.csv`, the counts `complete_trials`, `pruned_trials` and `reported_steps` in "
+            "`summary.json` and report.md, `intermediate.csv` with every reported value and the plot "
+            "`12_learning_curves`; the console marks pruned trials, and the score statistics, the score "
+            "plots and the parameter analysis leave them out.",
+        ],
+        "tests": [
+            "test_report_pruned::test_trials_csv_should_mark_exactly_the_pruned_trials_in_a_column_after_failed",
+            "test_report_pruned::test_generations_csv_should_count_pruned_trials_and_leave_their_scores_out_of_the_statistics",
+            "test_report_pruned::test_intermediate_csv_should_hold_one_row_per_reported_value_of_every_evaluated_trial",
+            "test_report_pruned::test_intermediate_csv_and_reported_steps_should_leave_cached_repeats_out",
+            "test_report_pruned::test_summary_json_should_count_completed_pruned_and_failed_trials_and_the_reported_steps",
+            "test_report_pruned::test_report_md_should_name_pruned_trials_pruner_and_intermediate_csv_only_when_values_were_reported",
+            "test_report_pruned::test_console_should_name_the_pruning_step_and_count_pruned_trials_only_when_there_are_any",
+            "test_report_pruned::test_parameter_analysis_should_leave_pruned_trials_out",
+            "test_report_pruned::test_learning_curves_should_be_drawn_only_for_a_run_that_reported_values",
+            "test_report_pruned::test_learning_curves_should_be_drawn_for_a_run_that_reported_values_but_pruned_none",
+            "test_report_pruned::test_resume_should_write_the_pruning_files_as_the_uninterrupted_run_wrote_them",
+        ],
+    },
     "R-WARNINGS": {
         "source": [
             "CHANGELOG.md | `MetaHpoWarning`, a `UserWarning`, is the category of every warning meta-hpo "
@@ -837,14 +966,18 @@ REQUIREMENTS = {
             "check has passed and before the search starts: nothing is written and the objective is not "
             "called yet, and an argument that raises comes without a warning.",
             "metahpo.facade.optimize | optimize() warns so when `seed` is given together with an optimizer "
-            "object, which already holds its random generator, so the seed has no effect.",
+            "object, which already holds its random generator, so the seed has no effect, and when a pruner "
+            "other than NopPruner is given while `function` has no parameter named `trial`.",
             "metahpo.facade.optimize | They are, in this order: a run that ended without a finite score (the "
-            "objective returned only NaN or infinite scores, or none before the run was interrupted), so its "
-            "Study has no best trial; and plots that a ResultWriter of the call could not draw, which "
-            "summary.json notes.",
+            "objective returned only NaN or infinite scores, its trials were pruned, or it returned none "
+            "before the run was interrupted), so its Study has no best trial; a given pruner other than "
+            "NopPruner that had no effect because no trial reported an intermediate value; steps that a "
+            "trial reported more than once, of which only the first value is kept; and plots that a "
+            "ResultWriter of the call could not draw, which summary.json notes.",
             "metahpo.facade.resume | a run without a finite score, judged on every trial of the run when the "
-            "call returns (also when every run was restored and nothing was evaluated), and plots that could "
-            "not be drawn.",
+            "call returns (also when every run was restored and nothing was evaluated), a pruner given with "
+            "`pruner=` that had no effect, steps reported more than once by the trials this call evaluated, "
+            "and plots that could not be drawn.",
             "metahpo.report.MetaHpoWarning | The standard filters apply:",
         ],
         "tests": [
@@ -1458,7 +1591,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 24}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 29}
 
 
 @pytest.mark.parametrize(
