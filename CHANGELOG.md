@@ -23,6 +23,10 @@ and the project uses [Semantic Versioning](https://semver.org/).
 - `trials.jsonl` records the state and the intermediate values of the trials that reported any and
   `config.json` records the pruner; `resume()` restores pruned trials without asking the pruner again and
   goes on with the recorded pruner or with `resume(pruner=...)`.
+- The results folder shows pruned trials: a `pruned` column in `trials.csv` and `generations.csv`, the
+  counts `complete_trials`, `pruned_trials` and `reported_steps` in `summary.json` and report.md,
+  `intermediate.csv` with every reported value and the plot `12_learning_curves`; the console marks pruned
+  trials, and the score statistics, the score plots and the parameter analysis leave them out.
 
 ## [0.8.0] - 2026-11-18
 

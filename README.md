@@ -90,6 +90,7 @@ hpo_results/2026-11-09_18-26-15_abc/    one folder per optimize() call: start ti
     ├── generations.csv                 score and population statistics per generation
     ├── population.csv                  the population after every generation
     ├── parameters.csv, categories.csv  how each parameter relates to the score
+    ├── intermediate.csv                values your function reported, when it prunes (see Pruning)
     └── plots/                          convergence, diversity, distributions, correlations, ...
 ```
 
@@ -154,6 +155,48 @@ class TooManyFailures(mh.Stopper):
     def should_stop(self, state):
         return sum(t.failed for t in state.study.trials) >= 20
 ```
+
+## Pruning
+
+Pruning stops a trial that is clearly worse than the others at an early step, such as a model that trails
+after three of twenty epochs, so the time goes to more promising settings. It works as in Optuna: give your
+function a parameter named `trial`, report a value after every step and raise `mh.TrialPruned` when told to.
+
+```python
+def train(params, trial):
+    model = build(params)
+    for epoch in range(20):
+        accuracy = fit_one_epoch(model)
+        trial.report(accuracy, step=epoch)
+        if trial.should_prune():
+            raise mh.TrialPruned()
+    return accuracy
+
+
+study = mh.optimize(train, space, direction="max", max_evals=300, pruner=mh.MedianPruner(n_warmup_steps=3))
+```
+
+| Pruner | Prunes a trial whose best value so far is |
+|---|---|
+| `MedianPruner()` (the default) | worse than the median of the completed trials at the same step |
+| `PercentilePruner(25.0)` | outside the best 25% of the completed trials at the same step |
+| `NopPruner()` | never: pruning off |
+
+- Both pruners take Optuna's settings: `n_startup_trials=5` completed trials before pruning starts,
+  `n_warmup_steps=0` steps before a trial can be pruned, `interval_steps=1` and `n_min_trials=1`.
+- The optimizer's initial population is never pruned.
+- A pruned trial counts toward `max_evals`. Its score is its last reported value; it is never the best
+  trial, and `Patience` and `TargetScore` leave it out.
+- The optimizers rank a pruned candidate below every completed one, and BBPSO keeps a particle in place when
+  its move is pruned.
+- `trial.state` is `"complete"`, `"pruned"` or `"failed"`, and `trial.intermediate_values` holds what was
+  reported. `trials.csv` marks pruned trials, `intermediate.csv` and the plot `12_learning_curves` show the
+  reported values, and `resume()` continues a pruned search exactly.
+- A function without a `trial` parameter runs as before. A pruner of your own subclasses `mh.Pruner` and
+  overrides `prune(study, trial)`.
+
+Pruning favours settings that learn fast: a setting that starts slowly, such as a small learning rate, may be
+pruned before it catches up. Raise `n_warmup_steps` when early values say little about the final score.
 
 ## Resuming a run
 
@@ -269,6 +312,8 @@ meta-hpo warns with `mh.MetaHpoWarning`, a `UserWarning`, once per condition and
 - `seed=` given together with an optimizer object, which ignores it, before the search starts.
 - Runs that ended without a finite score (only NaN or infinite scores), when the call has finished.
 - Plots that could not be drawn (`notes` in `summary.json` lists them), when the call has finished.
+- A `pruner=` that cannot act because the function has no `trial` parameter (before the search starts) or
+  had no effect because nothing was reported, and steps reported twice (when the call has finished).
 
 The warnings after the search come once every result file is written, so turning them into errors costs no
 result. `warnings.filterwarnings("ignore", category=mh.MetaHpoWarning)` silences them;

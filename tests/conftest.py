@@ -154,8 +154,10 @@ results folder layout and file contents; live best.json and incremental files; g
 statistics; parameter analysis; stop reasons, interrupt and error handling; compression of large runs;
 several runs in one folder with a summary over the runs; what a resume needs (state.json, every optimizer
 setting, JSON choices, exact scores in trials.jsonl and its throttled sync to disk); the stopping rules in
-config.json, the console header and report.md
+config.json, the console header and report.md; pruned trials in the console, trials.csv, generations.csv,
+intermediate.csv, summary.json, report.md, the parameter analysis and the learning-curve plot
     test_report.py | unit | ConsoleReporter, ResultWriter and the run events through optimize()
+    test_report_pruned.py | unit | pruned trials and intermediate values in the console and the results folder
 
 Plan: result plots
 Scenario groups: every plot file written for each optimizer; plots skipped with a note when they fail
