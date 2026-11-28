@@ -150,7 +150,8 @@ class RunState:
     every resume of the run, see elapsed().
 
     `rules` holds the run's own copies of the stopping rules (metahpo.stop.Stopper objects) that optimize()
-    or resume() asks after every trial; it is empty for a run without rules.
+    or resume() asks after every trial; it is empty for a run without rules. `pruner` is the run's own copy
+    of the pruner (a metahpo.prune.Pruner), None for a state built without one.
     """
 
     space: Space
@@ -170,6 +171,7 @@ class RunState:
     replaying: bool = False
     pauses: list[tuple[int, float]] = field(default_factory=list)
     rules: list[Any] = field(default_factory=list)
+    pruner: Any = None
 
     def __post_init__(self) -> None:
         self._replayed_until = self.started
@@ -421,6 +423,14 @@ def _describe_rules(rules: Sequence[Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _describe_pruner(pruner: Any) -> dict[str, Any] | None:
+    """The pruner as config.json records it: the class name, the module of the class and settings(); None
+    for no pruner."""
+    if pruner is None:
+        return None
+    return {"name": type(pruner).__name__, "module": type(pruner).__module__, "settings": pruner.settings()}
+
+
 def _rules_label(rules: Sequence[Any]) -> str:
     """The stopping rules for the console and report.md, for example 'Patience(evals=60, min_delta=0.0)'."""
     return ", ".join(
@@ -630,6 +640,20 @@ def _exact_score(score: float) -> float | str:
     return score if math.isfinite(score) else repr(score)
 
 
+def _pruning_record(trial: Trial) -> dict[str, Any]:
+    """The pruning fields of a trials.jsonl line: 'state' for a pruned trial and 'intermediate_values'
+    (step -> value, 'nan', 'inf' or '-inf' as for the score) for a trial that reported any; empty for a trial
+    without either, so the line of a search without pruning keeps the keys of 0.8.0."""
+    record: dict[str, Any] = {}
+    if trial.pruned:
+        record["state"] = "pruned"
+    if trial.intermediate_values:
+        record["intermediate_values"] = {
+            str(step): _exact_score(value) for step, value in trial.intermediate_values.items()
+        }
+    return record
+
+
 def _number(value: Any) -> float:
     """A float written by ResultWriter: a number, 'nan', 'inf' or '-inf', or null (NaN, as 0.5.x wrote)."""
     return math.nan if value is None else float(value)
@@ -650,6 +674,8 @@ class _Logged:
     score: float
     start: float
     duration: float
+    pruned: bool = False
+    values: dict[int, float] = field(default_factory=dict)
 
     @property
     def end(self) -> float:
@@ -666,7 +692,25 @@ def _logged(record: dict[str, Any]) -> _Logged:
         _number(record["score"]),
         start,
         float(record["duration_s"]),
+        _pruned_state(record.get("state", "complete")),
+        {_step(step): _number(value) for step, value in record.get("intermediate_values", {}).items()},
     )
+
+
+def _pruned_state(state: Any) -> bool:
+    """True for the state 'pruned' of a trials.jsonl line, False for 'complete' or a line without a state;
+    ValueError for anything else."""
+    if state not in ("complete", "pruned"):
+        raise ValueError(f"unknown trial state {state!r}")
+    return bool(state == "pruned")
+
+
+def _step(text: str) -> int:
+    """A step of trials.jsonl, a key such as '3'; ValueError for anything but an integer >= 0."""
+    step = int(text)
+    if step < 0 or str(step) != text:
+        raise ValueError(f"{text!r} is not a step")
+    return step
 
 
 @dataclass
@@ -782,9 +826,10 @@ def _config_problem(config: Any) -> str:
         "space": lambda v: isinstance(v, list) and all(_parameter_record(p) for p in v),
         "cache": lambda v: isinstance(v, bool),
         "stop": lambda v: isinstance(v, list) and all(_rule_record(r) for r in v),
+        "pruner": lambda v: v is None or _rule_record(v),
         "resumes": lambda v: isinstance(v, list),
     }
-    optional = ("cache", "stop", "resumes")
+    optional = ("cache", "stop", "pruner", "resumes")
     for key, valid in checks.items():
         if key in config:
             if not valid(config[key]):
@@ -951,6 +996,7 @@ class ResultWriter(Callback):
             "seeds": seeds,
             "cache": state.cache,
             "stop": _describe_rules(state.rules),
+            "pruner": _describe_pruner(state.pruner),
             "space": _describe_space(state.space),
             "started": _iso(state.started),
             "folder": str(self.folder),
@@ -1069,6 +1115,7 @@ class ResultWriter(Callback):
             "score": _exact_score(trial.score),
             "failed": trial.failed,
             "cached": trial.cached,
+            **_pruning_record(trial),
             "best_so_far": best_score,
             "is_new_best": new_best,
             "start_time": _iso(trial.start_time),

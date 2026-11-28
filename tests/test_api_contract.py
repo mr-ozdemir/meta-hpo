@@ -93,17 +93,23 @@ DOCUMENTED_EXPORTS = (
     "Float",
     "Int",
     "MaxTime",
+    "MedianPruner",
     "MetaHpoWarning",
+    "NopPruner",
     "Optimizer",
     "PSOOptimizer",
     "Patience",
+    "PercentilePruner",
+    "Pruner",
     "ResultWriter",
     "RunState",
+    "RunningTrial",
     "Space",
     "Stopper",
     "Study",
     "TargetScore",
     "Trial",
+    "TrialPruned",
     "optimize",
     "resume",
 )
@@ -141,13 +147,14 @@ def _params_of(candidates):
 
 
 def test_metahpo_should_export_exactly_the_documented_names():
-    """Given the package, when __all__ is read, then it holds exactly the twenty-two documented names once
+    """Given the package, when __all__ is read, then it holds exactly the twenty-eight documented names once
     each.
 
     Oracle: README Quick start (Space, Float, Int, Categorical, optimize, ABCOptimizer), CHANGELOG 'Added'
-    (Study, resume, Stopper, Patience, MaxTime, TargetScore, MetaHpoWarning), the __init__ export list
-    (Candidate, Optimizer, Trial) and the README optimizer list (PSOOptimizer). Set equality is decisive:
-    an added name and a removed name both fail, and the length check catches a duplicated entry.
+    (Study, resume, Stopper, Patience, MaxTime, TargetScore, MetaHpoWarning, TrialPruned, RunningTrial,
+    Pruner, MedianPruner, PercentilePruner, NopPruner), the __init__ export list (Candidate, Optimizer, Trial)
+    and the README optimizer list (PSOOptimizer). Set equality is decisive: an added name and a removed name
+    both fail, and the length check catches a duplicated entry.
     """
     expected = set(DOCUMENTED_EXPORTS)
 
@@ -171,6 +178,12 @@ def test_metahpo_should_export_exactly_the_documented_names():
         pytest.param("Float", inspect.isclass, id="Float"),
         pytest.param("Int", inspect.isclass, id="Int"),
         pytest.param("MaxTime", inspect.isclass, id="MaxTime"),
+        pytest.param("MedianPruner", inspect.isclass, id="MedianPruner"),
+        pytest.param("NopPruner", inspect.isclass, id="NopPruner"),
+        pytest.param("PercentilePruner", inspect.isclass, id="PercentilePruner"),
+        pytest.param("Pruner", inspect.isclass, id="Pruner"),
+        pytest.param("RunningTrial", inspect.isclass, id="RunningTrial"),
+        pytest.param("TrialPruned", inspect.isclass, id="TrialPruned"),
         pytest.param("MetaHpoWarning", inspect.isclass, id="MetaHpoWarning"),
         pytest.param("Patience", inspect.isclass, id="Patience"),
         pytest.param("Stopper", inspect.isclass, id="Stopper"),
@@ -224,7 +237,7 @@ def test_optimize_should_declare_parameters_in_documented_order():
     optimize(train, space, direction=..., max_evals=..., seed=...); order matters because function and
     space are passed positionally in the README. The position of optimizer, seed and cache is characterised
     from the current public signature; stop sits after callbacks and before runs, as CHANGELOG 'Added' names
-    `optimize(stop=...)`.
+    `optimize(stop=...)`, and pruner comes last, after runs, so no position used before 0.9.0 moves.
     """
     expected = [
         "function",
@@ -240,6 +253,7 @@ def test_optimize_should_declare_parameters_in_documented_order():
         "callbacks",
         "stop",
         "runs",
+        "pruner",
     ]
 
     names = list(inspect.signature(metahpo.optimize).parameters)
@@ -274,6 +288,7 @@ def test_optimize_should_require_parameter_when_it_has_no_documented_default(nam
         pytest.param("callbacks", None, id="callbacks-None"),
         pytest.param("stop", None, id="stop-None"),
         pytest.param("runs", 1, id="runs-1"),
+        pytest.param("pruner", None, id="pruner-None"),
     ],
 )
 def test_optimize_should_declare_documented_default(name, expected):
@@ -294,13 +309,13 @@ def test_optimize_should_declare_documented_default(name, expected):
 
 def test_resume_should_declare_its_parameters_with_keyword_only_options():
     """Given resume, when its signature is introspected, then function and folder come first without a
-    default and optimizer, space, max_evals, stop, verbose, log_every and callbacks follow as keyword-only
-    options with their defaults.
+    default and optimizer, space, max_evals, stop, pruner, verbose, log_every and callbacks follow as
+    keyword-only options with their defaults.
 
     Oracle: README 'Resuming a run' (mh.resume(train, folder)) and the resume docstring (optimizer, space and
-    max_evals are needed only sometimes; stop None applies the recorded rules; verbose None is the default
-    level; log_every and callbacks as in optimize()). The keyword-only kind is characterised from the current
-    public signature.
+    max_evals are needed only sometimes; stop None applies the recorded rules; pruner None goes on with the
+    recorded pruner; verbose None is the default level; log_every and callbacks as in optimize()). The
+    keyword-only kind is characterised from the current public signature.
     """
     positional, keyword = inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY
     empty = inspect.Parameter.empty
@@ -311,6 +326,7 @@ def test_resume_should_declare_its_parameters_with_keyword_only_options():
         ("space", keyword, None),
         ("max_evals", keyword, None),
         ("stop", keyword, None),
+        ("pruner", keyword, None),
         ("verbose", keyword, None),
         ("log_every", keyword, 1),
         ("callbacks", keyword, None),
@@ -358,6 +374,63 @@ def test_stopper_should_expose_reason_should_stop_and_settings():
     assert type(cls.reason) is str
     assert parameters == ["self", "state"]
     assert callable(cls.settings)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        pytest.param(
+            "PercentilePruner",
+            [
+                ("percentile", inspect.Parameter.empty),
+                ("n_startup_trials", 5),
+                ("n_warmup_steps", 0),
+                ("interval_steps", 1),
+                ("n_min_trials", 1),
+            ],
+            id="PercentilePruner",
+        ),
+        pytest.param(
+            "MedianPruner",
+            [("n_startup_trials", 5), ("n_warmup_steps", 0), ("interval_steps", 1), ("n_min_trials", 1)],
+            id="MedianPruner",
+        ),
+        pytest.param("NopPruner", [], id="NopPruner"),
+    ],
+)
+def test_pruners_should_declare_their_constructor_parameters_and_defaults(name, expected):
+    """Given one of the pruners of the library, when its constructor is introspected, then its parameters
+    come in the order and with the defaults of Optuna's pruners, n_min_trials keyword-only.
+
+    Oracle: CHANGELOG 'Added' (`MedianPruner` and `PercentilePruner` with Optuna's settings) and the
+    PercentilePruner docstring; the keyword-only kind of n_min_trials follows Optuna's signature.
+    """
+    cls = getattr(metahpo, name)
+
+    found = [(p.name, p.default) for p in inspect.signature(cls).parameters.values()]
+
+    assert found == expected
+    assert [p.name for p in inspect.signature(cls).parameters.values() if p.kind is p.KEYWORD_ONLY] == [
+        n for n, _ in expected if n == "n_min_trials"
+    ]
+
+
+def test_running_trial_and_pruner_should_expose_the_documented_members():
+    """Given RunningTrial and Pruner, when their members are read, then RunningTrial has report(value, step),
+    should_prune(), intermediate_values and last_step, and Pruner has prune(study, trial) and settings().
+
+    Oracle: CHANGELOG 'Added' (`trial.report(value, step)`, `trial.should_prune()`, a pruner of one's own
+    overrides `prune(study, trial)`) and the RunningTrial and Pruner docstrings.
+    """
+    report = list(inspect.signature(metahpo.RunningTrial.report).parameters)
+    prune = list(inspect.signature(metahpo.Pruner.prune).parameters)
+
+    assert report == ["self", "value", "step"]
+    assert prune == ["self", "study", "trial"]
+    assert callable(metahpo.RunningTrial.should_prune)
+    assert callable(metahpo.Pruner.settings)
+    assert type(inspect.getattr_static(metahpo.RunningTrial, "intermediate_values")) is property
+    assert type(inspect.getattr_static(metahpo.RunningTrial, "last_step")) is property
 
 
 def test_abc_optimizer_should_declare_constructor_parameters_in_documented_order():
@@ -647,13 +720,25 @@ def test_candidate_should_expose_documented_fields_in_order():
 
 def test_trial_should_expose_documented_fields_in_order():
     """Given Trial, when its dataclass fields are listed, then they are number, params, score, cached, x,
-    meta, start_time, duration in order.
+    meta, start_time, duration, pruned, intermediate_values in order.
 
     Oracle: characterisation of the current public signature (see the module docstring); Trial.failed's
     docstring refers to the score, Study.n_calls's docstring to cached repeats and the Trial docstring to
-    meta, start_time and duration, which come last with defaults.
+    meta, start_time, duration, pruned and intermediate_values, which come last with defaults, so a Trial
+    built positionally as in 0.8.0 keeps its meaning.
     """
-    expected = ["number", "params", "score", "cached", "x", "meta", "start_time", "duration"]
+    expected = [
+        "number",
+        "params",
+        "score",
+        "cached",
+        "x",
+        "meta",
+        "start_time",
+        "duration",
+        "pruned",
+        "intermediate_values",
+    ]
 
     names = [f.name for f in dataclasses.fields(metahpo.Trial)]
 

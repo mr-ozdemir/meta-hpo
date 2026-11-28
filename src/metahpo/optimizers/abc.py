@@ -15,7 +15,10 @@ Greedy acceptance compares the raw minimised scores: a neighbour replaces its fo
 strictly lower. This deliberately deviates from the original, which compares the fitness 1 / (1 + f): that
 transform loses precision near 0 (the fitness of 1e-18 equals the fitness of 0), so a strictly better
 neighbour would be rejected. Both orders agree wherever the fitness keeps the scores apart; the fitness is
-still used for the onlooker probabilities.
+still used for the onlooker probabilities. A pruned neighbour (see Optimizer) is compared by its rank: it
+never replaces a food source with a finite score, so it adds to the source's trial counter, and it replaces
+a source whose score is NaN or infinite or that a lower-ranked pruned trial gave. A pruned food source
+counts as a NaN score for the fitness and the onlooker probabilities.
 
 The optimizer keeps its own copy of what it issued (x, key and params) with each pending candidate. tell()
 accepts only those candidates and works from the stored copies, so a candidate of another optimizer with the
@@ -70,6 +73,7 @@ class ABCOptimizer(Optimizer):
         self.limit = limit
         self.foods = np.zeros((sn, space.dim))
         self.f = [float("inf")] * sn
+        self._rank: list[tuple[float, ...]] = [(2.0, 0.0)] * sn
         self.fit = [0.0] * sn
         self.trial = [0] * sn
         self.prob = [1.0] * sn
@@ -103,8 +107,14 @@ class ABCOptimizer(Optimizer):
             self._onlooker_i = (self._onlooker_i + 1) % self.food_number
         return self._issue([self._neighbour(self._onlooker_i)], "onlooker", [self._onlooker_i])
 
-    def tell(self, candidates: Sequence[Candidate], scores: Sequence[float]) -> None:
-        """Applies the scores of pending candidates of this optimizer.
+    def tell(
+        self,
+        candidates: Sequence[Candidate],
+        scores: Sequence[float],
+        pruned: Sequence[int | None] | None = None,
+    ) -> None:
+        """Applies the scores of pending candidates of this optimizer; `pruned` marks pruned candidates, as
+        Optimizer describes.
 
         The whole batch is checked first: every candidate must be pending, issued by this optimizer (same
         id, key and x) and told once, and every score must convert with float(). A failing batch raises
@@ -113,8 +123,8 @@ class ABCOptimizer(Optimizer):
         if len(candidates) != len(scores):
             raise ValueError("candidates and scores must have the same length")
         entries = self._claim(candidates)
-        values = [self._internal(float(score)) for score in scores]
-        for cand, entry, f in zip(candidates, entries, values, strict=True):
+        ranked = self._ranked(scores, pruned)
+        for cand, entry, (f, rank) in zip(candidates, entries, ranked, strict=True):
             del self._pending[cand.id]
             if f < self.best_f or self.best_x is None:
                 self.best_f, self.best_x = f, entry.x.copy()
@@ -123,16 +133,16 @@ class ABCOptimizer(Optimizer):
                     twin.new_key = False
             i = entry.food
             if entry.kind == "init":
-                self._replace(i, entry, f)
+                self._replace(i, entry, f, rank)
                 self._initialised[i] = True
                 if all(self._initialised):
                     self.phase = "employed"
             elif entry.kind == "scout":
-                self._replace(i, entry, f)
+                self._replace(i, entry, f, rank)
                 self._end_cycle()
             else:
-                if f < self.f[i]:
-                    self._replace(i, entry, f)
+                if rank < self._rank[i]:
+                    self._replace(i, entry, f, rank)
                 else:
                     self.trial[i] += 1
                 self._advance(entry.kind)
@@ -219,11 +229,12 @@ class ABCOptimizer(Optimizer):
             self._seen.add(cand.key)
         return cands
 
-    def _replace(self, i: int, entry: _Issued, f: float) -> None:
+    def _replace(self, i: int, entry: _Issued, f: float, rank: tuple[float, ...]) -> None:
         self.foods[i] = entry.x
         self._keys[i] = entry.key
         self._params[i] = entry.params
         self.f[i] = f
+        self._rank[i] = rank
         self.fit[i] = operators.fitness_scalar(f)
         self.trial[i] = 0
 
