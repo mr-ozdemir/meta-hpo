@@ -39,7 +39,6 @@ from metahpo import (
     BBPSOOptimizer,
     Callback,
     Float,
-    Int,
     MedianPruner,
     MetaHpoWarning,
     NopPruner,
@@ -313,36 +312,59 @@ def test_optimize_should_record_a_trial_pruned_without_a_report_with_a_nan_score
     assert {t.state for t in study.trials if t.params["x"] <= 0.0} == {"complete"}
 
 
-def _pruning_two(calls):
-    """An objective that logs i in `calls`, reports 0.5 and raises TrialPruned for i == 2."""
+class _Twice(Optimizer):
+    """A scripted optimizer that hands out every random point twice in a row, so every second trial is a
+    cached repeat of the one before."""
+
+    def __init__(self, space, seed):
+        super().__init__(space, seed=seed)
+        self.last = None
+
+    def ask(self):
+        point = self.space.sample(self.rng, 1) if self.last is None else self.last
+        self.last = point if self.last is None else None
+        return self._candidates(point)
+
+    def tell(self, candidates, scores, pruned=None):
+        pass
+
+    def cancel(self, candidates):
+        pass
+
+
+def _pruning_positive(calls):
+    """An objective that logs x in `calls`, reports the sphere value and raises TrialPruned for x > 0."""
 
     def objective(params, trial):
-        calls.append(params["i"])
-        trial.report(0.5, 0)
-        if params["i"] == 2:
+        calls.append(params["x"])
+        trial.report(_sphere(params), 0)
+        if params["x"] > 0.0:
             raise TrialPruned()
-        return float(params["i"])
+        return _sphere(params)
 
     return objective
 
 
 def test_optimize_should_prune_a_cached_repeat_of_a_pruned_trial_again_without_a_call():
-    """Given a four-value Int space and an objective that reports 0.5 and raises TrialPruned for i == 2, when
-    optimize() runs 30 trials with the cache on, then every trial with i == 2 is pruned with the values {0:
-    0.5}, the repeats among them are cached, and the objective was called once per uncached trial.
+    """Given a scripted optimizer that hands out every point twice and an objective that reports the sphere
+    value and raises TrialPruned for x > 0, when optimize() runs 20 calls with the cache on, then every second
+    trial is a cached repeat with the state, score and intermediate values of the trial before it, pruned ones
+    included, and the objective was called once per uncached trial.
 
     Oracle: optimize docstring (a cached repeat of a pruned trial is pruned again without a call) and Trial (a
     cached repeat carries the outcome of the trial it repeats).
     """
     calls = []
+    space = _space()
 
-    study = optimize(_pruning_two(calls), Space({"i": Int(0, 3)}), max_evals=30, seed=ANY_SEED)
+    study = optimize(_pruning_positive(calls), space, max_evals=20, optimizer=_Twice(space, ANY_SEED))
 
-    twos = [t for t in study.trials if t.params["i"] == 2]
-    assert {(t.state, repr(t.score)) for t in twos} == {("pruned", "0.5")}
-    assert [t.intermediate_values for t in twos] == [{0: 0.5}] * len(twos)
-    assert [t.cached for t in twos][1:] == [True] * (len(twos) - 1)
-    assert len(calls) == study.n_calls
+    first, repeat = study.trials[0::2], study.trials[1::2]
+    outcome = [(t.state, repr(t.score), t.intermediate_values) for t in first[: len(repeat)]]
+    assert [(t.state, repr(t.score), t.intermediate_values) for t in repeat] == outcome
+    assert [t.cached for t in repeat] == [True] * len(repeat)
+    assert sum(t.pruned for t in repeat) > 0
+    assert calls == [t.params["x"] for t in first]
 
 
 def _breaking_third(calls):

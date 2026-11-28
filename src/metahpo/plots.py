@@ -10,6 +10,11 @@ summary.json and report.md.
 Degenerate data is drawn, not refused: scores that differ only in their last bits are drawn like equal
 scores, and scores beyond about 1e301 are drawn divided by a power of 2, with the axis labelled so. The
 cost of every plot grows linearly with the number of trials.
+
+A pruned trial's score is its last intermediate value, not a final score: the score plots leave it out as
+they leave out a NaN score, while it still counts as an evaluation on the axes that count them. When trials
+reported intermediate values, 12_learning_curves draws them by step, completed trials in colour and pruned
+trials in grey with a cross where they stopped.
 """
 
 from __future__ import annotations
@@ -196,7 +201,7 @@ def make_plots(
     def draw(name: str, plot: Callable[[], Any]) -> None:
         _draw(name, plot, out, written, notes, made)
 
-    raw_scores = np.array([t.score for t in real], dtype=np.float64)
+    raw_scores = np.array([math.nan if t.pruned else t.score for t in real], dtype=np.float64)
     scale = _score_scale(raw_scores)
     score_label = _scaled("score", scale)
     scores = raw_scores * scale
@@ -280,7 +285,7 @@ def make_plots(
 
     names = list(state.space.names)
     params = state.space.parameters
-    ok = [t for t in real if not t.failed]
+    ok = [t for t in real if t.state == "complete"]
     ok_scores = np.array([t.score for t in ok], dtype=np.float64) * scale
     n = len(names)
     cols = min(3, n)
@@ -416,6 +421,41 @@ def make_plots(
         return fig
 
     draw("11_improvements", improvements)
+
+    curves = [t for t in real if t.intermediate_values]
+
+    def learning_curves() -> Any:
+        if not curves:
+            return None
+        from matplotlib.collections import LineCollection
+        from matplotlib.lines import Line2D
+
+        values = np.array([v for t in curves for v in t.intermediate_values.values()], dtype=np.float64)
+        factor = _score_scale(values)
+        lines: dict[bool, list[Any]] = {False: [], True: []}
+        ends: list[Any] = []
+        for t in curves:
+            steps = sorted(t.intermediate_values)
+            points = np.array([[s, t.intermediate_values[s] * factor] for s in steps], dtype=np.float64)
+            lines[t.pruned].append(points)
+            if t.pruned:
+                ends.append(points[-1])
+        fig, ax = subplots(figsize=(10, 4.5))
+        ax.add_collection(LineCollection(lines[False], colors="C0", alpha=0.35, linewidths=1.0))
+        ax.add_collection(LineCollection(lines[True], colors="0.55", alpha=0.35, linewidths=1.0))
+        if ends:
+            stops = np.array(ends)
+            ax.scatter(stops[:, 0], stops[:, 1], marker="x", s=16, color="0.35")
+        ax.autoscale()
+        handles = [
+            Line2D([], [], color="C0", label=f"completed ({len(lines[False])})"),
+            Line2D([], [], color="0.55", marker="x", label=f"pruned ({len(lines[True])})"),
+        ]
+        ax.legend(handles=handles)
+        ax.set(xlabel="step", ylabel=_scaled("intermediate value", factor), title="Learning curves")
+        return fig
+
+    draw("12_learning_curves", learning_curves)
     return written
 
 

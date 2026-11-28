@@ -922,6 +922,28 @@ REQUIREMENTS = {
             "test_api_contract::test_resume_should_declare_its_parameters_with_keyword_only_options",
         ],
     },
+    "R-PRUNE-RESULTS": {
+        "source": [
+            "CHANGELOG.md | The results folder shows pruned trials: a `pruned` column in `trials.csv` and "
+            "`generations.csv`, the counts `complete_trials`, `pruned_trials` and `reported_steps` in "
+            "`summary.json` and report.md, `intermediate.csv` with every reported value and the plot "
+            "`12_learning_curves`; the console marks pruned trials, and the score statistics, the score "
+            "plots and the parameter analysis leave them out.",
+        ],
+        "tests": [
+            "test_report_pruned::test_trials_csv_should_mark_exactly_the_pruned_trials_in_a_column_after_failed",
+            "test_report_pruned::test_generations_csv_should_count_pruned_trials_and_leave_their_scores_out_of_the_statistics",
+            "test_report_pruned::test_intermediate_csv_should_hold_one_row_per_reported_value_of_every_evaluated_trial",
+            "test_report_pruned::test_intermediate_csv_and_reported_steps_should_leave_cached_repeats_out",
+            "test_report_pruned::test_summary_json_should_count_completed_pruned_and_failed_trials_and_the_reported_steps",
+            "test_report_pruned::test_report_md_should_name_pruned_trials_pruner_and_intermediate_csv_only_when_values_were_reported",
+            "test_report_pruned::test_console_should_name_the_pruning_step_and_count_pruned_trials_only_when_there_are_any",
+            "test_report_pruned::test_parameter_analysis_should_leave_pruned_trials_out",
+            "test_report_pruned::test_learning_curves_should_be_drawn_only_for_a_run_that_reported_values",
+            "test_report_pruned::test_learning_curves_should_be_drawn_for_a_run_that_reported_values_but_pruned_none",
+            "test_report_pruned::test_resume_should_write_the_pruning_files_as_the_uninterrupted_run_wrote_them",
+        ],
+    },
     "R-WARNINGS": {
         "source": [
             "CHANGELOG.md | `MetaHpoWarning`, a `UserWarning`, is the category of every warning meta-hpo "
@@ -1569,7 +1591,7 @@ def test_traceability_spec_parser_should_find_every_item_of_the_documents():
 
     counts = _item_counts(items)
 
-    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 28}
+    assert counts == {"behaviour": 3, "search_space": 3, "unit_cube": 1, "changelog_added": 29}
 
 
 @pytest.mark.parametrize(
